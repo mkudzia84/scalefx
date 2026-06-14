@@ -72,14 +72,15 @@
 </script>
 
 <div class="main-layout">
+    <!-- Layout grammar (Option B): order rows by scope, broadest outermost.
+         The config bar (apply/dirty/wizard) governs the WHOLE config — Apply
+         persists every dirty domain, not just the open tab — so it sits ABOVE
+         the per-domain tab nav, which sits above each tab's own sub-tabs.
+         The bar ALWAYS occupies its row and self-gates its content to HubFX
+         inside (an expander has no config), so the tab bar never jumps when
+         the controller type changes. -->
+    <ConfigToolbar />
     <TabBar />
-    <!-- Config Apply/dirty/validation is HubFX-only: every DirtySource is a
-         /hubfx.yaml or effect config the master owns. An expander has no config,
-         so hide the toolbar (otherwise an unloaded engine/gun source validates
-         empty state as an error — "resolve errors: enginefx"). -->
-    {#if $connectionInfo.controllerType === 'hubfx'}
-        <ConfigToolbar />
-    {/if}
 
     <div class="main-body" bind:this={mainBodyEl} class:resizing={dragging}>
         <div class="main-content">

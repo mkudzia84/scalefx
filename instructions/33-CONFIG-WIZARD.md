@@ -1,12 +1,15 @@
 # 33 — Configuration Wizard + Config Assistant (design)
 
-Status: **DESIGN / PLAN** (branch `wizzard-confgen`). Not yet implemented.
+Status: **WIZARD IMPLEMENTED** (branch `wizzard-confgen`) · **ASSISTANT = DESIGN** (§7, not started).
 
 Goal: a guided "Setup Wizard" that takes an operator from a blank/intimidating
 config to a working one — pick features → set up the radio input → map channels
 → configure each effect with advice + sensible defaults. Plus a longer-term
 **config assistant** (Claude-powered chat) that drives the same actions in
 natural language.
+
+The as-built component tree + the implementation patterns/gotchas are in **§10**;
+the design rationale (§1–§7) is preserved as written.
 
 ---
 
@@ -202,18 +205,19 @@ over the same actions + fitness engine, added after.
    (`WizardStepChannels`, per-channel function + live bars). Fitness engine
    `wizard-advice.ts` (feature↔channel coverage, duplicates) drives the inline
    advice.
-3. **Per-effect (Step 4)** — ✅ v1: `WizardStepEffects` binds each enabled
-   effect's RC channel (the key Rule-43 mapping) + engine type/output, shows
-   per-effect advice, and deep-links to the full panel. **Deferred:** in-wizard
-   port/role assignment (pick + `attachRole`) — today that's done in the panels
-   (`freePortPool` needs the role pre-attached; the auto-attach-on-pick flow is
-   the next increment). Defaults: enabling an effect seeds its starter via the
-   existing `default*` factories (gear struts, a gun, a landing light, …).
-4. **Review & Apply (Step 5)** — ✅ `WizardStepReview`: effect/channel summary +
+3. **Per-effect steps** — ✅ **DONE** (replaces the old single `WizardStepEffects`,
+   now deleted). Steps are **dynamic** (`wizardSteps` derived store): one dedicated
+   step per *enabled* effect, inserted between the channel map and review. Each is a
+   full setup surface modelling that effect's real workflow (§10), with **in-wizard
+   auto-attach port assignment** — `WizardPortPicker` claims a free compatible port
+   AND attaches its role on pick (`ensureRole`), so the operator never visits the IO
+   tab. Defaults: enabling an effect seeds its starter via the existing `default*`
+   factories (gear struts, a gun, a landing light, …).
+4. **Review & Apply** — ✅ `WizardStepReview`: effect/channel summary +
    non-info advice + the global `applyAll()` (hub-first) with result surfacing.
-5. **Polish** — partial; remaining: draft snapshot/rollback on Cancel, sub-feature
-   toggles per effect (gun muzzle/smoke/recoil), in-wizard port assignment,
-   "explain this option" tooltips.
+5. **Polish** — partial; remaining: draft snapshot/rollback on Cancel, per-effect
+   sub-feature gating in step 1 (today each effect step exposes its own
+   sub-sections), "explain this option" tooltips.
 6. **Assistant (separate)** — ⏳ not started. `app_assistant.go` + chat panel +
    tool-driven previews, grounded on §5/§7.
 
@@ -225,3 +229,69 @@ over the same actions + fitness engine, added after.
   with effectively no roles/inputs configured.
 - **Assistant API key: bring-your-own** Anthropic key in a local Studio setting
   (when phase 6 lands).
+
+## 10. As-built (the wizard, 2026-06-14)
+
+**File layout** — everything lives in `app/go/studio/frontend/src/lib/wizard/`
+except the stepper store + the modal shell:
+
+| File | Role |
+|---|---|
+| `lib/wizard.ts` | stepper store: `wizardSteps` (derived — HEAD + one per enabled effect + REVIEW), `wizardStep`, `next/prev/goto`, `openWizard`/`closeWizard`/`installWizardAutoOffer`, `isConfigEmpty` |
+| `lib/wizard-features.ts` | effect registry `WIZARD_FEATURES[]` (`isEnabled`/`setEnabled`/`getInput`/`setInput`/`domainIds`); `availableFeatures(dm)` gates by `deviceModel.domains` |
+| `lib/wizard-advice.ts` | `analyzeWizard(dm) → Advice[]` (feature↔channel coverage, duplicates) + `adviceFor(all, where)` |
+| `lib/wizard-ports.ts` | `assignablePool(ports, claims, kind, role, exempt)`, `ensureRole(p, role)` (attach-on-pick), `portToRef`/`emptyRef`/`refKey`/`portKey` |
+| `lib/dialogs/ConfigWizard.svelte` | modal shell: left step rail + body + footer; routes by `current.id` (`features`/`input`/`channels`/`review`) then by `current.feature` (`engine`/`gear`/`gun`/`landing`/`lighting`) |
+| `wizard/WizardStep{Features,Input,Channels,Review}.svelte` | the four fixed steps |
+| `wizard/WizardPortPicker.svelte` | role-aware output-port dropdown; auto-attaches role on pick; empty-pool warning; 240px min-width |
+| `wizard/WizardChannelSelect.svelte` | named-RC-channel dropdown (Rule 43) over `collectChannelOptions`, deduped by `fnId`; 240px min-width |
+| `wizard/WizardEffect{Engine,Gun,Gear,Landing,Lighting}.svelte` | one per effect — the per-effect workflow below |
+
+**Per-effect workflows** (distilled from each tab's real usage, not a UI clone):
+- **Engine** — type · speakers (output mode) · RC on/off toggle (channel + threshold + hysteresis + failsafe) · the three sounds (running required; start/stop optional; `pickFile({targets:'sd'})`).
+- **Gun** — per gun: trigger (channel + threshold + ROF rpm) · muzzle flash (pwm/`LedAnimator` + duration + brightness) · recoil (enable + jerk) · smoke (heater pwm/`Heater` + fan pwm/`DcMotor` + element mV) · turret yaw/pitch (servo/`ServoActuator` + channel).
+- **Gear** — coordination (independent/full-sync) · RC up/down (channel + threshold + deploy-on-link-loss) · per strut: motor (hbridge/`BiDcMotor` + deploy direction + timeout) + doors 0–2 (servo/`ServoActuator` + opening mode + close policy).
+- **Landing** — per light: servos[] (servo/`ServoActuator`) + LEDs[] (pwm/`LedAnimator` + brightness) + fade-in + activation (manual / RC channel).
+- **Lighting** — master brightness · LED channels (pwm/`LedAnimator` + default brightness) · program selector (named channel + hysteresis) · seed a blank program (full timeline stays in the Lighting tab).
+
+**Key patterns / gotchas:**
+- **Reuses the drafts, never a new format.** Every effect component imports its draft
+  store (`engineDraft`/`gunfxDraft`/`gearDraft`/`landingDraft`/`lightfxDraft`) + that
+  store's mutators and writes them directly. The wizard is pure view + mutate; Apply
+  is the existing `applyAll()`.
+- **Auto-attach on pick** — `WizardPortPicker` offers `assignablePool` (compatible
+  `roleKind`/`allowedRoles` AND unclaimed, current pick exempt) and calls
+  `ensureRole(p, role)` (attaches the role to `/hubfx.yaml` if not already) before
+  emitting the `PortRefT`. This is the increment that was deferred in the original §8.3.
+- **Dynamic steps** — `wizardSteps` is `derived([...all five drafts], …)` so toggling
+  a feature in step 1 inserts/removes its step live; `ConfigWizard` clamps the index
+  when the list shrinks.
+- **Svelte-3 markup gotcha (cost a build cycle):** **no TypeScript in markup
+  expressions.** `svelte-preprocess` only transpiles the `<script>` block — template
+  handlers are parsed as plain JS by the Svelte compiler. A typed inline arrow param
+  `on...={(ref: PortRefT) => …}` throws `Unexpected token` (with a *phantom* line:col,
+  because the `µ` multibyte chars in the markup desync the byte-vs-line counter). Pass
+  untyped params in markup (`(ref) => …`); the component prop type drives inference.
+  Same family: inline `as` casts and unwrapped `{#each $store.member as x}` (wrap the
+  expression in parens) break the parser — keep all TS in `<script>` helpers.
+
+## 11. Shipped alongside the wizard (same branch) — config-toolbar UX
+
+Two global config-toolbar changes landed with the wizard:
+
+- **Auto-apply** (`lib/auto-apply.ts`). Optional "persist on settle": an edit
+  that leaves a draft dirty arms a VISIBLE 5 s countdown in the toolbar (pill +
+  Hold); if neither Apply nor Hold is pressed it runs `applyAll()`. Per-edit
+  debounce (each edit resets the timer), held by validation errors (Rule 35) and
+  suppressed while the wizard is open, reuses `applyAll()` so only DIRTY sources
+  persist (no needless hub role-cycle). Toggle persisted to localStorage, **on by
+  default**. Manual Apply + auto-fire share one `applyInFlight` guard. Activity is
+  detected by subscribing to the draft stores + `deviceModel` (structural only —
+  live RC telemetry is a separate `liveChannels` store, so the debounce can't get
+  stuck). Wired in `layout/ConfigToolbar.svelte`.
+- **Layout (Option B).** The global config bar moved ABOVE the tab strip
+  (`layout/MainLayout.svelte`): order rows by scope, broadest outermost —
+  config (apply/dirty/wizard) ⊃ domain tabs ⊃ a tab's sub-tabs ⊃ content. The
+  bar ALWAYS occupies its row and self-gates its content to HubFX inside (an
+  expander shows a muted note at the same height) so the tab bar never jumps when
+  the controller type changes.

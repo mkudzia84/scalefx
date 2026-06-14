@@ -1,22 +1,27 @@
 <!-- ConfigWizard.svelte — Setup Wizard modal shell (config-wizard).
-     Phase 1: the navigable shell (left step rail + body + footer).  The
-     per-step bodies are stubs for now; each becomes a real step component
-     (features → input → channels → effects → review) in the following
-     phases.  See instructions/33-CONFIG-WIZARD.md. -->
+     Left step rail + body + footer.  Steps are DYNAMIC (wizardSteps): the
+     head (features/input/channels), one dedicated step per ENABLED effect,
+     then review.  See instructions/33-CONFIG-WIZARD.md. -->
 <script lang="ts">
     import { showConfigWizard } from '../stores'
     import {
-        WIZARD_STEPS, wizardStep, nextStep, prevStep, gotoStep,
+        wizardSteps, wizardStep, nextStep, prevStep, gotoStep,
         closeWizard, isFirstStep, isLastStep,
     } from '../wizard'
     import WizardStepFeatures from '../wizard/WizardStepFeatures.svelte'
     import WizardStepInput from '../wizard/WizardStepInput.svelte'
     import WizardStepChannels from '../wizard/WizardStepChannels.svelte'
-    import WizardStepEffects from '../wizard/WizardStepEffects.svelte'
     import WizardStepReview from '../wizard/WizardStepReview.svelte'
+    import WizardEffectEngine from '../wizard/WizardEffectEngine.svelte'
+    import WizardEffectGear from '../wizard/WizardEffectGear.svelte'
+    import WizardEffectGun from '../wizard/WizardEffectGun.svelte'
+    import WizardEffectLanding from '../wizard/WizardEffectLanding.svelte'
+    import WizardEffectLighting from '../wizard/WizardEffectLighting.svelte'
 
-    $: step = $wizardStep
-    $: current = WIZARD_STEPS[step]
+    // Clamp the index if the step list shrank (a feature was disabled).
+    $: if ($wizardStep >= $wizardSteps.length) gotoStep($wizardSteps.length - 1)
+    $: step = Math.min($wizardStep, $wizardSteps.length - 1)
+    $: current = $wizardSteps[step]
 </script>
 
 {#if $showConfigWizard}
@@ -37,7 +42,7 @@
         <div class="wiz-body">
             <!-- Left rail: step list -->
             <nav class="wiz-rail">
-                {#each WIZARD_STEPS as s, i}
+                {#each $wizardSteps as s, i}
                     <button class="wiz-step" class:active={i === step} class:done={i < step}
                             on:click={() => gotoStep(i)}>
                         <span class="wiz-num">{i < step ? '✓' : i + 1}</span>
@@ -48,18 +53,24 @@
 
             <!-- Step surface -->
             <section class="wiz-surface">
-                <header class="wiz-step-head">
-                    <h3>{current.title}</h3>
-                    <p>{current.blurb}</p>
-                </header>
-                <div class="wiz-step-content">
-                    {#if current.id === 'features'}<WizardStepFeatures />
-                    {:else if current.id === 'input'}<WizardStepInput />
-                    {:else if current.id === 'channels'}<WizardStepChannels />
-                    {:else if current.id === 'effects'}<WizardStepEffects />
-                    {:else if current.id === 'review'}<WizardStepReview />
-                    {/if}
-                </div>
+                {#if current}
+                    <header class="wiz-step-head">
+                        <h3>{current.title}</h3>
+                        <p>{current.blurb}</p>
+                    </header>
+                    <div class="wiz-step-content">
+                        {#if current.id === 'features'}<WizardStepFeatures />
+                        {:else if current.id === 'input'}<WizardStepInput />
+                        {:else if current.id === 'channels'}<WizardStepChannels />
+                        {:else if current.id === 'review'}<WizardStepReview />
+                        {:else if current.feature === 'engine'}<WizardEffectEngine />
+                        {:else if current.feature === 'gear'}<WizardEffectGear />
+                        {:else if current.feature === 'gun'}<WizardEffectGun />
+                        {:else if current.feature === 'landing'}<WizardEffectLanding />
+                        {:else if current.feature === 'lighting'}<WizardEffectLighting />
+                        {/if}
+                    </div>
+                {/if}
             </section>
         </div>
 
@@ -101,10 +112,10 @@
     .wiz-header h2 { font-size: 15px; font-weight: 700; color: var(--text-bright); margin: 0; }
     .wiz-sub { font-size: 11px; color: var(--text-dim); margin: 2px 0 0; }
     .wiz-close {
-        background: none; border: 1px solid var(--border); border-radius: 4px;
-        color: var(--text-dim); width: 28px; height: 28px; cursor: pointer;
+        background: none; border: none; border-radius: 4px;
+        color: var(--text-dim); width: 30px; height: 30px; cursor: pointer; font-size: 16px;
     }
-    .wiz-close:hover { color: var(--text-bright); border-color: var(--text-dim); }
+    .wiz-close:hover { color: var(--text-bright); background: var(--bg-input); }
 
     .wiz-body { flex: 1; display: flex; min-height: 0; }
 

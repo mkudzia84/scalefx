@@ -12,14 +12,26 @@
      from every tab, not just the IO tab. -->
 <script lang="ts">
     import { onMount } from 'svelte'
-    import { anyDirty, anyErrors, dirtyLabels, errorLabels, applyAll, refreshAll } from '../dirty-registry'
-    import { showPcbOverlay } from '../stores'
+    import { anyDirty, anyErrors, dirtyLabels, errorLabels, refreshAll } from '../dirty-registry'
+    import {
+        autoApplyEnabled, autoApplySecondsLeft, applyInFlight, autoApplyError,
+        runApply, holdAutoApply, installAutoApply,
+    } from '../auto-apply'
+    import { showPcbOverlay, connectionInfo } from '../stores'
     import { openWizard } from '../wizard'
     import { diag } from '../diag'
     import { SetInputRouting, GetInputRouting } from '../../../wailsjs/go/main/App'
     import { EventsOn } from '../../../wailsjs/runtime/runtime'
 
-    let busy = false
+    // Shared apply/refresh busy flag (auto-apply uses the same guard).
+    $: busy = $applyInFlight
+
+    // The bar always occupies its row (so the tab bar below never jumps),
+    // but its config controls are HubFX-only — every DirtySource is a
+    // /hubfx.yaml or effect config the master owns.  On an expander the
+    // sources would validate empty state as an error ("resolve errors:
+    // enginefx"), so the content self-gates and the row shows a note.
+    $: isHub = $connectionInfo.controllerType === 'hubfx'
 
     // Global RC→effect routing gate (mirrors the hub's InputDispatcher
     // flag).  ON = RC sticks drive effects; OFF = effects ignore RC and
@@ -47,7 +59,8 @@
         syncRouting()
         // Re-sync whenever a (re)connect republishes the device model.
         const off = EventsOn('devicemodel:changed', () => syncRouting())
-        return off
+        const offAuto = installAutoApply()
+        return () => { off(); offAuto() }
     })
 
     // Success / note messages route to the diag system (console + status
@@ -55,31 +68,34 @@
     // the toolbar — those need immediate operator attention before the
     // next edit.
     let lastError = ''
+    // Auto-apply failures surface in the same banner as manual ones.
+    $: bannerError = lastError || $autoApplyError
 
     async function onApply() {
-        busy = true; lastError = ''
+        lastError = ''
         try {
-            await applyAll()
+            await runApply()
             diag.info('FE.CFG', 'global apply complete — all dirty configs saved + reloaded')
         } catch (e) {
             lastError = String(e)
             diag.error('FE.CFG', 'global apply failed', { err: String(e) })
-        } finally { busy = false }
+        }
     }
 
     async function onRefresh() {
-        busy = true; lastError = ''
+        applyInFlight.set(true); lastError = ''
         try {
             await refreshAll()
             diag.info('FE.CFG', 'refresh complete — every source re-fetched')
         } catch (e) {
             lastError = String(e)
             diag.error('FE.CFG', 'refresh failed', { err: String(e) })
-        } finally { busy = false }
+        } finally { applyInFlight.set(false) }
     }
 </script>
 
 <div class="config-toolbar">
+  {#if isHub}
     <div class="left">
         <button class="small primary" on:click={openWizard}
                 title="Guided setup — pick features, set up the radio, and configure each effect step by step">🪄 Setup Wizard</button>
@@ -98,7 +114,24 @@
             {rcRouting ? '📡 RC routing' : '✋ Manual'}
         </button>
 
-        {#if $errorLabels.length > 0}
+        <button class="small state-toggle" class:state-on={$autoApplyEnabled}
+                on:click={() => ($autoApplyEnabled = !$autoApplyEnabled)}
+                title={$autoApplyEnabled
+                    ? 'Changes auto-apply 5 s after you stop editing (you get a visible countdown + Hold). Click to require pressing Apply yourself.'
+                    : 'Changes wait for you to press Apply. Click to auto-apply 5 s after editing settles.'}>
+            {$autoApplyEnabled ? '⏱ Auto-apply: on' : '⏱ Auto-apply: off'}
+        </button>
+
+        {#if $autoApplySecondsLeft > 0}
+            <span class="status-flag counting"
+                  title="Auto-applying {$dirtyLabels.join(', ')} in {$autoApplySecondsLeft}s — press Apply now, or Hold to keep editing.">
+                ⏱ applying {$dirtyLabels.join(', ')} in {$autoApplySecondsLeft}s
+            </span>
+            <button class="small" on:click={holdAutoApply}
+                    title="Cancel the countdown and keep editing (it re-arms on your next change).">
+                ✋ Hold
+            </button>
+        {:else if $errorLabels.length > 0}
             <span class="status-flag err"
                   title="Resolve validation errors before Apply: {$errorLabels.join(', ')}">
                 ⚠ resolve errors: {$errorLabels.join(', ')}
@@ -119,14 +152,20 @@
                 title={
                     $anyErrors ? 'Resolve validation errors first' :
                     !$anyDirty ? 'No changes to apply' :
+                    $autoApplySecondsLeft > 0 ? `Apply now (skip the countdown): ${$dirtyLabels.join(' + ')}` :
                     `Save + reload ${$dirtyLabels.join(' + ')}`
                 }>
             ✓ Apply{$dirtyLabels.length > 0 ? ` (${$dirtyLabels.length})` : ''}
         </button>
     </div>
+  {:else}
+    <span class="tb-note">{$connectionInfo.controllerType
+        ? `▸ ${$connectionInfo.controllerType} expander — configuration is managed by the HubFX master`
+        : 'Not connected'}</span>
+  {/if}
 </div>
 
-{#if lastError}<div class="toolbar-banner err">{lastError}</div>{/if}
+{#if isHub && bannerError}<div class="toolbar-banner err">{bannerError}</div>{/if}
 
 <style>
     .config-toolbar {
@@ -136,6 +175,16 @@
         background: var(--bg-raised);
         border-bottom: 1px solid var(--border);
         flex-shrink: 0;
+        /* Reserve the row height so moving this bar above the tab strip
+           (Option B) doesn't make the tab bar jump when content self-gates
+           out on an expander. 28px control + 6+6 padding + 1 border. */
+        box-sizing: border-box;
+        min-height: 41px;
+    }
+    .tb-note {
+        font-size: 11px;
+        color: var(--text-dim);
+        font-family: var(--font-mono);
     }
     .left, .right {
         display: flex; align-items: center; gap: 8px;
@@ -179,6 +228,16 @@
         background: color-mix(in srgb, var(--accent) 12%, transparent);
         border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
     }
+    /* Auto-apply countdown — warning-toned + a soft pulse so the pending
+       persist reads as imminent (never a silent fire). */
+    .status-flag.counting {
+        color: var(--warning, #d7a01f);
+        background: color-mix(in srgb, var(--warning, #d7a01f) 14%, transparent);
+        border-color: color-mix(in srgb, var(--warning, #d7a01f) 55%, var(--border));
+        font-weight: 600;
+        animation: counting-pulse 1s ease-in-out infinite;
+    }
+    @keyframes counting-pulse { 50% { opacity: 0.6; } }
     .status-flag.err {
         color: var(--error);
         background: color-mix(in srgb, var(--error) 12%, transparent);
