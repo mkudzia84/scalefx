@@ -120,3 +120,6 @@ export const flashResult = writable<{ success: boolean; message: string } | null
 
 /** Whether the save config dialog is visible */
 export const showSaveConfig = writable(false)
+
+/** Whether the Setup Wizard modal is visible (config-wizard, see lib/wizard.ts) */
+export const showConfigWizard = writable(false)
