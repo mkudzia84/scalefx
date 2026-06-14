@@ -2114,15 +2114,16 @@ When the resulting pool is empty AND the field can't function without a pick (LE
 
 ```ts
 import { freePortPoolFiltered } from '../components/port_pool'
+import { effectClaims } from '../effect-claims'
 import { RoleKind } from '../devicemodel'
 
 $: pool = freePortPoolFiltered(
-    $deviceModel.ports, $deviceModel.claims,
+    $deviceModel.ports, $effectClaims,
     'pwm', RoleKind.LedAnimator,
     (p) => /* exempt this row's current pick */ p.ref.guid === currentRef.guid && …
 )
 $: poolEmpty = freePortPoolFiltered(
-    $deviceModel.ports, $deviceModel.claims,
+    $deviceModel.ports, $effectClaims,
     'pwm', RoleKind.LedAnimator, () => false,           // no exemption — true emptiness
 ).length === 0
 ```
@@ -2520,12 +2521,14 @@ switcher) already converged on, now binding:
   invent a fourth background level and never put `--bg-raised` on a unit card
   — mismatched group backgrounds across tabs read as a different app.
 - **60.4 enforcement note.**  `freePortPool` must be fed **`$effectClaims`**
-  (lib/effect-claims.ts — hard claims + soft claims synthesized from EVERY
-  effect's draft, own domain filtered at the call site), NOT the vestigial
-  `$deviceModel.claims` (only the retired Domains UI + presets ever wrote
-  those — feeding them alone shows every port as free, the gear-door bug,
-  2026-06-13).  A new effect with port bindings MUST add its contribution
-  block to `effectClaims` in the same PR.
+  (lib/effect-claims.ts — the claims synthesized from EVERY effect's draft, own
+  domain filtered at the call site).  This is now the SOLE port-ownership
+  source: the old hard-claim path (`$deviceModel.claims`, written only by the
+  retired Domains UI + `ApplyDefaults`/presets) was removed in the 2026-06
+  cleanup — the device model no longer carries a `claims` array, and
+  `effectClaims` derives purely from the drafts.  A new effect with port
+  bindings MUST add its contribution block to `effectClaims` (guarded by
+  effect-claims.test.ts) in the same PR.
 
 Reference implementation: the Gear tab's strut cards
 ([GearPanel.svelte](../app/go/studio/frontend/src/lib/tabs/GearPanel.svelte)).

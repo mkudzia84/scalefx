@@ -12,7 +12,7 @@ import { connectionInfo } from './stores'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     AttachRole, DetachRole, SetPortName,
-    SetInputProtocol, SetInputChannelCount, SetChannelFunction, ApplyDefaults,
+    SetInputProtocol, SetInputChannelCount, SetChannelFunction,
     LoadHubConfig, SaveHubConfig, RemoveExpanderConfig,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
@@ -121,7 +121,6 @@ export interface InputProtocolDef {
 
 export interface DeviceModelSnapshotT {
     ports: Port[]
-    claims: Claim[]
     domains: Domain[]
     issues: Issue[]
     roleCatalog: RoleKindInfo[]
@@ -131,7 +130,7 @@ export interface DeviceModelSnapshotT {
 }
 
 const empty: DeviceModelSnapshotT = {
-    ports: [], claims: [], domains: [], issues: [], roleCatalog: [],
+    ports: [], domains: [], issues: [], roleCatalog: [],
     inputs: [], channelFunctions: [], inputProtocols: [],
 }
 
@@ -142,7 +141,6 @@ function normalize(snap: unknown): DeviceModelSnapshotT {
     const s = (snap ?? {}) as Partial<DeviceModelSnapshotT>
     return {
         ports: s.ports ?? [],
-        claims: s.claims ?? [],
         domains: s.domains ?? [],
         issues: s.issues ?? [],
         roleCatalog: s.roleCatalog ?? [],
@@ -345,9 +343,10 @@ export function reset() {
 //
 // The interactive claim/unclaim/candidate API (claim()/unclaim()/candidates()
 // → App.ClaimPort/UnclaimPort/CandidatePorts) was REMOVED 2026-06-13 with the
-// generic Domains tab (the only UI that called it).  Hard claims are now
-// written ONLY by ApplyPreset (the Inputs tab) and surface via the snapshot;
-// effect ownership flows through `effectClaims` (effect-claims.ts).
+// generic Domains tab (the only UI that called it).  The hard-claim path
+// (ApplyDefaults/ApplyPreset) is also retired on the frontend — port ownership
+// now flows ENTIRELY through `effectClaims` (effect-claims.ts), synthesized
+// from the effect drafts.
 
 export async function attachRole(p: PortRef, roleKind: number): Promise<void> {
     const snap = await AttachRole(p.guid, p.kind, p.index, roleKind)
@@ -376,9 +375,10 @@ export async function removeAbandonedBoard(guid: string): Promise<void> {
     markHubDirty()    // removal persists on next Apply (rewrites /hubfx.yaml)
 }
 
-// (Removed 2026-05-23) applyPreset → will be reintroduced as a Setup
-// Wizard surface; the underlying devicemodel.Presets() catalog is still
-// in the Go package, just no longer exposed through Wails.
+// Preset/default application is not exposed on the frontend: the old
+// applyPreset/applyDefaults bindings were retired (the Setup Wizard configures
+// via the effect drafts instead).  The devicemodel.Presets()/ApplyPreset()
+// catalog still exists in the Go package but is no longer wired to the UI.
 
 // ─── Input config ─────────────────────────────────────────────────────
 
@@ -398,16 +398,6 @@ export async function setChannelFunction(p: PortRef, channel: number, fn: string
     const snap = await SetChannelFunction(p.guid, p.kind, p.index, channel, fn)
     deviceModel.set(normalize(snap))
     markHubDirty()    // channel function persists into /hubfx.yaml inputs[].channels[]
-}
-
-export async function applyDefaults(): Promise<string[]> {
-    const res = await ApplyDefaults() as any
-    if (Array.isArray(res)) {
-        deviceModel.set(normalize(res[0]))
-        return (res[1] as string[]) ?? []
-    }
-    deviceModel.set(normalize(res))
-    return []
 }
 
 // ─── Live channel values ──────────────────────────────────────────────
@@ -549,10 +539,6 @@ export function issuesFor(issues: Issue[], domain: string, slot?: string): Issue
     return issues.filter(i => i.domain === domain && (slot === undefined || i.slot === slot))
 }
 
-/** claimsForSlot returns the claims in a (domain, slot). */
-export function claimsForSlot(claims: Claim[], domain: string, slot: string): Claim[] {
-    return claims.filter(c => c.domain === domain && c.slot === slot)
-}
 
 /** domainsForPort lists the (domain, slot) labels a port is claimed by —
  *  used by the Inputs tab to show fan-out. */
