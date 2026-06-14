@@ -252,23 +252,24 @@
             default: return 'phase-unknown'    // 0 unconfigured / 6 unknown
         }
     }
-    function pillText(id: number): string {
-        const ph = $gearPhases[id]
-        if (!ph) return 'unknown'
-        if (ph.phase === 5) {                       // ERROR — surface the reason
-            return ph.errReasonTag ? `error · ${ph.errReasonTag}` : 'error'
+    // pillText / lifecycle / doorStatus / strutActions are PURE — they take the
+    // phase OBJECT (or its numeric phase), never read $gearPhases inside.  This
+    // is load-bearing for reactivity: Svelte tracks template deps syntactically,
+    // so a helper that read the store internally (the old pillText(id)/phaseOf)
+    // would NOT re-run when $gearPhases changed (the "pill + buttons stale while
+    // the lifecycle caption updates" bug).  Always pass $gearPhases[id] in.
+    function pillText(phT: GearPhaseT | undefined): string {
+        if (!phT) return 'unknown'
+        if (phT.phase === 5) {                       // ERROR — surface the reason
+            return phT.errReasonTag ? `error · ${phT.errReasonTag}` : 'error'
         }
-        const sub = (ph.subPhase && ph.subPhase !== 0) ? ` · ${ph.subPhaseName}` : ''
-        return `${ph.phaseName}${sub}`
-    }
-    function isErrored(id: number): boolean {
-        return $gearPhases[id]?.phase === 5
+        const sub = (phT.subPhase && phT.subPhase !== 0) ? ` · ${phT.subPhaseName}` : ''
+        return `${phT.phaseName}${sub}`
     }
 
     // ─── Per-strut phase introspection (items 2/3/5) ─────────────────
     // Phase bytes: 0 unconfig · 1 up · 2 movingDown · 3 down · 4 movingUp
     //              5 error · 6 unknown · 7 held.
-    function phaseOf(id: number): number { return $gearPhases[id]?.phase ?? 6 }
     const isMoving  = (p: number) => p === 2 || p === 4
     const isHeld    = (p: number) => p === 7
     const isUnknown = (p: number) => p === 6 || p === 0
@@ -553,17 +554,18 @@
             {#each cfg.gears as gch (gch.id)}
                 {@const issues     = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports)}
                 {@const chanErrors = issues.length > 0}
-                {@const errored    = isErrored(gch.id)}
-                {@const ph         = phaseOf(gch.id)}
+                {@const phT        = $gearPhases[gch.id]}
+                {@const ph         = phT?.phase ?? 6}
+                {@const errored    = ph === 5}
                 {@const gated      = busy || dirty || chanErrors}
                 {@const acts       = strutActions(gch.id, ph)}
-                {@const life       = lifecycle($gearPhases[gch.id])}
+                {@const life       = lifecycle(phT)}
                 {@const order      = cfg.gears.findIndex(g => g.id === gch.id)}
-                {@const doors      = doorStatus(gch, $gearPhases[gch.id])}
+                {@const doors      = doorStatus(gch, phT)}
                 <div class="sctl-row" class:invalid={chanErrors}>
                     <div class="sctl-id">
                         <span class="sctl-name">{gch.name || `Strut ${order + 1}`}</span>
-                        <span class="state-pill phase {phaseClass(ph)}">{pillText(gch.id)}</span>
+                        <span class="state-pill phase {phaseClass(ph)}">{pillText(phT)}</span>
                         {#if doors}
                             <span class="door-chip door-{doors.state}" title="Door state: {doors.label}">⌂ {doors.label}</span>
                         {/if}
@@ -741,7 +743,7 @@
                 <div class="header-actions">
                     <!-- Config card = editing only.  Live state + deploy/retract/
                          step/hold/reset live in the Control section at the top. -->
-                    <span class="state-pill phase {phaseClass(phaseOf(gch.id))} pill-compact">{pillText(gch.id)}</span>
+                    <span class="state-pill phase {phaseClass($gearPhases[gch.id]?.phase ?? 6)} pill-compact">{pillText($gearPhases[gch.id])}</span>
                     <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
