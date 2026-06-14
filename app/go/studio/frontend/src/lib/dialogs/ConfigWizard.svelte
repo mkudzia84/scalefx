@@ -4,6 +4,7 @@
      then review.  See instructions/33-CONFIG-WIZARD.md. -->
 <script lang="ts">
     import { showConfigWizard } from '../stores'
+    import { svgIcon, WAND_PATHS } from '../icons'
     import {
         wizardSteps, wizardStep, nextStep, prevStep, gotoStep,
         closeWizard, isFirstStep, isLastStep,
@@ -30,7 +31,7 @@
     <div class="wiz">
         <div class="wiz-header">
             <div class="wiz-title">
-                <span class="wiz-wand">🪄</span>
+                <span class="wiz-wand">{@html svgIcon(WAND_PATHS, 20)}</span>
                 <div>
                     <h2>ScaleFX Setup Wizard</h2>
                     <p class="wiz-sub">Guided setup — pick features, set up the radio, configure each effect.</p>
@@ -108,7 +109,7 @@
         background: var(--bg-raised);
     }
     .wiz-title { display: flex; align-items: center; gap: 12px; }
-    .wiz-wand { font-size: 22px; }
+    .wiz-wand { display: flex; align-items: center; color: var(--accent); }
     .wiz-header h2 { font-size: 15px; font-weight: 700; color: var(--text-bright); margin: 0; }
     .wiz-sub { font-size: 11px; color: var(--text-dim); margin: 2px 0 0; }
     .wiz-close {
