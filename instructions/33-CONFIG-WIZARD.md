@@ -190,19 +190,32 @@ never committed, never written to device config.
 **Phasing.** Ship the deterministic wizard first; the assistant is a thin NL layer
 over the same actions + fitness engine, added after.
 
-## 8. Implementation phases
+## 8. Implementation phases / status
 
-1. **Scaffolding** — `wizard.ts` stepper store + `WizardModal.svelte` (+ a launch
-   button; auto-offer on empty config). Snapshot/rollback of drafts.
-2. **Steps 1–3** — features, input source, channel map; wire the live widgets;
-   land `wizard-advice.ts` (fitness) + `wizard-defaults.ts`.
-3. **Per-effect steps** — port/role assignment (reuse `freePortPool` +
-   `AttachRole`), named-input binding, defaulted params with help.
-4. **Review & Apply** — summary + `applyAll()` + error surfacing.
-5. **Polish** — first-run detection, "explain this option" tooltips, deep-link to
-   the matching panel.
-6. **Assistant (separate)** — `app_assistant.go` + chat panel + tool-driven
-   previews, grounded on §5/§7.
+1. **Scaffolding** — ✅ `wizard.ts` stepper store + `ConfigWizard.svelte` modal +
+   🪄 toolbar launch + auto-offer on empty config (`isConfigEmpty` = no named
+   inputs). (Snapshot/rollback of drafts on Cancel still TODO — Cancel currently
+   leaves drafts edited-but-unapplied, like the panels.)
+2. **Steps 1–3** — ✅ Features (`WizardStepFeatures`, capability-gated toggle grid
+   over the effect registry `wizard-features.ts`), Input source
+   (`WizardStepInput`, protocol + channel count + autodetect), Channel map
+   (`WizardStepChannels`, per-channel function + live bars). Fitness engine
+   `wizard-advice.ts` (feature↔channel coverage, duplicates) drives the inline
+   advice.
+3. **Per-effect (Step 4)** — ✅ v1: `WizardStepEffects` binds each enabled
+   effect's RC channel (the key Rule-43 mapping) + engine type/output, shows
+   per-effect advice, and deep-links to the full panel. **Deferred:** in-wizard
+   port/role assignment (pick + `attachRole`) — today that's done in the panels
+   (`freePortPool` needs the role pre-attached; the auto-attach-on-pick flow is
+   the next increment). Defaults: enabling an effect seeds its starter via the
+   existing `default*` factories (gear struts, a gun, a landing light, …).
+4. **Review & Apply (Step 5)** — ✅ `WizardStepReview`: effect/channel summary +
+   non-info advice + the global `applyAll()` (hub-first) with result surfacing.
+5. **Polish** — partial; remaining: draft snapshot/rollback on Cancel, sub-feature
+   toggles per effect (gun muzzle/smoke/recoil), in-wizard port assignment,
+   "explain this option" tooltips.
+6. **Assistant (separate)** — ⏳ not started. `app_assistant.go` + chat panel +
+   tool-driven previews, grounded on §5/§7.
 
 ## 9. Decisions (locked 2026-06-14)
 - **Surface: modal overlay** (full-screen stepper launched from a "Setup Wizard"
