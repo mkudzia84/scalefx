@@ -9,8 +9,9 @@
  *   switch deploys/retracts the WHOLE set, honouring the configured
  *   coordination mode (independent / door-sync / full-sync / sequenced).
  *
- *   Channel semantics: above threshold = RETRACT (gear up), below =
- *   DEPLOY (gear down); `invert: true` flips that.  Failsafe always
+ *   Channel semantics: above threshold (switch ON) = DEPLOY (gear down),
+ *   below (switch OFF) = RETRACT (gear up); `invert: true` flips that.  The
+ *   pilot flips the switch ON to lower the gear for landing.  Failsafe always
  *   forces the DEPLOY side — a dropped RC link lowers the gear (the safe
  *   state for a landing aircraft), mirroring trigger_input.h's "gear
  *   deploys on RC loss" convention.
@@ -78,11 +79,12 @@ public:
         m.kind         = TriggerKind::Boolean;
         m.thresholdUs  = cfg.activation.thresholdUs;
         m.hysteresisUs = cfg.activation.hysteresisUs;
-        // Failsafe forces the DEPLOY side: default mapping deploys LOW, so
-        // ForceLow lowers the gear on RC loss; inverted deploys HIGH, so
-        // ForceHigh does.  Either way a dropped link = gear down (safe).
-        m.failsafe     = _invert ? FailsafeBehaviour::ForceHigh
-                                 : FailsafeBehaviour::ForceLow;
+        // Failsafe forces the DEPLOY side: default mapping deploys HIGH (switch
+        // ON = gear down), so ForceHigh lowers the gear on RC loss; inverted
+        // deploys LOW, so ForceLow does.  Either way a dropped link = gear
+        // down (safe).
+        m.failsafe     = _invert ? FailsafeBehaviour::ForceLow
+                                 : FailsafeBehaviour::ForceHigh;
         _trigger.configure(m, &GearActivationDriver::onChange, this);
 
         const uint8_t channel = (b->channelId > 0)
@@ -108,15 +110,16 @@ private:
         if (!ctx || v.kind != hubfx::effects::input::TriggerKind::Boolean) return;
         auto* self = static_cast<GearActivationDriver*>(ctx);
         if (!self->_commandFn || !self->_gear) return;
-        // Default: HIGH = retract (gear up), LOW = deploy; invert flips.
-        // Failsafe (signal lost) resolves to the deploy side — act on it.
-        const bool retract = self->_invert ? !v.b : v.b;
-        const uint8_t action = retract
-            ? hubfx::effects::gearctrl::GearAllAction::Retract
-            : hubfx::effects::gearctrl::GearAllAction::Deploy;
+        // Default: switch ON (HIGH) = deploy (gear down), OFF (LOW) = retract
+        // (gear up); invert flips.  Failsafe (signal lost) resolves to the
+        // deploy side — act on it (gear down on RC loss).
+        const bool deploy = self->_invert ? !v.b : v.b;
+        const uint8_t action = deploy
+            ? hubfx::effects::gearctrl::GearAllAction::Deploy
+            : hubfx::effects::gearctrl::GearAllAction::Retract;
         self->_commandFn(self->_gear, action);
         SFX_LOG_INFO("[gear-activation] → %s (us=%u%s)",
-                     retract ? "RETRACT" : "DEPLOY", (unsigned)v.us,
+                     deploy ? "DEPLOY" : "RETRACT", (unsigned)v.us,
                      v.valid ? "" : ", failsafe");
     }
 

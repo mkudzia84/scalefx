@@ -2572,6 +2572,22 @@ panel root).  Don't introduce a different outer padding (the old 20 px 24 px /
 comes from `.tab-content`, the root sets only `max-width`).  `max-width` content
 caps are fine and separate from the margin.
 
+### 63. Uniform Control Height Within a Row (approved 2026-06-14)
+
+Every control that shares a **horizontal row** — buttons, text/number inputs,
+selects, status pills, chips, segmented-toggle segments — renders at **one
+shared height** and is vertically centred, so a row never mixes a tall input
+beside a short button beside a taller pill.  Define the height once (a
+`--ctl-h`-style var, default **28 px**, matching the shared `.small` button /
+`.field-input` height in `style.css`) and apply it to every interactive/label
+element on the row via `height: var(--ctl-h); box-sizing: border-box` (+
+`display: inline-flex; align-items: center` for padding-sized chips/pills).
+Don't hand-pick per-element heights (the gear control rows had 26 px buttons
+next to 28 px pills next to unsized chips — the "items aren't the same height"
+report).  Applies to status/control rows AND config form-rows; free-flowing
+hint/help text is exempt (it's prose, not a row control).  Reference: GearPanel
+`.sctl-acts` / `.form-row` controls.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

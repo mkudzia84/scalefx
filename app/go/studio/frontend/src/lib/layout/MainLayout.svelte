@@ -30,8 +30,9 @@
     // firmware feeds its effect dispatcher locally regardless, so leaving the
     // wire stream off when we're not viewing it costs nothing and stops a
     // continuous 50 Hz flood on every host RPC.  Tabs that consume the stream:
-    // Inputs (io), Engine, Gun, Lighting — see app_input.go SetInputLiveView.
-    const LIVE_TAB_KINDS = new Set(['io', 'engine', 'gun', 'lighting'])
+    // Inputs (io), Engine, Gun, Lighting, Gear — each renders a Rule-36 channel
+    // cluster (Gear: the RC up/down channel).  See app_input.go SetInputLiveView.
+    const LIVE_TAB_KINDS = new Set(['io', 'engine', 'gun', 'lighting', 'gear'])
     let liveApplied: boolean | null = null
     $: wantLive = !!$connectionInfo.connected && LIVE_TAB_KINDS.has(current?.kind)
     $: if (wantLive !== liveApplied) {

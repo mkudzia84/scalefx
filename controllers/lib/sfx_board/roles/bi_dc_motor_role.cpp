@@ -109,6 +109,7 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
     _runCount            = 0;
     _runMean_mA          = 0;
     _runMin_mA           = 0xFFFF;
+    _belowFloorStartMs   = 0;     // no-load (open-circuit) detector, this stroke
 
     _lastSeekLogMs       = now;
     _seekState           = SeekState::Seeking;
@@ -199,6 +200,38 @@ void BiDcMotorRole::tick() {
             }
         }
         if (_iSense) {
+            // ── No-load / open-circuit detector ────────────────────────────
+            // A driven, connected motor always draws well above a few tens of
+            // mA; an open circuit (no motor, unplugged, blown H-bridge output)
+            // reads ~0 mA the whole stroke.  After the inrush-blank window, if
+            // |I| stays below the present-floor continuously for the confirm
+            // window, conclude "no motor" — a DISTINCT fault from stall
+            // (over-current) and timeout (ran the full time).  Skipped when the
+            // floor is disabled (0).  Independent of the guard mode.
+            if (_presentFloor_mA != 0) {
+                const uint32_t elapsedNl = now - _seekStartMs;
+                if (elapsedNl >= _inrushBlank_ms) {
+                    const uint16_t i_mag_nl = (uint16_t)std::abs((int)_iSense->current_mA());
+                    if (i_mag_nl < _presentFloor_mA) {
+                        if (_belowFloorStartMs == 0) _belowFloorStartMs = now;
+                        else if (now - _belowFloorStartMs >= kNoLoadConfirmMs) {
+                            if (_port) _port->brake();
+                            _commandedSigned = 0;
+                            _seekState       = SeekState::TimedOut;   // latched fault
+                            _position        = Position::Unknown;
+                            SFX_LOG_INFO("[bimotor] NO-LOAD: I stayed <%umA for %ums under drive — "
+                                         "no motor / open circuit / blown output (braked, fault latched)",
+                                         (unsigned)_presentFloor_mA, (unsigned)kNoLoadConfirmMs);
+                            if (_onEndstop) _onEndstop(BiMotorSeekOutcome::NoLoad,
+                                                       (uint16_t)(now - _seekStartMs), 0, _position);
+                            return;
+                        }
+                    } else {
+                        _belowFloorStartMs = 0;   // current present — reset the window
+                    }
+                }
+            }
+
             if (_guardMode == GuardMode::LiveRatio) {
                 const uint32_t elapsed = now - _seekStartMs;
                 const uint16_t i_mag   = (uint16_t)std::abs((int)_iSense->current_mA());

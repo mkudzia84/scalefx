@@ -80,8 +80,11 @@ void GearControlServicePolicyT<TTopology, TLandingService>::onConnectionLoss(
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
     if (!_topo) return;   // begin() hasn't bound topology yet
-    _seqActive = 0xFF;
+    _seqActive  = 0xFF;
+    _syncActive = false;
     for (uint8_t i = 0; i < _numDefs; ++i) {
+        // configure() resets each strut to UNKNOWN (initial-start: physical
+        // position uncertain until the first command homes it).
         _gears[i].configure(_defs[i],
                             &GearControlServicePolicyT::sendRoleCmdTrampoline,
                             static_cast<void*>(_topo),
@@ -89,7 +92,6 @@ void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
                             &GearControlServicePolicyT::commitBatchTrampoline,
                             &GearControlServicePolicyT::phaseEventTrampoline,
                             static_cast<void*>(this));
-        applySyncFlags(_gears[i]);
     }
     claimPorts();
 }
@@ -113,7 +115,7 @@ void GearControlServicePolicyT<TTopology, TLandingService>::update() {
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].update(now);
     }
-    releaseBarriersIfReady();
+    driveCoordinator();
     updateTransitSound();
 }
 
@@ -163,64 +165,58 @@ void GearControlServicePolicyT<TTopology, TLandingService>::updateTransitSound()
 // ─── Multi-gear coordinator ─────────────────────────────────────────
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
-void GearControlServicePolicyT<TTopology, TLandingService>::applySyncFlags(Gear& g) const {
-    switch (_coordMode) {
-        case CoordMode::DoorSync:  g.setSyncBarriers(/*doors=*/true,  /*motor=*/false); break;
-        case CoordMode::FullSync:  g.setSyncBarriers(/*doors=*/true,  /*motor=*/true);  break;
-        case CoordMode::Independent:
-        case CoordMode::Sequenced:
-        default:                   g.setSyncBarriers(/*doors=*/false, /*motor=*/false); break;
-    }
-}
-
-template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
-void GearControlServicePolicyT<TTopology, TLandingService>::releaseBarriersIfReady() {
-    // DoorSync / FullSync: advance every mid-cycle gear past a barrier once
-    // ALL mid-cycle gears sit at that same barrier (port of the archive's
-    // releaseSyncBarriersIfReady).  Independent/Sequenced have no barriers.
-    if (_coordMode == CoordMode::DoorSync || _coordMode == CoordMode::FullSync) {
-        bool anyCycling   = false;
-        bool allAtDoors   = true;
-        bool allAtMotor   = true;
-        for (uint8_t i = 0; i < _numDefs; ++i) {
-            if (!_gears[i].isCycling()) continue;
-            anyCycling = true;
-            if (!_gears[i].isWaitingDoorsOpenBarrier()) allAtDoors = false;
-            if (!_gears[i].isWaitingMotorDoneBarrier()) allAtMotor = false;
-        }
-        if (anyCycling && allAtDoors) {
-            if (_topo) _topo->beginBatch();
-            for (uint8_t i = 0; i < _numDefs; ++i)
-                if (_gears[i].isCycling()) _gears[i].advanceBarrier();
-            if (_topo) _topo->commitBatch();
-        }
-        if (anyCycling && allAtMotor) {
-            if (_topo) _topo->beginBatch();
-            for (uint8_t i = 0; i < _numDefs; ++i)
-                if (_gears[i].isCycling()) _gears[i].advanceBarrier();
-            if (_topo) _topo->commitBatch();
+void GearControlServicePolicyT<TTopology, TLandingService>::driveCoordinator() {
+    // Sequenced: advance the chain when the active strut reaches its target.
+    if (_coordMode == CoordMode::Sequenced) {
+        if (_seqActive != 0xFF && _seqActive < _numDefs &&
+            _gears[_seqActive].atTarget()) {
+            sequencedKick();
         }
         return;
     }
+    driveSyncStep();   // DoorSync / FullSync — no-op when !_syncActive
+}
 
-    // Sequenced: when the active gear settles, kick the next one.
-    if (_coordMode == CoordMode::Sequenced && _seqActive != 0xFF) {
-        if (_seqActive < _numDefs && !_gears[_seqActive].isCycling()) {
-            sequencedKick();
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::driveSyncStep() {
+    if (!_syncActive) return;
+
+    // A barrier walk: keep every strut in lockstep by stepping them all to the
+    // next leg only once ALL have reached the current boundary (legComplete).
+    bool allSettled  = true;
+    bool allComplete = true;
+    for (uint8_t i = 0; i < _numDefs; ++i) {
+        if (_gears[i].atTarget()) continue;
+        allSettled = false;
+        if (!_gears[i].legComplete()) allComplete = false;
+    }
+    if (allSettled)  { _syncActive = false; return; }   // whole set reached the target
+    if (!allComplete) return;                            // wait at the barrier
+
+    if (_topo) _topo->beginBatch();
+    for (uint8_t i = 0; i < _numDefs; ++i) {
+        if (_gears[i].atTarget()) continue;
+        // DoorSync syncs only the doors-open boundary: once the doors are open
+        // together, release each strut to finish its strut+close on its own.
+        if (_coordMode == CoordMode::DoorSync &&
+            _gears[i].subPhase() == GearSubPhase::doors_open) {
+            _gears[i].setTarget(_syncTarget);
+        } else {
+            _gears[i].stepToward(_syncTarget);   // FullSync: lockstep every leg
         }
     }
+    if (_topo) _topo->commitBatch();
+    if (_coordMode == CoordMode::DoorSync) _syncActive = false;   // released to free-run
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::sequencedKick() {
-    // Advance to the next gear after the current one finished its full cycle.
+    // Advance to the next strut after the current one reached its target.
     uint8_t next = (_seqActive == 0xFF) ? 0 : (uint8_t)(_seqActive + 1);
     if (next >= _numDefs) { _seqActive = 0xFF; return; }   // chain done
     _seqActive = next;
-    applySyncFlags(_gears[next]);   // (no barriers in Sequenced, but keep it explicit)
     if (_topo) _topo->beginBatch();
-    if (_seqDeploying) _gears[next].deploy();
-    else               _gears[next].retract();
+    _gears[next].setTarget(_seqTarget);
     if (_topo) _topo->commitBatch();
 }
 
@@ -245,6 +241,8 @@ CommandHandleResult GearControlServicePolicyT<TTopology, TLandingService>::handl
         case GearPacket::GEAR_STATUS_REQ: handleStatusReq();             return CommandHandleResult::Handled;
         case GearPacket::GEAR_LIST_REQ:   handleListReq();               return CommandHandleResult::Handled;
         case GearPacket::GEAR_RESET:      handleReset(payload, len);     return CommandHandleResult::Handled;
+        case GearPacket::GEAR_ESTOP:      handleEstop(payload, len);     return CommandHandleResult::Handled;
+        case GearPacket::GEAR_STEP:       handleStep(payload, len);      return CommandHandleResult::Handled;
         default:                          return CommandHandleResult::NotMyCommand;
     }
 }
@@ -255,14 +253,12 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleDeploy(
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     Gear* g = findById(p[0]);
     if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
-    if (g->phase() == GearPhase::Error) {
-        _ctx->sendNack(GearError::IN_ERROR_STATE);
-        return;
-    }
-    // Per-gear deploy is independent of cross-channel sync (bench testing) —
-    // run without barriers regardless of the global coord mode.
-    g->setSyncBarriers(false, false);
-    g->deploy();
+    // Item 4: a deploy/retract from the effect auto-clears a prior fault and
+    // retries (no manual GEAR_RESET needed) — clearError() is a no-op when not
+    // in Error.  Per-strut bench command: full-cycle toward Down, independent
+    // of the global coord mode (the coordinator's barrier walk is fleet-only).
+    g->clearError();
+    g->setTarget(Gear::Target::Down);
     _ctx->sendAck();
 }
 
@@ -272,12 +268,8 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleRetract(
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     Gear* g = findById(p[0]);
     if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
-    if (g->phase() == GearPhase::Error) {
-        _ctx->sendNack(GearError::IN_ERROR_STATE);
-        return;
-    }
-    g->setSyncBarriers(false, false);   // per-gear command is independent
-    g->retract();
+    g->clearError();                    // item 4: auto-clear a prior fault + retry
+    g->setTarget(Gear::Target::Up);     // per-strut full-cycle toward Up
     _ctx->sendAck();
 }
 
@@ -297,42 +289,95 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleStop(
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
     Gear* g = findById(p[0]);
     if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
-    g->stop();
+    // STOP halts the strut in place (brake + freeze) — the per-strut emergency
+    // hold.  Resumes on the next deploy/retract.
+    g->emergencyHold();
     _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleEstop(
+        const uint8_t* p, size_t len) {
+    // `[]` (whole set) or `[id]` (one strut) → emergency hold (brake + freeze).
+    if (len >= 1) {
+        Gear* g = findById(p[0]);
+        if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+        g->emergencyHold();
+    } else {
+        emergencyHoldAll();
+    }
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleStep(
+        const uint8_t* p, size_t len) {
+    // `[id][target]` — advance ONE leg toward target (0=up, 1=down) then park.
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    const Gear::Target t = (p[1] == GearStepTarget::Down) ? Gear::Target::Down
+                                                          : Gear::Target::Up;
+    g->clearError();              // item 4: a manual step also retries a fault
+    g->stepToward(t);             // single-step: cross one boundary, then park
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::emergencyHoldAll() {
+    if (_topo) _topo->beginBatch();
+    for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].emergencyHold();
+    if (_topo) _topo->commitBatch();
+    _seqActive  = 0xFF;
+    _syncActive = false;
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::commandAll(
         uint8_t action) {
-    // STOP is universal — halt every gear + reset the sequenced chain.
-    if (action == GearAllAction::Stop) {
-        if (_topo) _topo->beginBatch();
-        for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].stop();
-        if (_topo) _topo->commitBatch();
-        _seqActive = 0xFF;
-        return;
-    }
+    if (action == GearAllAction::Stop) { emergencyHoldAll(); return; }
+    commandAllTarget(action == GearAllAction::Deploy ? Gear::Target::Down
+                                                     : Gear::Target::Up);
+}
 
-    const bool deploying = (action == GearAllAction::Deploy);
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::commandAllTarget(
+        Gear::Target t) {
+    _seqActive  = 0xFF;
+    _syncActive = false;
 
-    // Sequenced: kick only gear[0]; releaseBarriersIfReady() chains the rest.
-    if (_coordMode == CoordMode::Sequenced) {
-        _seqDeploying = deploying;
-        _seqActive    = 0xFF;        // sequencedKick() advances to 0
-        sequencedKick();
-        return;
-    }
+    // Item 4: a fleet gear-up/down auto-clears any strut sitting in Error and
+    // retries it.  Done as a pre-pass (each clearError() runs its own wire
+    // batch) BEFORE the command batch below so the batches don't nest.
+    for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].clearError();
 
-    // Independent / DoorSync / FullSync: start every gear in one wire burst.
-    // Sync flags inserted per coord mode so the coordinator can hold the
-    // barriers; Independent leaves them off (today's behaviour).
-    if (_topo) _topo->beginBatch();
-    for (uint8_t i = 0; i < _numDefs; ++i) {
-        applySyncFlags(_gears[i]);
-        if (deploying) _gears[i].deploy();
-        else           _gears[i].retract();
+    switch (_coordMode) {
+        case CoordMode::Sequenced:
+            // One strut at a time — start strut[0]; driveCoordinator() chains.
+            _seqTarget = t;
+            _seqActive = 0xFF;          // sequencedKick() advances to 0
+            sequencedKick();
+            return;
+
+        case CoordMode::DoorSync:
+        case CoordMode::FullSync:
+            // Barrier walk: step every strut to its first boundary (doors open),
+            // then driveSyncStep() advances them in lockstep.
+            _syncTarget = t;
+            _syncActive = true;
+            if (_topo) _topo->beginBatch();
+            for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].stepToward(t);
+            if (_topo) _topo->commitBatch();
+            return;
+
+        case CoordMode::Independent:
+        default:
+            // Each strut runs its own full cycle (and pre-empts independently).
+            if (_topo) _topo->beginBatch();
+            for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].setTarget(t);
+            if (_topo) _topo->commitBatch();
+            return;
     }
-    if (_topo) _topo->commitBatch();
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
@@ -351,14 +396,16 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::handleStatusReq() {
-    // Rule 11 append: per-entry [id][phase][subPhase] — old clients read 2.
-    uint8_t buf[1 + kMaxGears * 3];
+    // Rule 11 append: per-entry [id][phase][subPhase][errReason] — old clients
+    // read the first 2; the host derives the stride from count.
+    uint8_t buf[1 + kMaxGears * 4];
     buf[0] = _numDefs;
     size_t off = 1;
     for (uint8_t i = 0; i < _numDefs; ++i) {
         buf[off++] = _gears[i].id();
         buf[off++] = _gears[i].phase();
         buf[off++] = _gears[i].subPhase();
+        buf[off++] = _gears[i].errorReason();
     }
     _ctx->sendRawPacket(GearPacket::GEAR_STATUS_RESP,
                         _ctx->currentTag(), buf, off);
@@ -449,10 +496,10 @@ void GearControlServicePolicyT<TTopology, TLandingService>::forwardToLandings(
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::emitPhaseEvent(
-        uint8_t id, uint8_t phase, uint8_t subPhase) {
+        uint8_t id, uint8_t phase, uint8_t subPhase, uint8_t errReason) {
     if (!_ctx) return;
-    // Rule 11 append: [id][phase][subPhase] — old clients read the first 2.
-    const uint8_t payload[3] = { id, phase, subPhase };
+    // Rule 11 append: [id][phase][subPhase][errReason] — old clients read 2.
+    const uint8_t payload[4] = { id, phase, subPhase, errReason };
     _ctx->sendRawPacket(GearPacket::GEAR_PHASE_EVENT,
                         SfxWire::TAG_ASYNC, payload, sizeof(payload));
     if (phase == GearPhase::Deployed || phase == GearPhase::Retracted) {
@@ -481,9 +528,9 @@ void GearControlServicePolicyT<TTopology, TLandingService>::commitBatchTrampolin
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::phaseEventTrampoline(
-        void* ctx, uint8_t id, uint8_t newPhase, uint8_t newSubPhase) {
+        void* ctx, uint8_t id, uint8_t newPhase, uint8_t newSubPhase, uint8_t errReason) {
     auto* self = static_cast<GearControlServicePolicyT*>(ctx);
-    if (self) self->emitPhaseEvent(id, newPhase, newSubPhase);
+    if (self) self->emitPhaseEvent(id, newPhase, newSubPhase, errReason);
 }
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>

@@ -1,12 +1,24 @@
 /*
- * gear.ipp — per-gear op-queue + door-bracket state-machine bodies.
+ * gear.ipp — target-driven per-strut state machine.
  *
- *   deploy  : OPEN_DOORS → [SYNC] → RUN_MOTOR(deploy) → [SYNC] → CLOSE_DOORS(policy)
- *   retract : OPEN_DOORS → [SYNC] → RUN_MOTOR(retract) → [SYNC] → CLOSE_DOORS(all)
+ *   Each strut owns a `_target` (Up/Down) and walks a SINGLE symmetric transit
+ *   axis toward it:
  *
- *   Door legs wait on SERVO_MOTION_DONE (monitored, decision #1); the
- *   motor leg waits on BIMOTOR_ENDSTOP_RESULT.  SYNC barriers park the
- *   gear for the multi-gear coordinator (Rule 40 — EffectClock only).
+ *     settled ⇄ doors_opening ⇄ doors_open ⇄ strut_moving ⇄ strut_done
+ *             ⇄ doors_closing ⇄ doors_closed ⇄ settled
+ *
+ *   `pump()` is the only engine: given the current `_sub` (transit position)
+ *   and `_target`, it commands the next leg, parks (step mode), settles, or
+ *   REVERSES.  Reversal is not a special path — it is `pump()` recomputing the
+ *   next action when `_seekDir != _target` (the strut is committed to / heading
+ *   the wrong endstop).  setTarget/stepToward/onServoMotionDone/onEndstopResult/
+ *   update all funnel into `pump()`, wrapped in the wire batch.
+ *
+ *   Motion uses the BiDcMotor role's autonomous endstop seek: re-issuing a seek
+ *   the other way OVERWRITES the in-flight one (no brake handshake, no stray
+ *   `Aborted`), so a mid-seek reversal is just `startSeek()` again.  Door legs
+ *   complete on SERVO_MOTION_DONE (monitored) with a travel-timeout backstop
+ *   re-armed on every leg entry (incl. reversals) so a lost event can't hang.
  */
 
 #ifndef HUBFX_GEAR_IPP
@@ -19,206 +31,213 @@
 
 namespace hubfx::effects::gearctrl {
 
-// ── Public entry points ──────────────────────────────────────────────
+// ── Public commands ──────────────────────────────────────────────────
 
-inline void Gear::deploy() {
-    switch (_state) {
-        case GearPhase::Unconfigured:
-            SFX_LOG_WARN("[gear] deploy %u — not configured", _def.id);
-            return;
-        case GearPhase::Deploying:
-        case GearPhase::Deployed:
-            return;  // idempotent
-        case GearPhase::Error:
-            SFX_LOG_WARN("[gear] deploy %u rejected — gear in ERROR (GEAR_RESET first)", _def.id);
-            return;
-        default:
-            break;
+inline void Gear::setTarget(Target t) {
+    if (_phase == GearPhase::Unconfigured) return;
+    if (_phase == GearPhase::Error) {
+        SFX_LOG_WARN("[gear] %u: target rejected — ERROR (GEAR_RESET first)", _def.id);
+        return;
     }
-    startCycle(/*deploying=*/true);
+    _stepMode = false;
+    _target   = t;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    if (isCycling()) setPhaseSub(movingPhase(), _sub);   // reflect the new direction now
+    pump();
+    if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
-inline void Gear::retract() {
-    switch (_state) {
-        case GearPhase::Unconfigured:
-            SFX_LOG_WARN("[gear] retract %u — not configured", _def.id);
-            return;
-        case GearPhase::Retracting:
-        case GearPhase::Retracted:
-            return;
-        case GearPhase::Error:
-            SFX_LOG_WARN("[gear] retract %u rejected — gear in ERROR (GEAR_RESET first)", _def.id);
-            return;
-        default:
-            break;
-    }
-    startCycle(/*deploying=*/false);
+inline void Gear::stepToward(Target t) {
+    if (_phase == GearPhase::Unconfigured) return;
+    if (_phase == GearPhase::Error) return;
+    _stepMode  = true;
+    _stepArmed = true;          // permission to cross ONE boundary
+    _target    = t;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    if (isCycling()) setPhaseSub(movingPhase(), _sub);
+    pump();
+    if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
-inline void Gear::stop() {
-    if (_state == GearPhase::Unconfigured) return;
+inline void Gear::emergencyHold() {
+    if (_phase == GearPhase::Unconfigured) return;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandMotorBrake();
-    _doorSeq.reset();
-    _leg            = Leg::None;
-    _atDoorsBarrier = false;
-    _atMotorBarrier = false;
+    _doorSeq.freeze();
+    _legDone   = false;
+    _stepArmed = false;
     _movingDeadlineMs = 0;
-    // STOP from any moving state returns the gear to a known-safe baseline
-    // (Retracted), or holds Deployed.  ERROR is NOT cleared by STOP.
-    setPhaseSub((_state == GearPhase::Deployed) ? GearPhase::Deployed
-                                                : GearPhase::Retracted,
-                GearSubPhase::idle);
+    _doorDeadlineMs   = 0;
+    setPhaseSub(GearPhase::Held, GearSubPhase::idle);
     if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: EMERGENCY HOLD", _def.id);
 }
 
 inline void Gear::clearError() {
-    if (_state != GearPhase::Error) return;
+    if (_phase != GearPhase::Error) return;
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandMotorBrake();
     _doorSeq.reset();
-    _leg            = Leg::None;
-    _atDoorsBarrier = false;
-    _atMotorBarrier = false;
+    _legDone   = false;
+    _stepArmed = false;
+    _errorReason = 0;
     _movingDeadlineMs = 0;
-    setPhaseSub(GearPhase::Retracted, GearSubPhase::idle);
+    _doorDeadlineMs   = 0;
+    setPhaseSub(GearPhase::Unknown, GearSubPhase::idle);   // position uncertain after a fault
     if (_commit && _sendCtx) _commit(_sendCtx);
-    SFX_LOG_INFO("[gear] %u: error cleared → retracted", _def.id);
+    SFX_LOG_INFO("[gear] %u: error cleared → unknown", _def.id);
 }
 
-// ── Op-queue ─────────────────────────────────────────────────────────
+// ── The engine ───────────────────────────────────────────────────────
 
-inline void Gear::startCycle(bool deploying) {
-    _deploying      = deploying;
-    _atDoorsBarrier = false;
-    _atMotorBarrier = false;
-    _movingDeadlineMs = 0;
-    if (_begin && _sendCtx) _begin(_sendCtx);
-    setPhaseSub(deploying ? GearPhase::Deploying : GearPhase::Retracting,
-                GearSubPhase::idle);
-    beginLeg(Leg::OpenDoors);
-    if (_commit && _sendCtx) _commit(_sendCtx);
-}
+inline void Gear::pump() {
+    // ERROR / Unconfigured do not move autonomously.  Unknown / Held DO resume
+    // (the idle case below begins a homing transit toward the new target).
+    if (_phase == GearPhase::Unconfigured || _phase == GearPhase::Error) return;
 
-inline void Gear::beginLeg(Leg leg) {
-    _leg = leg;
-    switch (leg) {
-        case Leg::OpenDoors:
-            _doorSeq.open();
-            setPhaseSub(_state, GearSubPhase::doors_opening);
-            if (_doorSeq.isComplete()) { advanceLeg(); return; }   // NONE / no doors
-            break;
+    for (;;) {
+        switch (_sub) {
+            // ── settled (Up / Down / Unknown / Held) ──
+            case GearSubPhase::idle: {
+                if (settledAtTarget()) return;            // already there
+                if (_stepMode && !_stepArmed) return;     // wait for the coordinator's step
+                _stepArmed = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_opening);
+                openDoors();
+                if (_doorSeq.isComplete()) _legDone = true;   // NONE / no doors → instant
+                if (!_legDone) return;                    // wait for the doors
+                _legDone = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_open);
+                continue;
+            }
 
-        case Leg::SyncDoors:
-            // Barrier after doors-open.  If this gear doesn't sync at the
-            // door boundary, skip straight through.
-            setPhaseSub(_state, GearSubPhase::doors_open);
-            if (!_syncDoors) { advanceLeg(); return; }
-            _atDoorsBarrier = true;        // coordinator releases via advanceBarrier()
-            break;
+            // ── doors opening (shared by both directions) ──
+            case GearSubPhase::doors_opening: {
+                if (!_legDone) return;
+                _legDone = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_open);
+                continue;
+            }
 
-        case Leg::RunMotor:
-            setPhaseSub(_state, GearSubPhase::motor_running);
-            commandSeek(_deploying ? _def.deployDuty : _def.retractDuty);
-            armBackstop(sfx_core::EffectClock::instance().nowMs());
-            break;
+            // ── doors open: park (step mode) or run the strut ──
+            case GearSubPhase::doors_open: {
+                if (_stepMode && !_stepArmed) return;     // parked for the coordinator
+                _stepArmed = false;
+                setPhaseSub(movingPhase(), GearSubPhase::strut_moving);
+                startSeek();                              // seeks toward _target, sets _seekDir
+                return;                                   // wait for the endstop
+            }
 
-        case Leg::SyncMotor:
-            setPhaseSub(_state, GearSubPhase::motor_done);
-            if (!_syncMotor) { advanceLeg(); return; }
-            _atMotorBarrier = true;
-            break;
+            // ── strut moving: wait, or re-seek on a target flip ──
+            case GearSubPhase::strut_moving: {
+                if (!_legDone) {
+                    if (_seekDir != _target) startSeek();  // pre-empt: reverse the seek
+                    return;
+                }
+                _legDone = false;
+                setPhaseSub(movingPhase(), GearSubPhase::strut_done);
+                continue;
+            }
 
-        case Leg::CloseDoors:
-            setPhaseSub(_state, GearSubPhase::doors_closing);
-            // Deploy applies the close policy; retract always re-stows.
-            if (_deploying) _doorSeq.close();
-            else            _doorSeq.closeFull();
-            if (_doorSeq.isComplete()) { advanceLeg(); return; }
-            break;
+            // ── strut reached: reverse if flipped, else park / close ──
+            case GearSubPhase::strut_done: {
+                if (_seekDir != _target) {                // pre-empt: head back (doors still open)
+                    setPhaseSub(movingPhase(), GearSubPhase::strut_moving);
+                    startSeek();
+                    return;
+                }
+                if (_stepMode && !_stepArmed) return;     // parked
+                _stepArmed = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_closing);
+                closeDoors();
+                if (_doorSeq.isComplete()) _legDone = true;
+                if (!_legDone) return;
+                _legDone = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_closed);
+                continue;
+            }
 
-        case Leg::Done:
-            finishCycle();
-            break;
+            // ── doors closing: reverse (re-open) if flipped, else wait ──
+            case GearSubPhase::doors_closing: {
+                if (_seekDir != _target) {                // pre-empt: re-open + reverse
+                    setPhaseSub(movingPhase(), GearSubPhase::doors_opening);
+                    reverseDoors();
+                    if (_doorSeq.isComplete()) _legDone = true;
+                    if (!_legDone) return;
+                    _legDone = false;
+                    setPhaseSub(movingPhase(), GearSubPhase::doors_open);
+                    continue;
+                }
+                if (!_legDone) return;
+                _legDone = false;
+                setPhaseSub(movingPhase(), GearSubPhase::doors_closed);
+                continue;
+            }
 
-        case Leg::None:
-        default:
-            break;
+            // ── doors closed: reverse if flipped, else settle ──
+            case GearSubPhase::doors_closed: {
+                if (_seekDir != _target) {                // pre-empt: re-open + reverse
+                    setPhaseSub(movingPhase(), GearSubPhase::doors_opening);
+                    reverseDoors();
+                    if (_doorSeq.isComplete()) _legDone = true;
+                    if (!_legDone) return;
+                    _legDone = false;
+                    setPhaseSub(movingPhase(), GearSubPhase::doors_open);
+                    continue;
+                }
+                const uint8_t settled = (_target == Target::Down) ? GearPhase::Down
+                                                                  : GearPhase::Up;
+                setPhaseSub(settled, GearSubPhase::idle);
+                SFX_LOG_INFO("[gear] %u settled → %s", _def.id, GearPhase::getName(settled));
+                return;
+            }
+
+            default: return;
+        }
     }
 }
 
-inline void Gear::advanceLeg() {
-    switch (_leg) {
-        case Leg::OpenDoors:  beginLeg(Leg::SyncDoors);  break;
-        case Leg::SyncDoors:  _atDoorsBarrier = false; beginLeg(Leg::RunMotor); break;
-        case Leg::RunMotor:   beginLeg(Leg::SyncMotor);  break;
-        case Leg::SyncMotor:  _atMotorBarrier = false; beginLeg(Leg::CloseDoors); break;
-        case Leg::CloseDoors: beginLeg(Leg::Done);       break;
-        default:              finishCycle();             break;
-    }
+// ── Coordinator predicate ────────────────────────────────────────────
+
+inline bool Gear::legComplete() const {
+    if (_phase == GearPhase::Error || _phase == GearPhase::Held) return true;  // never stall the barrier
+    if (settledAtTarget()) return true;
+    return _sub == GearSubPhase::doors_open || _sub == GearSubPhase::strut_done;
 }
 
-inline void Gear::finishCycle() {
-    _leg              = Leg::None;
-    _movingDeadlineMs = 0;
-    _atDoorsBarrier   = false;
-    _atMotorBarrier   = false;
-    setPhaseSub(_deploying ? GearPhase::Deployed : GearPhase::Retracted,
-                GearSubPhase::idle);
-    SFX_LOG_INFO("[gear] %u: cycle complete → %s", _def.id,
-                 GearPhase::getName(_state));
-}
-
-inline void Gear::enterError() {
-    if (_begin && _sendCtx) _begin(_sendCtx);
-    commandMotorBrake();
-    _doorSeq.reset();
-    _leg              = Leg::None;
-    _movingDeadlineMs = 0;
-    _atDoorsBarrier   = false;
-    _atMotorBarrier   = false;
-    setPhaseSub(GearPhase::Error, GearSubPhase::idle);
-    if (_commit && _sendCtx) _commit(_sendCtx);
-}
-
-inline void Gear::advanceBarrier() {
-    if (_atDoorsBarrier && _sub == GearSubPhase::doors_open) {
-        if (_begin && _sendCtx) _begin(_sendCtx);
-        advanceLeg();
-        if (_commit && _sendCtx) _commit(_sendCtx);
-    } else if (_atMotorBarrier && _sub == GearSubPhase::motor_done) {
-        if (_begin && _sendCtx) _begin(_sendCtx);
-        advanceLeg();
-        if (_commit && _sendCtx) _commit(_sendCtx);
-    }
-}
-
-// ── Event ingress ────────────────────────────────────────────────────
+// ── Event ingress (all funnel into pump) ─────────────────────────────
 
 inline void Gear::onServoMotionDone(uint8_t portIdx) {
-    if (_leg != Leg::OpenDoors && _leg != Leg::CloseDoors) return;
+    if (_sub != GearSubPhase::doors_opening && _sub != GearSubPhase::doors_closing) return;
     _doorSeq.onServoMotionDone(portIdx);
-    if (_doorSeq.isComplete()) {
-        if (_begin && _sendCtx) _begin(_sendCtx);
-        advanceLeg();
-        if (_commit && _sendCtx) _commit(_sendCtx);
-    }
+    if (!_doorSeq.isComplete()) return;
+    _legDone = true;
+    _doorDeadlineMs = 0;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    pump();
+    if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
 inline void Gear::onEndstopResult(uint8_t outcome) {
-    // Aborted results follow our own brake() (stop/clearError) — the phase
-    // is already set; nothing to do.
+    if (_sub != GearSubPhase::strut_moving) return;       // stray result off the motor leg
+    // We reverse a seek by re-issuing it (the role overwrites cleanly), never by
+    // braking — so an `Aborted` is not part of normal flow; ignore it.
     if (outcome == BiMotorSeekOutcome::Aborted) return;
-    if (_leg != Leg::RunMotor) return;   // stray result while not on the motor leg
-
-    if (outcome == BiMotorSeekOutcome::Timeout) {
-        SFX_LOG_WARN("[gear] %u: seek timed out — ERROR", _def.id);
-        enterError();
+    if (outcome == BiMotorSeekOutcome::NoLoad) {
+        SFX_LOG_WARN("[gear] %u: motor drew no current under load — NO MOTOR", _def.id);
+        enterError(GearError::NO_MOTOR);
         return;
     }
-    // Reached — expander already braked locally; advance to the next leg.
+    if (outcome == BiMotorSeekOutcome::Timeout) {
+        SFX_LOG_WARN("[gear] %u: seek timed out — ERROR", _def.id);
+        enterError(GearError::TIMEOUT);
+        return;
+    }
+    // Reached — expander already braked locally; advance.
+    _legDone = true;
+    _movingDeadlineMs = 0;
     if (_begin && _sendCtx) _begin(_sendCtx);
-    advanceLeg();
+    pump();
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
@@ -227,40 +246,97 @@ inline void Gear::onEndstopResult(uint8_t outcome) {
 inline void Gear::update(uint32_t nowMs) {
     if (!isCycling()) return;
 
-    // Door legs: drive the DUAL_DELAY timer; completion arrives via
-    // onServoMotionDone(), but a timer-dispatched second door + an
-    // already-settled set must still settle here.
-    if (_leg == Leg::OpenDoors || _leg == Leg::CloseDoors) {
+    // Door legs: drive the DUAL_DELAY timer + completion + the missed-event
+    // backstop (servos have no position feedback).
+    if (_sub == GearSubPhase::doors_opening || _sub == GearSubPhase::doors_closing) {
         _doorSeq.update();
-        if (_doorSeq.isComplete()) {
+        bool done = _doorSeq.isComplete();
+        if (!done && _doorDeadlineMs != 0 && (int32_t)(nowMs - _doorDeadlineMs) >= 0) {
+            SFX_LOG_WARN("[gear] %u: door leg timed out (no SERVO_MOTION_DONE) — advancing", _def.id);
+            done = true;
+        }
+        if (done) {
+            _legDone = true;
+            _doorDeadlineMs = 0;
             if (_begin && _sendCtx) _begin(_sendCtx);
-            advanceLeg();
+            pump();
             if (_commit && _sendCtx) _commit(_sendCtx);
         }
         return;
     }
 
-    // Motor leg: silent-expander backstop only (the expander's seek timeout
-    // is authoritative and arrives as ENDSTOP_RESULT(timeout)).
-    if (_leg == Leg::RunMotor) {
-        if (_movingDeadlineMs == 0) return;            // no-timeout seek
+    // Motor leg: silent-expander backstop (the seek's own timeout is
+    // authoritative and arrives as ENDSTOP_RESULT(timeout)).
+    if (_sub == GearSubPhase::strut_moving) {
+        if (_movingDeadlineMs == 0) return;
         if ((int32_t)(nowMs - _movingDeadlineMs) < 0) return;
         SFX_LOG_WARN("[gear] %u: expander silent past seek timeout — ERROR", _def.id);
-        enterError();
+        enterError(GearError::TIMEOUT);
     }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
+inline void Gear::enterError(uint8_t reason) {
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    commandMotorBrake();
+    _doorSeq.reset();
+    _legDone   = false;
+    _stepArmed = false;
+    _errorReason = reason;
+    _movingDeadlineMs = 0;
+    _doorDeadlineMs   = 0;
+    setPhaseSub(GearPhase::Error, GearSubPhase::idle);
+    if (_commit && _sendCtx) _commit(_sendCtx);
+}
+
 inline void Gear::setPhaseSub(uint8_t newPhase, uint8_t newSub) {
-    const bool changed = (_state != newPhase) || (_sub != newSub);
-    _state = newPhase;
+    const bool changed = (_phase != newPhase) || (_sub != newSub);
+    // Leaving the Error phase clears the latched reason so the next event
+    // doesn't carry a stale code.
+    if (newPhase != GearPhase::Error) _errorReason = 0;
+    _phase = newPhase;
     _sub   = newSub;
     if (changed) {
         SFX_LOG_DEBUG("[gear] %u → %s / %s", _def.id,
                       GearPhase::getName(newPhase), GearSubPhase::getName(newSub));
-        if (_phase) _phase(_phaseCtx, _def.id, newPhase, newSub);
+        if (_phaseEv) _phaseEv(_phaseCtx, _def.id, newPhase, newSub, _errorReason);
     }
+}
+
+inline void Gear::startSeek() {
+    commandGuard();                 // push the saved stall guard before seeking
+    commandSeek(seekDuty());        // toward _target
+    _seekDir = _target;
+    armMotorBackstop();
+}
+
+inline void Gear::openDoors() {
+    _doorSeq.open();
+    armDoorBackstop();
+}
+
+inline void Gear::closeDoors() {
+    if (_target == Target::Down) _doorSeq.close();       // deploy → apply close policy
+    else                         _doorSeq.closeFull();   // retract → re-stow everything
+    armDoorBackstop();
+}
+
+inline void Gear::reverseDoors() {
+    _doorSeq.reverse();             // re-open (flips the in-flight close)
+    armDoorBackstop();
+}
+
+inline void Gear::armDoorBackstop() {
+    _doorDeadlineMs = sfx_core::EffectClock::instance().nowMs()
+                    + kDoorTravelTimeoutMs + _def.doorDelayMs;
+}
+
+inline void Gear::armMotorBackstop() {
+    // Hub-side silent-expander guard: a bit beyond the seek's own timeout.
+    // 0 timeout ⇒ no backstop (seek runs until stall/abort).
+    _movingDeadlineMs = (_def.timeoutMs != 0)
+        ? (sfx_core::EffectClock::instance().nowMs() + _def.timeoutMs + 1000u) : 0;
 }
 
 inline void Gear::commandSeek(int16_t signedDuty) {
@@ -273,10 +349,30 @@ inline void Gear::commandSeek(int16_t signedDuty) {
           RolePacket::BIMOTOR_SEEK_ENDSTOP, payload, sizeof(payload));
 }
 
-inline void Gear::armBackstop(uint32_t nowMs) {
-    // Hub-side silent-expander guard: a bit beyond the seek's own timeout.
-    // 0 timeout ⇒ no backstop (seek runs until stall/abort).
-    _movingDeadlineMs = (_def.timeoutMs != 0) ? (nowMs + _def.timeoutMs + 1000u) : 0;
+inline void Gear::commandGuard() {
+    if (!_send) return;
+    // BIMOTOR_SET_GUARD payload (matches BiMotorRoleHandler::handleSetGuard):
+    //   [portIdx][mode][window_ms][a][b][c][d][ceiling_ma]  (all u16LE after mode)
+    //   mode 1 (LiveRatio): a=ratio_x100, b=sample_ms, c=inrushBlank(0=default),
+    //                       d=maxTravel(0=none); mode 0 (Fixed): a=threshold_ma.
+    uint8_t payload[14];
+    payload[0] = _def.motor.portIdx;
+    payload[1] = _def.guardMode;
+    SfxWire::putU16LE(&payload[2], _def.guardWindowMs);
+    if (_def.guardMode == 1) {
+        SfxWire::putU16LE(&payload[4], _def.guardRatioX100);
+        SfxWire::putU16LE(&payload[6], _def.guardSampleMs);
+        SfxWire::putU16LE(&payload[8], 0);     // inrushBlank → role default
+        SfxWire::putU16LE(&payload[10], 0);    // maxTravel   → none
+    } else {
+        SfxWire::putU16LE(&payload[4], _def.guardThresholdMa);
+        SfxWire::putU16LE(&payload[6], 0);
+        SfxWire::putU16LE(&payload[8], 0);
+        SfxWire::putU16LE(&payload[10], 0);
+    }
+    SfxWire::putU16LE(&payload[12], _def.guardCeilingMa);
+    _send(_sendCtx, _def.motor,
+          RolePacket::BIMOTOR_SET_GUARD, payload, sizeof(payload));
 }
 
 inline void Gear::commandMotorBrake() {

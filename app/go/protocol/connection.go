@@ -36,6 +36,33 @@ func (r *Response) IsNACK() bool      { return r.PacketType == 0xF7 } // core.Na
 func (r *Response) IsInitReady() bool  { return r.PacketType == 0xF3 } // core.InitReady
 func (r *Response) IsIdentify() bool   { return r.PacketType == 0xFE } // core.Identify
 
+// topologyRoleEventType mirrors topology.TopologyRoleEvent (0x8E) as a raw
+// byte — topology/ imports this package, so we can't import it back (cycle),
+// same reason IsACK/… hardcode their hex.  An expander role's async events
+// are relayed by the hub wrapped in this envelope.
+const topologyRoleEventType PacketType = 0x8E
+
+// unwrapRoleEventInner decodes a TOPOLOGY_ROLE_EVENT envelope
+// ([guidLen:u8][guid:str][innerType:u8][inner:N] — inner is the tail, no
+// length prefix) into a synthetic async Response carrying the inner role
+// packet, so inner-type async filters fire for an expander event the same as
+// a hub-local one (Rule 58).  Returns false on a malformed/short envelope.
+func unwrapRoleEventInner(resp *Response) (*Response, bool) {
+	p := resp.Payload
+	if len(p) < 1 {
+		return nil, false
+	}
+	glen := int(p[0])
+	if len(p) < 1+glen+1 { // guidLen + guid + innerType
+		return nil, false
+	}
+	return &Response{
+		PacketType: PacketType(p[1+glen]),
+		Tag:        TagAsync,
+		Payload:    p[2+glen:],
+	}, true
+}
+
 func (r *Response) ErrorCode() ErrorCode {
 	if r.IsNACK() && len(r.Payload) > 0 {
 		return ErrorCode(r.Payload[0])
@@ -895,6 +922,30 @@ func (c *Connection) dispatchResponse(resp *Response) {
 				c.stat.asyncDropped.Add(1)
 			}
 			return
+		}
+
+		// Rule 58 transparency: an EXPANDER role's async event arrives WRAPPED
+		// as TOPOLOGY_ROLE_EVENT (0x8E); unwrap it so a filter registered for
+		// the INNER role-packet type (e.g. BIMOTOR_ENDSTOP_RESULT) fires for an
+		// expander event exactly like a hub-local one.  Without this, a Studio
+		// awaitEndstop()/await on a gear motor that lives on a GearControl
+		// expander never receives the seek-complete event (it only filters the
+		// raw inner type) and blocks until timeout — "move/calibrate does
+		// nothing" via the hub.  The wrapper still flows to the general async
+		// path below, so OnRoleEvent telemetry consumers are unaffected.
+		if resp.PacketType == topologyRoleEventType {
+			if inner, ok := unwrapRoleEventInner(resp); ok {
+				c.waiterMu.Lock()
+				ich, iok := c.asyncFilters[inner.PacketType]
+				c.waiterMu.Unlock()
+				if iok {
+					select {
+					case ich <- inner:
+					default:
+						c.stat.asyncDropped.Add(1)
+					}
+				}
+			}
 		}
 	}
 

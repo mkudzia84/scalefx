@@ -182,6 +182,14 @@ export function GearDeploy(arg1) {
   return window['go']['main']['App']['GearDeploy'](arg1);
 }
 
+export function GearEStop(arg1) {
+  return window['go']['main']['App']['GearEStop'](arg1);
+}
+
+export function GearEStopAll() {
+  return window['go']['main']['App']['GearEStopAll']();
+}
+
 export function GearMotorCalibrate(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GearMotorCalibrate'](arg1, arg2, arg3, arg4);
 }
@@ -220,6 +228,10 @@ export function GearRetract(arg1) {
 
 export function GearStatus() {
   return window['go']['main']['App']['GearStatus']();
+}
+
+export function GearStep(arg1, arg2) {
+  return window['go']['main']['App']['GearStep'](arg1, arg2);
 }
 
 export function GearStop(arg1) {

@@ -89,17 +89,17 @@ describe('gearItemErrors', () => {
 
     it('errors for close_policy=first with fewer than 2 doors', () => {
         const g = validChannel()
-        g.doors = [{ port: { board: '', guid: '', kind: 'servo', idx: 0 }, open: 10000, close: 0 }]
+        g.doors = [{ port: { board: '', guid: '', kind: 'servo', idx: 0 } }]
         g.closePolicy = 'first'
         const ports = [motorPort(0), servoPort(0)]
         const errs = gearItemErrors([g], 0, ports)
         expect(errs.some(e => /needs 2 doors/.test(e))).toBe(true)
     })
 
-    it('uses defaultGearDoor for sane open/close defaults', () => {
+    it('defaultGearDoor is just a servo port (travel lives in calibration)', () => {
         const d = defaultGearDoor()
-        expect(d.open).toBe(10000)
-        expect(d.close).toBe(0)
         expect(d.port.kind).toBe('servo')
+        expect((d as Record<string, unknown>).open).toBeUndefined()
+        expect((d as Record<string, unknown>).close).toBeUndefined()
     })
 })

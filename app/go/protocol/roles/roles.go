@@ -804,13 +804,14 @@ func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, 
 }
 
 // BiMotorSeekOutcome mirrors the firmware enum (Reached=0, Timeout=1,
-// Aborted=2).  Surfaced via BIMOTOR_ENDSTOP_RESULT.
+// Aborted=2, NoLoad=3).  Surfaced via BIMOTOR_ENDSTOP_RESULT.
 type BiMotorSeekOutcome uint8
 
 const (
 	BiMotorOutcomeReached BiMotorSeekOutcome = 0
 	BiMotorOutcomeTimeout BiMotorSeekOutcome = 1
 	BiMotorOutcomeAborted BiMotorSeekOutcome = 2
+	BiMotorOutcomeNoLoad  BiMotorSeekOutcome = 3
 )
 
 func (o BiMotorSeekOutcome) String() string {
@@ -821,6 +822,8 @@ func (o BiMotorSeekOutcome) String() string {
 		return "timeout"
 	case BiMotorOutcomeAborted:
 		return "aborted"
+	case BiMotorOutcomeNoLoad:
+		return "no-load"
 	default:
 		return "?"
 	}

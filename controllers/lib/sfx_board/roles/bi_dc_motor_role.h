@@ -118,6 +118,14 @@ public:
     void setAbsoluteCeiling(uint16_t ceiling_mA) { _absMax_mA = ceiling_mA; }
     uint16_t absoluteCeiling() const { return _absMax_mA; }
 
+    /// No-load / open-circuit floor — during a seek, after the inrush blank, if
+    /// |I| stays below `floor_mA` continuously for the confirm window, the seek
+    /// finishes with outcome `NoLoad` (no motor / unplugged / blown output) — a
+    /// distinct fault from stall/timeout.  Default 30 mA (a driven, connected
+    /// motor always draws far more); 0 disables the check.
+    void setPresentFloor(uint16_t floor_mA) { _presentFloor_mA = floor_mA; }
+    uint16_t presentFloor() const { return _presentFloor_mA; }
+
     /// Live-ratio stall guard — tracks the TRAILING-MINIMUM running current
     /// (the free-running floor, robust to a high break-away / loaded start that
     /// would poison a fixed-window average) and trips when `|I| >= floor ×
@@ -234,6 +242,11 @@ private:
     uint16_t  _runMean_mA     = 0;        ///< live floor once armed; 0 = warming up
     uint16_t  _runMin_mA      = 0xFFFF;   ///< trailing minimum of |I| this stroke
     uint16_t  _absMax_mA      = 0;        ///< absolute over-current ceiling (0 = off)
+
+    // No-load / open-circuit detector (per-stroke).
+    uint16_t  _presentFloor_mA   = 30;    ///< |I| floor that proves a motor is connected (0 = off)
+    uint32_t  _belowFloorStartMs = 0;     ///< first tick |I| fell below the floor this stroke
+    static constexpr uint16_t kNoLoadConfirmMs = 700;  ///< sustained sub-floor → NoLoad
 
     // Position state machine (Strategy A).
     Position  _position       = Position::Unknown;

@@ -5,9 +5,9 @@
      configuration: an operator authoring a model on the bench sees every
      section from the first open, instead of a bare header):
 
-       Status row     enable toggle · live summary pills · fleet Deploy/Retract
-       1 · Control    coordination mode + the one RC up/down channel (Rule 36)
-       2 · Sounds     deploy / retract transit loops (Rule 47)
+       Status row     enable toggle · live summary pills · fleet Gear Up/Down
+       1 · Input      the one RC up/down channel + signal-loss failsafe (Rule 36)
+       2 · Sounds     coordination mode + deploy / retract transit loops (Rule 47)
        3 · Struts     one card per undercarriage leg: motor (port + drive
                       params inline), door servos (ports, positions,
                       calibration + live mirror), door sequencing + close
@@ -31,20 +31,21 @@
     import {
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
-        addGearChannel, seedDefaultGearStruts, removeGearChannel, moveGearChannel, setGearEnabled, setGearCoord, setGearDeployOnConnLoss,
+        addGearChannel, seedDefaultGearStruts, removeGearChannel, setGearEnabled, setGearCoord, setGearDeployOnConnLoss,
         updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
-        gearDeploy, gearRetract, gearStop, gearReset, gearAll,
+        gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll,
         GearAllDeploy, GearAllRetract,
         type GearConfigT, type GearChannelT, type CoordMode,
-        type PortRefT,
+        type PortRefT, type GearPhaseT,
     } from '../gear'
     import {
         deviceModel, liveChannels, liveChannelKey,
         type Port, RoleKind,
     } from '../devicemodel'
     import { effectClaims } from '../effect-claims'
+    import { connectionInfo } from '../stores'
     import { pickFile } from '../filepicker'
     import { freePortPool } from '../components/port_pool'
     import { portRefToKey, modelPortKey, parsePortKey as parsePortKeyRaw, refOptLabel } from '../components/port_keys'
@@ -97,6 +98,19 @@
     $: hasErrors = $gearHasErrors
     $: enabled   = !!cfg?.enabled
 
+    // Re-poll config + live phase the instant the device (re)connects, so the
+    // strut pills don't sit on a stale "unknown" from a previous session until
+    // the 1.5 s timer next fires (the "UI shows Unknown while the board is gear
+    // up" report — the panel had cached the pre-connect state).
+    let wasConnected = false
+    $: if ($connectionInfo.connected && !wasConnected) {
+        wasConnected = true
+        loadGearConfig().catch(() => {})
+        refreshGearStatus().catch(() => {})
+    } else if (!$connectionInfo.connected) {
+        wasConnected = false
+    }
+
     // ─── Live fleet summary (status row) ─────────────────────────────
     $: strutCount = cfg?.gears.length ?? 0
     $: anyMoving  = (cfg?.gears ?? []).some(g => {
@@ -104,10 +118,22 @@
         return p === 2 || p === 4          // deploying / retracting
     })
     $: anyErrored = (cfg?.gears ?? []).some(g => $gearPhases[g.id]?.phase === 5)
-    $: allDeployed  = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 1) === 3)
-    $: allRetracted = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 1) === 1)
-    $: fleetText = anyErrored ? 'ERROR' : anyMoving ? 'moving' :
-                   allDeployed ? 'deployed' : allRetracted ? 'retracted' : 'mixed'
+    $: allDeployed  = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 6) === 3)
+    $: allRetracted = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.phase ?? 6) === 1)
+    $: anyHeld    = (cfg?.gears ?? []).some(g => $gearPhases[g.id]?.phase === 7)
+    $: fleetMovingDown = (cfg?.gears ?? []).some(g => $gearPhases[g.id]?.phase === 2)
+    $: fleetMovingUp   = (cfg?.gears ?? []).some(g => $gearPhases[g.id]?.phase === 4)
+    $: allUnknown   = strutCount > 0 && (cfg?.gears ?? []).every(g => {
+        const p = $gearPhases[g.id]?.phase ?? 6; return p === 6 || p === 0
+    })
+    // Master status vocabulary is the gear-up/gear-down language (directional
+    // while in transit): error · held · lowering/raising · gear down · gear up
+    // · unknown (boot, position unestablished) · mixed (genuinely split).
+    $: fleetText = anyErrored ? 'error' : anyHeld ? 'held'
+                 : anyMoving ? (fleetMovingDown && !fleetMovingUp ? 'lowering'
+                              : fleetMovingUp && !fleetMovingDown ? 'raising' : 'moving')
+                 : allDeployed ? 'gear down' : allRetracted ? 'gear up'
+                 : allUnknown ? 'unknown' : 'mixed'
 
     // Port-picker helpers (Rule 34/49) — portRefToKey/modelPortKey/refOptLabel
     // come straight from port_keys.  parsePortKey there returns PortRefLike
@@ -202,37 +228,163 @@
     }
 
     // ─── Coordination ────────────────────────────────────────────────
+    // Two modes only (kept deliberately simple): Independent or Full-sync.
     const coordOptions: { id: CoordMode; label: string; hint: string }[] = [
         { id: 'independent', label: 'Independent', hint: 'each strut deploys/retracts on its own — no cross-strut sync.' },
-        { id: 'door_sync',   label: 'Door-sync',   hint: 'all struts open their doors together, then run motors independently.' },
-        { id: 'full_sync',   label: 'Full-sync',   hint: 'all struts move in lockstep: doors open together, motors run together, doors close together.' },
-        { id: 'sequenced',   label: 'Sequenced',   hint: 'one strut runs its full cycle, then the next — card order, top to bottom (reorder with ↑/↓).' },
+        { id: 'full_sync',   label: 'Full-sync',   hint: 'all struts move in lockstep: doors open together, then struts run together, then doors close together.' },
     ]
-    $: coordHint = coordOptions.find(o => o.id === cfg?.coord)?.hint ?? ''
+    // Legacy configs may still carry door_sync/sequenced — fold them onto the
+    // nearest surviving mode so the segmented toggle always has a selection.
+    $: if (cfg && (cfg.coord === 'door_sync' || cfg.coord === 'sequenced')) {
+        setGearCoord(cfg.coord === 'sequenced' ? 'independent' : 'full_sync')
+    }
 
     // ─── Live phase pill ─────────────────────────────────────────────
     function phaseClass(p: number | undefined): string {
         switch (p) {
-            case 1: return 'phase-retracted'
-            case 2: return 'phase-deploying'
-            case 3: return 'phase-deployed'
-            case 4: return 'phase-retracting'
+            case 1: return 'phase-retracted'   // gear up
+            case 2: return 'phase-deploying'   // lowering
+            case 3: return 'phase-deployed'    // gear down
+            case 4: return 'phase-retracting'  // raising
             case 5: return 'phase-error'
-            default: return 'phase-unknown'
+            case 7: return 'phase-held'        // emergency-held
+            default: return 'phase-unknown'    // 0 unconfigured / 6 unknown
         }
     }
-    function pillText(id: number): string {
-        const ph = $gearPhases[id]
-        if (!ph) return 'Retracted'
-        const sub = (ph.subPhase && ph.subPhase !== 0) ? ` · ${ph.subPhaseName}` : ''
-        return `${ph.phaseName}${sub}`
+    // pillText / lifecycle / doorStatus / strutActions are PURE — they take the
+    // phase OBJECT (or its numeric phase), never read $gearPhases inside.  This
+    // is load-bearing for reactivity: Svelte tracks template deps syntactically,
+    // so a helper that read the store internally (the old pillText(id)/phaseOf)
+    // would NOT re-run when $gearPhases changed (the "pill + buttons stale while
+    // the lifecycle caption updates" bug).  Always pass $gearPhases[id] in.
+    function pillText(phT: GearPhaseT | undefined): string {
+        if (!phT) return 'unknown'
+        if (phT.phase === 5) {                       // ERROR — surface the reason
+            return phT.errReasonTag ? `error · ${phT.errReasonTag}` : 'error'
+        }
+        const sub = (phT.subPhase && phT.subPhase !== 0) ? ` · ${phT.subPhaseName}` : ''
+        return `${phT.phaseName}${sub}`
     }
-    function isDeployed(id: number): boolean {
-        const ph = $gearPhases[id]?.phase
-        return ph === 2 || ph === 3
+
+    // ─── Per-strut phase introspection (items 2/3/5) ─────────────────
+    // Phase bytes: 0 unconfig · 1 up · 2 movingDown · 3 down · 4 movingUp
+    //              5 error · 6 unknown · 7 held.
+    const isMoving  = (p: number) => p === 2 || p === 4
+    const isHeld    = (p: number) => p === 7
+    const isUnknown = (p: number) => p === 6 || p === 0
+    const isDownP   = (p: number) => p === 3
+
+    // ─── Lifecycle strip (item 2): the symmetric transit as 3 macro stages
+    //     (Doors → Strut → Doors).  Each segment is done / active / pending
+    //     from the live sub-phase, so the operator SEES whether the strut is
+    //     in a door action or the strut action.  Sub-phase bytes:
+    //       1 doors-opening · 2 doors-open · 3 strut-moving
+    //       4 strut-done · 5 doors-closing · 6 doors-closed.
+    type StageState = 'done' | 'active' | 'pending' | 'idle'
+    interface LifeStage { label: string; state: StageState }
+    function lifecycle(ph: GearPhaseT | undefined, hasDoors: boolean): { dir: string; stages: LifeStage[]; caption: string } {
+        const sub = ph?.subPhase ?? 0
+        const p   = ph?.phase ?? 6
+        const dir = p === 2 ? 'lowering' : p === 4 ? 'raising'
+                  : p === 3 ? 'gear down' : p === 1 ? 'gear up'
+                  : p === 7 ? 'held' : p === 5 ? 'error' : 'unknown'
+        // Map the sub-phase position onto [open, strut, close] progress.
+        const rank: Record<number, number> = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6 }
+        const r = rank[sub] ?? 0
+        const seg = (afterDone: number, activeAt: number[]): StageState => {
+            if (!isMoving(p)) return 'idle'
+            if (activeAt.includes(sub)) return 'active'
+            return r > afterDone ? 'done' : 'pending'
+        }
+        // A doorless strut has no door legs — show just the strut stage so the
+        // strip doesn't imply doors that aren't configured.
+        const stages: LifeStage[] = hasDoors
+            ? [
+                { label: 'Doors',  state: seg(2, [1]) },    // doors-opening active; done once open
+                { label: 'Strut',  state: seg(4, [3]) },    // strut-moving active; done once strut-done
+                { label: 'Doors',  state: seg(6, [5]) },    // doors-closing active; done once closed
+              ]
+            : [
+                { label: 'Strut',  state: seg(4, [3]) },
+              ]
+        const caption = isMoving(p)
+            ? (ph?.subPhaseName ?? '')
+            : (p === 5 ? (ph?.errReasonTag ? `error — ${ph.errReasonTag}` : 'error')
+              : p === 7 ? 'held — resume up or down'
+              : p === 6 || p === 0 ? 'position unknown — command to home'
+              : dir)
+        return { dir, stages, caption }
     }
-    function isErrored(id: number): boolean {
-        return $gearPhases[id]?.phase === 5
+
+    // ─── Door status (request) ───────────────────────────────────────
+    // Inferred from the live sub-phase (which directly reflects door state in
+    // transit) + the settled phase + the close policy at rest.  Returns null
+    // for a strut with no doors configured.
+    interface DoorStat { label: string; state: 'open' | 'closed' | 'moving' | 'unknown' }
+    function doorStatus(gch: GearChannelT, phT: GearPhaseT | undefined): DoorStat | null {
+        if (!gch.doors || gch.doors.length === 0) return null
+        const sub = phT?.subPhase ?? 0
+        const p   = phT?.phase ?? 6
+        switch (sub) {
+            case 1: return { label: 'opening', state: 'moving' }
+            case 5: return { label: 'closing', state: 'moving' }
+            case 2: case 3: case 4: return { label: 'open', state: 'open' }
+            case 6: return { label: 'closed', state: 'closed' }
+        }
+        // Settled (sub === idle).
+        if (p === 1) return { label: 'closed', state: 'closed' }          // gear up → stowed
+        if (p === 3) {                                                     // gear down → close policy
+            if (gch.closePolicy === 'none')  return { label: 'open', state: 'open' }
+            if (gch.closePolicy === 'first') return { label: 'part-open', state: 'open' }
+            return { label: 'closed', state: 'closed' }
+        }
+        return { label: '—', state: 'unknown' }                           // unknown / held / error
+    }
+
+    // ─── Context-aware strut actions (item 5) ────────────────────────
+    // The buttons + labels follow where the strut IS in its cycle:
+    //   moving  → Hold + Reverse (the other direction)
+    //   held    → Resume Down / Resume Up (both offered — position uncertain)
+    //   error   → Retry Down / Retry Up (deploy/retract auto-clear the fault)
+    //   settled → the single opposite-direction toggle (Gear Up / Gear Down)
+    // `gate` = this action runs a full cycle from the LOADED config, so it's
+    // blocked while the draft is dirty / invalid (Rule 35/48).  Emergency-safe
+    // actions (hold, reverse, raise, resume/retry) are never gated.
+    interface ActBtn { label: string; title: string; danger?: boolean; gate?: boolean; fn: () => void }
+    function strutActions(id: number, p: number): ActBtn[] {
+        const deploy  = () => safe(() => gearDeploy(id))
+        const retract = () => safe(() => gearRetract(id))
+        const hold    = () => safe(() => gearStop(id))
+        if (isMoving(p)) {
+            const reversingDown = p === 4   // currently raising → reverse lowers
+            return [
+                { label: reversingDown ? '↺ Reverse ▼' : '↺ Reverse ▲',
+                  title: 'Reverse mid-cycle — the strut pre-empts and heads the other way (doors/strut reverse cleanly).',
+                  fn: reversingDown ? deploy : retract },
+                { label: '⏸ Hold', danger: true,
+                  title: 'Hold in place — brake the motor + freeze the doors (position uncertain). Resume with Up/Down.',
+                  fn: hold },
+            ]
+        }
+        if (isHeld(p)) {
+            return [
+                { label: '▼ Resume Down', title: 'Resume from the held position toward gear down.', fn: deploy },
+                { label: '▲ Resume Up',   title: 'Resume from the held position toward gear up.',   fn: retract },
+            ]
+        }
+        if (p === 5) {   // error — deploy/retract auto-clear the fault + retry
+            return [
+                { label: '↻ Retry Down', title: 'Clear the fault and drive toward gear down.', fn: deploy },
+                { label: '↻ Retry Up',   title: 'Clear the fault and drive toward gear up.',   fn: retract },
+            ]
+        }
+        // Settled (up / down / unknown): one opposite-direction toggle.
+        if (isDownP(p)) {
+            return [{ label: '▲ Gear Up', danger: true, title: 'Raise this strut (always available).', fn: retract }]
+        }
+        return [{ label: '▼ Gear Down', gate: true,
+                 title: 'Lower this strut: open doors → run motor down → close doors. Apply edits first (runs the loaded config).',
+                 fn: deploy }]
     }
 
     // ─── Field setters ───────────────────────────────────────────────
@@ -247,22 +399,36 @@
     function setMotorPort(id: number, port: PortRefT) {
         updateGearChannel(id, g => ({ ...g, motor: port }))
     }
+    // Deploy DIRECTION — which way the H-bridge drives to LOWER the gear.
+    // The firmware contract stays signed deploy/retract duties; the toggle
+    // only flips their SIGN, preserving each magnitude (the working duty is
+    // tuned in Calibrate).  forward = deploy positive / retract negative.
+    function motorForward(g: GearChannelT): boolean { return (g.deployDuty ?? 0) >= 0 }
+    function setMotorDirection(id: number, forward: boolean) {
+        updateGearChannel(id, g => {
+            const dMag = Math.abs(g.deployDuty) || 20000
+            const rMag = Math.abs(g.retractDuty) || dMag
+            return { ...g, deployDuty: forward ? dMag : -dMag, retractDuty: forward ? -rMag : rMag }
+        })
+    }
     function setDoorPort(id: number, idx: number, port: PortRefT) {
         updateGearChannel(id, g => ({ ...g, doors: g.doors.map((d, i) => i === idx ? { ...d, port } : d) }))
     }
-    function setDoorNorm(id: number, idx: number, which: 'open' | 'close', val: number) {
-        const v = Math.max(0, Math.min(10000, Math.round(val || 0)))
-        updateGearChannel(id, g => ({ ...g, doors: g.doors.map((d, i) => i === idx ? { ...d, [which]: v } : d) }))
-    }
     function onPickMotor(id: number, e: Event) {
-        const k = selValue(e); if (k) setMotorPort(id, parsePortKey(k, 'hbridge'))
+        // No `if (k)` guard: picking the blank "— pick a gear motor —" option
+        // (value="") MUST clear the motor.  parsePortKey('', 'hbridge') returns
+        // the same unselected sentinel a fresh strut uses (emptyPort('hbridge')
+        // = {guid:'', kind:'hbridge', idx:0}), so the previously-claimed port is
+        // released and reappears in every sibling picker (Rule 49).  Matches the
+        // door picker, which already clears this way.
+        setMotorPort(id, parsePortKey(selValue(e), 'hbridge'))
     }
     function onPickDoor(id: number, e: Event) {
         const k = selValue(e); if (k) { addGearDoorWithPort(id, parsePortKey(k, 'servo')); resetSelect(e) }
     }
     function addGearDoorWithPort(id: number, port: PortRefT) {
         updateGearChannel(id, g => g.doors.length >= 2 ? g
-            : ({ ...g, doors: [...g.doors, { port, open: 10000, close: 0 }] }))
+            : ({ ...g, doors: [...g.doors, { port }] }))
     }
 
     async function safe(fn: () => Promise<void>) {
@@ -294,8 +460,9 @@
             deployDuty: gch.deployDuty,
             retractDuty: gch.retractDuty,
             timeoutMs: gch.timeoutMs,
-            onCommit: ({ deployDuty, retractDuty, timeoutMs }) => {
-                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs }))
+            guard: gch.guard,    // seed the dialog from the strut's saved guard
+            onCommit: ({ deployDuty, retractDuty, timeoutMs, guard }) => {
+                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs, guard }))
             },
         }).catch(e => { error = String(e) })
     }
@@ -304,151 +471,205 @@
 <div class="card gear-card">
     <div class="card-header">
         <h3>Gear / Undercarriage</h3>
-        <div class="header-actions">
-            <!-- Enable is a deliberate ACTION (Rule 45).  It gates OPERATION
-                 (deploy/retract + the RC channel firing); configuration below
-                 stays editable either way so a bench setup can be authored
-                 before the first enable. -->
-            <button class="small state-toggle" class:state-on={enabled}
-                    on:click={() => setGearEnabled(!enabled)} disabled={busy}
-                    title={enabled ? 'Effect enabled — Apply pushes it; firmware attaches the motor + door roles.'
-                                   : 'Effect disabled — configuration is kept but nothing deploys. Click to enable.'}>
-                {enabled ? '✓ Enabled' : '▶ Disabled'}
-            </button>
-            <button class="small" on:click={() => addGearChannel()} disabled={busy}
-                    title="Add an undercarriage strut (nose, main left, main right, …) — each binds one gear motor + up to two door servos.">
-                + Add strut
-            </button>
-        </div>
     </div>
 
     {#if error}<div class="banner err">{error}</div>{/if}
 
-    <!-- Status row (Engine pattern): live fleet summary + the ONE global
-         deploy/retract trigger.  ON→OFF (retract) always available
-         (emergency); OFF→ON gated on clean config (Rule 35/48). -->
+    <!-- Master enable (GunFx/Engine pattern): the toggle gates the WHOLE
+         subsystem — when off the tab body is hidden and nothing deploys (the
+         radio is ignored too); when on, control + the RC channel are live. -->
     <div class="status-row">
         <div class="status">
-            <span class="status-label">Fleet</span>
-            <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : 'phase-retracted'}">
-                {strutCount === 0 ? 'no struts' : fleetText}
-            </span>
-            {#if strutCount > 0}<span class="hint compact">{strutCount} strut{strutCount === 1 ? '' : 's'} · {cfg?.coord?.replace('_', '-')}</span>{/if}
-            {#if !enabled}<span class="hint compact warn">disabled — configuration only</span>{/if}
+            {#if enabled}
+                <span class="status-label">Undercarriage Set</span>
+                <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : 'phase-retracted'}">
+                    {strutCount === 0 ? 'no struts' : fleetText}
+                </span>
+                {#if strutCount > 0}<span class="hint compact">{strutCount} strut{strutCount === 1 ? '' : 's'} · {cfg?.coord?.replace('_', '-')}</span>{/if}
+            {/if}
         </div>
         <div class="controls">
-            <button class="small state-toggle"
-                    on:click={() => safe(() => gearAll(GearAllDeploy))}
-                    disabled={busy || dirty || hasErrors || !enabled || strutCount === 0}
-                    title={dirty ? 'Apply changes first — fleet deploy runs the LOADED firmware config'
-                         : hasErrors ? 'Resolve validation errors first'
-                         : !enabled ? 'Enable the effect first'
-                         : strutCount === 0 ? 'Add a strut first'
-                         : 'Deploy every strut (GEAR_ALL deploy)'}>
-                ▶ Deploy all
+            <button class="small state-toggle" class:state-on={enabled}
+                    on:click={() => setGearEnabled(!enabled)} disabled={busy}
+                    title={enabled ? 'Gear subsystem ENABLED — Apply to push. Disable to turn the whole undercarriage off (radio + control).'
+                                   : 'Gear subsystem DISABLED — nothing deploys and the radio is ignored. Click to enable, then Apply.'}>
+                {enabled ? '✓ Enabled' : '▶ Disabled'}
             </button>
-            <button class="small state-toggle danger"
-                    on:click={() => safe(() => gearAll(GearAllRetract))}
-                    disabled={busy || strutCount === 0}
-                    title="Retract every strut (GEAR_ALL retract) — always available (emergency cutoff)">
-                ■ Retract all
-            </button>
+            {#if enabled}
+                <span class="ctrl-sep" aria-hidden="true"></span>
+                <button class="small" on:click={() => addGearChannel()} disabled={busy}
+                        title="Add a landing strut (nose, main left, main right, …) — each binds one gear motor + up to two door servos.">
+                    + Add landing strut
+                </button>
+            {/if}
         </div>
     </div>
 
-    <!-- ═══ 1 · Control ════════════════════════════════════════════════ -->
-    <div class="section-head">
-        Control
-        <span class="hint">how the whole set is commanded — coordination across struts + the one RC up/down channel.</span>
-    </div>
-    <!-- Mode choice ≤4 options → segmented toggle (Rule 60.3). -->
-    <div class="form-row">
-        <span class="field-label">Coordination</span>
-        <div class="seg-select">
-            {#each coordOptions as o}
-                <button class="seg" class:on={cfg?.coord === o.id}
-                        on:click={() => setGearCoord(o.id)} disabled={busy}
-                        title={o.hint}>{o.label}</button>
-            {/each}
-        </div>
-    </div>
-    <div class="form-row"><span class="field-label"></span><span class="hint">{coordHint}</span></div>
-
-    <!-- item 6: emergency deploy on input connection loss -->
-    <div class="form-row">
-        <span class="field-label">On signal loss</span>
-        <button class="small state-toggle" class:state-on={cfg?.deployOnConnectionLoss}
-                on:click={() => setGearDeployOnConnLoss(!cfg?.deployOnConnectionLoss)} disabled={busy}
-                title={cfg?.deployOnConnectionLoss
-                    ? 'Enabled: if an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. Click to disable.'
-                    : 'Disabled: input link loss does not auto-deploy. Click to enable emergency deploy on connection loss.'}>
-            {cfg?.deployOnConnectionLoss ? '✓ Emergency deploy' : '○ Ignore link loss'}
-        </button>
-        <span class="hint">deploys the whole set if the input link (UART) drops — distinct from the per-channel RC-loss failsafe.</span>
-    </div>
-
-    <!-- RC up/down channel (Rule 36 cluster + Rule 43 named inputs).  One
-         switch drives the WHOLE undercarriage: above the threshold retracts
-         (gear up), below deploys; Invert flips.  Firmware failsafe always
-         deploys on RC loss. -->
-    <ChannelToggleCluster
-        channelLabel="Up/down channel"
-        emptyOption="— manual only —"
-        options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
-        inputId={cfg?.input?.name ?? ''}
-        thresholdUs={cfg?.input?.thresholdUs ?? 1500}
-        hysteresisUs={cfg?.input?.hysteresisUs ?? 50}
-        liveUs={liveUs?.us ?? null}
-        liveValid={liveUs?.valid ?? false}
-        busy={busy}
-        actionVerb={cfg?.input?.invert ? 'Deploys' : 'Retracts'}
-        onChange={(n) => updateGearInput(i => ({
-            ...i, name: n.inputId,
-            thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
-        }))} />
-    {#if cfg?.input?.name}
-        <div class="form-row">
-            <span class="field-label">Direction</span>
-            <button class="small state-toggle" class:state-on={cfg.input.invert}
-                    on:click={() => updateGearInput(i => ({ ...i, invert: !i.invert }))}
-                    disabled={busy}
-                    title={cfg.input.invert
-                        ? 'Inverted: above the threshold DEPLOYS (gear down). Click for normal.'
-                        : 'Normal: above the threshold RETRACTS (gear up). Click to invert.'}>
-                {cfg.input.invert ? '↑ high = deploy' : '↑ high = retract'}
-            </button>
-            <span class="hint">RC-loss failsafe always lowers the gear, whichever direction you pick.</span>
-        </div>
-    {:else if chanOpts.length === 0}
-        <div class="form-row"><span class="field-label"></span>
-            <span class="hint warn">No named input channels — name one in /hubfx.yaml's inputs (IO tab) to drive the gear from the radio.</span>
+    {#if !enabled}
+        <div class="empty-state">
+            <p><strong>Gear / Undercarriage is disabled.</strong></p>
+            <p>Toggle <b>▶ Disabled → ✓ Enabled</b> above (then Apply) to configure and control the
+               undercarriage — deploy/retract, doors, and the RC up/down channel. While disabled the
+               whole subsystem is off and the radio is ignored.</p>
         </div>
     {/if}
 
-    <!-- ═══ 2 · Transit sounds ═════════════════════════════════════════ -->
-    <div class="section-head" class:section-error={soundsHaveErrors}>
-        Transit sounds
-        <span class="hint">optional — the matching WAV loops on the dedicated Gear audio channel while any strut is moving, and stops when the set settles.</span>
-        {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
-    </div>
-    {#each ['deploy', 'retract'] as f}
-        <SoundRow
-            label={f}
-            placeholder={'/sounds/…  (optional)'}
-            value={cfg?.sounds?.[f] ?? ''}
-            outputMask={cfg?.sounds?.outputMask ?? 3}
-            busy={busy}
-            required={false}
-            error={soundErrors[f]}
-            onPathChange={(v) => { updateGearSounds(s => ({ ...s, [f]: v })); scheduleValidate() }}
-            onMaskChange={(m) => updateGearSounds(s => ({ ...s, outputMask: m }))}
-            onBrowse={() => browseSound(f)}
-            onClear={() => clearSound(f)} />
-    {/each}
+  {#if enabled}
+    <!-- ═══ Top split: LEFT = Input group (RC up/down channel + signal-loss
+         failsafe) · RIGHT = Undercarriage Control (single column) above the
+         transition sounds.  Struts config spans full width below. ═══ -->
+    <div class="two-col gear-top-cols">
+      <div class="col">
+        <!-- ═══ Input (LEFT) — framed group: channel on top, signal-loss below. ═══ -->
+        <div class="section-head">
+            Input
+            <span class="hint">how the set is commanded from the radio — the RC up/down channel and the signal-loss failsafe. Pick a channel + Apply to drive the gear from the stick.</span>
+        </div>
+        <div class="sub-frame">
+            <!-- RC up/down (Rule 36 cluster + Rule 43 named inputs): one switch
+                 drives the WHOLE set; firmware failsafe always deploys on RC loss. -->
+            <ChannelToggleCluster
+                channelLabel="Up/down channel"
+                emptyOption="— manual only —"
+                options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                inputId={cfg?.input?.name ?? ''}
+                thresholdUs={cfg?.input?.thresholdUs ?? 1500}
+                hysteresisUs={cfg?.input?.hysteresisUs ?? 50}
+                liveUs={liveUs?.us ?? null}
+                liveValid={liveUs?.valid ?? false}
+                busy={busy}
+                actionVerb="Lowers"
+                onChange={(n) => updateGearInput(i => ({
+                    ...i, name: n.inputId,
+                    thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
+                }))} />
+            {#if cfg?.input?.name}
+                <div class="form-row">
+                    <span class="hint">switch ON (above threshold) lowers the gear, OFF (below) raises it — flip the channel ON THE RADIO if it's reversed. RC-loss always lowers the gear.</span>
+                </div>
+            {:else if chanOpts.length === 0}
+                <div class="form-row"><span class="field-label"></span>
+                    <span class="hint warn">No named input channels — name one in /hubfx.yaml's inputs (IO tab) to drive the gear from the radio.</span>
+                </div>
+            {/if}
 
-    <!-- ═══ 3 · Struts ═════════════════════════════════════════════════ -->
+            <div class="form-row">
+                <span class="field-label">On signal loss</span>
+                <button class="small state-toggle" class:state-on={cfg?.deployOnConnectionLoss}
+                        on:click={() => setGearDeployOnConnLoss(!cfg?.deployOnConnectionLoss)} disabled={busy}
+                        title={cfg?.deployOnConnectionLoss
+                            ? 'Enabled: if an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. Click to disable.'
+                            : 'Disabled: input link loss does not auto-deploy. Click to enable emergency deploy on connection loss.'}>
+                    {cfg?.deployOnConnectionLoss ? '✓ Emergency deploy' : '○ Ignore link loss'}
+                </button>
+                <span class="hint">deploys the whole set if the input link (UART) drops — distinct from the per-channel RC-loss failsafe.</span>
+            </div>
+        </div>
+      </div><!-- /col — Input (left) -->
+
+      <div class="col">
+        <!-- ═══ Undercarriage Control (single column) — the command surface:
+             fleet row (sync mode + Gear Up/Down) + one compact row per strut.
+             Sits ABOVE the transition sounds in the right column. ═══ -->
+        {#if strutCount > 0}
+        <div class="section-head">
+            Undercarriage Control
+            <span class="hint">live state + manual control. Runs the LOADED config — Apply edits first.</span>
+        </div>
+        <div class="ctl-frame ctl-single">
+            <!-- Fleet row (single line): All struts + state + Gear Up/Down/E-Stop. -->
+            <div class="sctl-row fleet">
+                <div class="sctl-id">
+                    <span class="sctl-name">All struts</span>
+                    <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : allRetracted ? 'phase-retracted' : 'phase-unknown'}">{fleetText}</span>
+                </div>
+                <div class="sctl-acts">
+                    <button class="small state-toggle" on:click={() => safe(() => gearAll(GearAllDeploy))}
+                            disabled={busy || dirty || hasErrors}
+                            title={dirty ? 'Apply your edits first — fleet deploy runs the LOADED config'
+                                 : hasErrors ? 'Resolve validation errors first'
+                                 : 'Lower every strut (GEAR_ALL deploy).'}>▼ Gear Down</button>
+                    <button class="small state-toggle danger" on:click={() => safe(() => gearAll(GearAllRetract))}
+                            disabled={busy}
+                            title="Raise the whole undercarriage — always available (emergency cutoff).">▲ Gear Up</button>
+                    <button class="small danger estop" on:click={() => safe(() => gearEStopAll())}
+                            disabled={busy}
+                            title="EMERGENCY STOP — brake every motor + freeze the doors. Resume with Gear Up/Down.">⏹ E-Stop</button>
+                </div>
+            </div>
+            <!-- Sync mode — its own row, under All struts. -->
+            <div class="sctl-row sync-row">
+                <span class="sctl-name">Sync</span>
+                <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
+                    {#each coordOptions as o}
+                        <button class="seg" class:on={cfg?.coord === o.id}
+                                on:click={() => setGearCoord(o.id)} disabled={busy}
+                                title={o.hint}>{o.label}</button>
+                    {/each}
+                </div>
+            </div>
+            <!-- Per-strut STATUS rows (read-only): name + phase on the left,
+                 the door + lifecycle status right-aligned.  Manual control of a
+                 single strut lives in its config-card header below. -->
+            {#each cfg.gears as gch (gch.id)}
+                {@const chanErrors = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports).length > 0}
+                {@const phT        = $gearPhases[gch.id]}
+                {@const ph         = phT?.phase ?? 6}
+                {@const errored    = ph === 5}
+                {@const life       = lifecycle(phT, gch.doors.length > 0)}
+                {@const order      = cfg.gears.findIndex(g => g.id === gch.id)}
+                {@const doors      = doorStatus(gch, phT)}
+                <div class="sctl-row status-only" class:invalid={chanErrors}>
+                    <div class="sctl-id">
+                        <span class="sctl-name">{gch.name || `Strut ${order + 1}`}</span>
+                        <span class="state-pill phase {phaseClass(ph)}">{pillText(phT)}</span>
+                    </div>
+                    <div class="sctl-status">
+                        {#if doors}
+                            <span class="door-chip door-{doors.state}" title="Door state: {doors.label}">⌂ {doors.label}</span>
+                        {/if}
+                        <div class="sctl-life lifecycle" class:held={isHeld(ph)} class:errored={errored} class:unknown={isUnknown(ph)}>
+                            <div class="life-stages">
+                                {#each life.stages as st, si}
+                                    {#if si > 0}<span class="life-arrow">▸</span>{/if}
+                                    <span class="life-stage {st.state}">{st.label}</span>
+                                {/each}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            {/each}
+        </div>
+        {/if}
+
+        <!-- ═══ Transition sounds — below the control group in the right col. ═══ -->
+        <div class="section-head" class:section-error={soundsHaveErrors}>
+            Transition sounds
+            <span class="hint">optional — the matching WAV loops on the dedicated Gear audio channel while any strut is moving, and stops when the set settles.</span>
+            {#if soundsHaveErrors}<span class="section-err-tag">missing files</span>{/if}
+        </div>
+        <div class="sub-frame">
+            {#each ['deploy', 'retract'] as f}
+                <SoundRow
+                    label={f}
+                    placeholder={'/sounds/…  (optional)'}
+                    value={cfg?.sounds?.[f] ?? ''}
+                    outputMask={cfg?.sounds?.outputMask ?? 3}
+                    busy={busy}
+                    required={false}
+                    error={soundErrors[f]}
+                    onPathChange={(v) => { updateGearSounds(s => ({ ...s, [f]: v })); scheduleValidate() }}
+                    onMaskChange={(m) => updateGearSounds(s => ({ ...s, outputMask: m }))}
+                    onBrowse={() => browseSound(f)}
+                    onClear={() => clearSound(f)} />
+            {/each}
+        </div>
+      </div><!-- /col — Control + Transition sounds (right) -->
+    </div><!-- /two-col gear-top-cols -->
+
+    <!-- ═══ Landing struts — FULL width, spanning both columns above ═══ -->
     <div class="section-head">
-        Struts
+        Landing struts
         <span class="hint">one card per undercarriage leg — gear motor, door servos and their sequencing.</span>
     </div>
 
@@ -481,43 +702,32 @@
         {@const motorPoolEmpty= motorOpts.length === 0 && (!gch.motor || !gch.motor.kind)}
         {@const doorAddPool  = doorPool($deviceModel.ports, xClaims, usedDoors, null)}
         {@const doorPoolEmpty= doorAddPool.length === 0 && gch.doors.length === 0}
-        {@const deployed     = isDeployed(gch.id)}
-        {@const errored      = isErrored(gch.id)}
         {@const order        = cfg.gears.findIndex(g => g.id === gch.id)}
+        {@const phT          = $gearPhases[gch.id]}
+        {@const ph           = phT?.phase ?? 6}
+        {@const errored      = ph === 5}
+        {@const gated        = busy || dirty || chanErrors}
+        {@const acts         = strutActions(gch.id, ph)}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
-                <h4>
-                    {#if cfg.coord === 'sequenced'}<span class="seq-badge" title="Sequenced order — cards run top-to-bottom; this strut cycles in slot {order + 1}.">#{order + 1}</span>{/if}
-                    {gch.name || `Strut ${order + 1}`}
-                </h4>
+                <h4>{gch.name || `Landing Strut ${order + 1}`}</h4>
                 <div class="header-actions">
-                    <span class="state-pill phase {phaseClass($gearPhases[gch.id]?.phase ?? 1)}">{pillText(gch.id)}</span>
-                    {#if errored}
-                        <button class="small" on:click={() => safe(() => gearReset(gch.id))} disabled={busy}
-                                title="Clear the error state (ERROR → Retracted) so deploy/retract are accepted again.">
-                            ⟳ Reset
-                        </button>
+                    <!-- Per-strut manual control (context-aware: Gear Up/Down ·
+                         Hold · Reverse · Resume · Retry) — the singular control. -->
+                    <span class="state-pill phase {phaseClass(ph)} pill-compact">{pillText(phT)}</span>
+                    {#if chanErrors}
+                        <span class="hint err compact" title={issues.join(' ')}>⚠ fix config</span>
+                    {:else}
+                        {#each acts as a}
+                            <button class="small state-toggle" class:danger={a.danger}
+                                    on:click={a.fn} disabled={busy || (a.gate && gated)}
+                                    title={a.gate && dirty ? 'Apply your edits first — runs the LOADED config' : a.title}>{a.label}</button>
+                        {/each}
+                        {#if errored}
+                            <button class="small" on:click={() => safe(() => gearReset(gch.id))} disabled={busy}
+                                    title="Clear the error without moving (ERROR → unknown). Deploy/Retract also clear it automatically.">⟳ Reset</button>
+                        {/if}
                     {/if}
-                    <!-- Per-strut op-cluster (Rule 48): bench-test this leg
-                         alone.  ON→OFF (retract) always allowed; OFF→ON gated. -->
-                    <button class="small state-toggle" class:danger={deployed}
-                            on:click={() => safe(() => (deployed ? gearRetract(gch.id) : gearDeploy(gch.id)))}
-                            disabled={deployed ? busy : (busy || dirty || chanErrors || !enabled)}
-                            title={deployed ? 'Retract: open doors → run motor up → close doors (always available)'
-                                 : dirty ? 'Apply changes before deploying — tests the loaded firmware config'
-                                 : chanErrors ? 'Resolve validation errors first'
-                                 : !enabled ? 'Enable the effect first'
-                                 : 'Deploy: open doors → run motor down → close doors'}>
-                        {deployed ? '■ Retract' : '▶ Deploy'}
-                    </button>
-                    <button class="small" on:click={() => safe(() => gearStop(gch.id))} disabled={busy}
-                            title="Brake the motor mid-motion (does not clear an error — use Reset).">Stop</button>
-                    <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, -1)}
-                            disabled={busy || order === 0}
-                            title="Move up — in sequenced coordination this strut cycles earlier.">↑</button>
-                    <button class="small btn-slot" on:click={() => moveGearChannel(gch.id, 1)}
-                            disabled={busy || order === cfg.gears.length - 1}
-                            title="Move down — in sequenced coordination this strut cycles later.">↓</button>
                     <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
@@ -560,30 +770,29 @@
                             </div>
                         {/if}
                         {#if gch.motor.kind}
-                            <!-- Drive parameters (Rule 60.6 grid).  Signed
-                                 duty: deploy normally +, retract −. -->
-                            <div class="form-grid cols-2">
-                                <div class="form-field">
-                                    <span class="field-label">Deploy duty</span>
-                                    <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                                           value={gch.deployDuty}
-                                           on:change={(e) => setField(gch.id, 'deployDuty', Math.round(numValue(e)))}
-                                           disabled={busy} title="Signed H-bridge duty for 'going down' (-32767..32767)." />
+                            <!-- Deploy DIRECTION (Rule 60.3 segmented toggle):
+                                 which way the H-bridge drives to LOWER the gear.
+                                 Flip if deploy/retract come out swapped.  The
+                                 working-duty MAGNITUDE is tuned in Calibrate. -->
+                            <div class="form-row">
+                                <span class="field-label">Deploy drives</span>
+                                <div class="seg-select">
+                                    <button class="seg" class:on={motorForward(gch)}
+                                            on:click={() => setMotorDirection(gch.id, true)} disabled={busy}
+                                            title="Deploy runs the motor FORWARD (positive duty); retract reverses.">Forward</button>
+                                    <button class="seg" class:on={!motorForward(gch)}
+                                            on:click={() => setMotorDirection(gch.id, false)} disabled={busy}
+                                            title="Deploy runs the motor in REVERSE (negative duty); retract goes forward.">Reverse</button>
                                 </div>
-                                <div class="form-field">
-                                    <span class="field-label">Retract duty</span>
-                                    <input class="field-input narrow" type="number" min="-32767" max="32767" step="1000"
-                                           value={gch.retractDuty}
-                                           on:change={(e) => setField(gch.id, 'retractDuty', Math.round(numValue(e)))}
-                                           disabled={busy} title="Signed H-bridge duty for 'going up' (-32767..32767)." />
-                                </div>
-                                <div class="form-field">
-                                    <span class="field-label">Travel timeout (ms)</span>
-                                    <input class="field-input narrow" type="number" min="0" max="60000" step="500"
-                                           value={gch.timeoutMs}
-                                           on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
-                                           disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
-                                </div>
+                            </div>
+                            <div class="form-row">
+                                <span class="field-label">Travel timeout</span>
+                                <input class="field-input narrow" type="number" min="0" max="60000" step="500"
+                                       value={gch.timeoutMs}
+                                       on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
+                                       disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
+                                <span class="unit">ms</span>
+                                <span class="hint compact">flip direction if deploy/retract are swapped; tune the duty in Calibrate.</span>
                             </div>
                             <!-- Motor summary + Calibrate popup + LIVE readout
                                  (current mA / duty / position / stall) — Rule 44
@@ -623,20 +832,13 @@
                                 </select>
                                 <button class="small danger btn-slot" on:click={() => removeGearDoor(gch.id, i)} disabled={busy}>× Remove</button>
                             </div>
-                            <!-- Normalized positions (servo-intent: 0 =
-                                 calibrated min end, 10000 = max). -->
+                            <!-- Open/close ARE the servo's calibrated ends (same
+                                 parametrisation as a landing-light servo): open →
+                                 MAX-µs end, close → MIN-µs end; the REV flag in
+                                 Calibrate flips the physical direction.  No
+                                 redundant per-door position inputs. -->
                             <div class="form-row sub">
-                                <span class="field-label">Open / Close</span>
-                                <input class="field-input narrow" type="number" min="0" max="10000" step="100"
-                                       value={d.open}
-                                       on:change={(e) => setDoorNorm(gch.id, i, 'open', numValue(e))}
-                                       disabled={busy} title="Normalized OPEN position [0..10000]." />
-                                <span class="unit">open</span>
-                                <input class="field-input narrow" type="number" min="0" max="10000" step="100"
-                                       value={d.close}
-                                       on:change={(e) => setDoorNorm(gch.id, i, 'close', numValue(e))}
-                                       disabled={busy} title="Normalized CLOSED position [0..10000]." />
-                                <span class="unit">close</span>
+                                <span class="hint">open = calibrated MAX end · close = MIN end — set the travel (and reverse) in <b>⚙ Calibrate</b> below.</span>
                             </div>
                             <!-- Calibration/setup (Rule 44). -->
                             <div class="form-row servo-widget-row">
@@ -751,19 +953,44 @@
             {/if}
         </div>
     {/each}
+  {/if}<!-- /enabled -->
 </div>
 
 <style>
-    .gear-card { margin-bottom: 14px; }
+    .gear-card { margin-bottom: 14px; --ctl-h: 28px; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
-    .header-actions button { height: 28px; box-sizing: border-box; }
 
-    /* Status row (Engine pattern) */
-    .status-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 0 10px; border-bottom: 1px solid var(--border); margin-bottom: 4px; flex-wrap: wrap; }
-    .status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .status-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-dim); }
-    .controls { display: flex; align-items: center; gap: 8px; }
-    .controls button { height: 28px; box-sizing: border-box; }
+    /* Rule 63 — uniform row height: every control sharing a horizontal row
+       (buttons, inputs/selects, pills, chips, segmented toggles) is the SAME
+       height (--ctl-h) and vertically centred, so a row never has a tall input
+       next to a short button.  Applied to the control rows AND the config
+       form-rows below. */
+    .header-actions button,
+    .header-actions .state-pill,
+    .status-row .controls button,
+    .sctl-acts button,
+    .sctl-id .state-pill,
+    .sctl-id .door-chip,
+    .form-row .field-input,
+    .form-row button,
+    .form-row .seg-select .seg {
+        height: var(--ctl-h);
+        box-sizing: border-box;
+    }
+    .header-actions .state-pill,
+    .sctl-id .state-pill,
+    .sctl-id .door-chip {
+        display: inline-flex;
+        align-items: center;
+    }
+
+    /* Status row: base .status-row / .status / .status-label / .state-pill
+       styles are SHARED via style.css (Rule 34/50) — same as EnginePanel.
+       Keep ONLY the gear-specific bits: button height + the phase-colour
+       pill classes below.  (The old local overrides made this row a
+       borderless strip instead of the shared raised card — the "formatting
+       looks wrong" report.) */
+    .status-row .controls button { height: 28px; box-sizing: border-box; }
 
     /* Rule 60.8 background hierarchy: the strut card keeps the STANDARD
        nested-.card chrome (--bg-surface, like GunFx's gun/smoke cards);
@@ -772,7 +999,6 @@
     .group-card.invalid { border-color: var(--error); background: rgba(255,80,80,0.05); }
     .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
     .card-header.inner h4 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
-    .seq-badge { font-family: var(--font-mono); font-size: 10px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 3px; padding: 1px 5px; margin-right: 6px; vertical-align: 1px; }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
     .section-head.sub { font-size: 10px; margin-top: 12px; border-bottom-style: dashed; }
@@ -788,7 +1014,91 @@
     .state-pill.phase.phase-deployed   { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.12); }
     .state-pill.phase.phase-retracting { color: var(--warning); border-color: var(--warning); }
     .state-pill.phase.phase-error      { color: var(--error); border-color: var(--error); background: rgba(255,80,80,0.12); }
+    .state-pill.phase.phase-held       { color: var(--warning); border-color: var(--warning); background: rgba(255,180,0,0.12); }
     .state-pill.phase.phase-unknown    { color: var(--text-dim); }
+
+    /* Emergency-stop button — strong outline so it stands apart from Gear
+       Up/Down in the status row. */
+    .estop { border-color: var(--error); color: var(--error); font-weight: 600; }
+
+    /* Single-step button — quiet accent so it reads as a secondary, manual
+       control next to the primary direction action. */
+    .btn-step { font-family: var(--font-mono); }
+
+    /* ── Lifecycle strip (item 2) — the door→strut→door transit, live ── */
+    .lifecycle { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+                 margin: 0 0 8px; padding: 5px 8px; border: 1px solid var(--border);
+                 border-radius: 4px; background: var(--bg-input); }
+    .lifecycle.held    { border-color: var(--warning); }
+    .lifecycle.errored { border-color: var(--error); }
+    .lifecycle.unknown { border-style: dashed; }
+    .life-stages { display: flex; align-items: center; gap: 6px; }
+    .life-arrow { color: var(--text-dim); font-size: 10px; }
+    .life-stage { font-family: var(--font-mono); font-size: 10px; padding: 1px 8px;
+                  border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim);
+                  background: var(--bg-surface); text-transform: uppercase; letter-spacing: 0.4px; }
+    .life-stage.done    { color: var(--success); border-color: var(--success);
+                          background: rgba(100,200,120,0.10); }
+    .life-stage.active  { color: var(--warning); border-color: var(--warning);
+                          background: rgba(255,180,0,0.14); font-weight: 700; }
+    .life-stage.pending { color: var(--text-dim); opacity: 0.6; }
+    .life-stage.idle    { color: var(--text-dim); opacity: 0.45; }
+
+    /* ── Control section (top): fleet row + one row per strut ─────────── */
+    /* Undercarriage Control lives in the (half-width) right column, so it's a
+       SINGLE column: stack each row's id / lifecycle / actions instead of the
+       3-col grid. */
+    .ctl-single .sctl-row { grid-template-columns: 1fr; }
+    /* Sync mode on its own row: "Sync" label (fixed-width like the others) +
+       the segmented toggle. */
+    .sctl-row.sync-row { display: flex; align-items: center; gap: 8px; }
+    .sync-row .sctl-name { color: var(--text-dim); text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
+
+    /* Status-only per-strut row: name + phase on the left, the door + lifecycle
+       status pushed RIGHT (where the per-strut buttons used to be).  Overrides
+       the grid so it's a single flexible line that wraps when narrow. */
+    .sctl-row.status-only { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sctl-status { margin-left: auto; display: flex; align-items: center; gap: 8px;
+                   flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
+
+    .ctl-frame { border: 1px solid var(--border); border-radius: 5px;
+                 background: var(--bg-raised); padding: 4px; margin: 0 0 8px;
+                 display: flex; flex-direction: column; gap: 4px; }
+    .sctl-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(180px, 1.6fr) auto;
+                align-items: center; gap: 10px; padding: 5px 8px; border-radius: 4px;
+                background: var(--bg-surface); }
+    /* Fleet row is a SINGLE line: All struts + state on the left, the
+       Gear Up/Down/E-Stop buttons pushed right (overrides the ctl-single grid). */
+    .sctl-row.fleet { background: var(--bg-input); border: 1px solid var(--border);
+                      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sctl-row.fleet .sctl-acts { margin-left: auto; }
+    .sctl-row.invalid { border: 1px solid var(--error); background: rgba(255,80,80,0.05); }
+    .sctl-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    /* Fixed-width name so the phase pill ("GEAR UP") starts at the same x on
+       every row (fleet + struts). */
+    .sctl-name { flex: 0 0 100px; width: 100px; font-size: 12px; font-weight: 600; color: var(--text-bright);
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .sctl-row.fleet .sctl-name { text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; color: var(--text-dim); }
+    .sctl-acts { display: flex; align-items: center; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
+    /* The lifecycle strip embedded in a control row: no outer chrome/margin
+       (the row provides the frame). */
+    .sctl-life { margin: 0; padding: 0; border: none; background: none; min-width: 0; }
+    .sctl-life.unknown { border: none; }
+    @media (max-width: 760px) {
+        .sctl-row { grid-template-columns: 1fr; gap: 6px; }
+        .sctl-acts { justify-content: flex-start; }
+    }
+
+    /* Door status chip in the control row (only when doors are configured). */
+    .door-chip { font-family: var(--font-mono); font-size: 9px; padding: 1px 6px;
+                 border-radius: 3px; border: 1px solid var(--border); color: var(--text-dim);
+                 text-transform: uppercase; letter-spacing: 0.4px; white-space: nowrap; }
+    .door-chip.door-open   { color: var(--success); border-color: var(--success); background: rgba(100,200,120,0.10); }
+    .door-chip.door-closed { color: var(--text-dim); }
+    .door-chip.door-moving { color: var(--warning); border-color: var(--warning); background: rgba(255,180,0,0.12); }
+    .door-chip.door-unknown{ color: var(--text-dim); border-style: dashed; }
+
+    .pill-compact { font-size: 9px; }
 
     .form-row.sub { margin-left: 0; }
 
@@ -810,6 +1120,14 @@
     .strut-cols { gap: 4px 18px; margin-top: 2px; }
     @media (max-width: 900px) {
         .strut-cols { grid-template-columns: 1fr; }
+    }
+
+    /* Top split — Input (left) | Strut sync + Transit sounds (right).  align-items:start
+       so the shorter sounds column doesn't stretch to the taller control
+       column; collapses to one column when narrow. */
+    .gear-top-cols { gap: 6px 24px; margin: 4px 0 8px; align-items: start; }
+    @media (max-width: 900px) {
+        .gear-top-cols { grid-template-columns: 1fr; }
     }
 
     .form-field { display: flex; flex-direction: column; gap: 3px; }

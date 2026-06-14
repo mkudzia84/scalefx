@@ -220,9 +220,14 @@
     /* Verbose live-status grid — current first + emphasised. */
     .status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px 14px; margin: 6px 0; padding: 10px 12px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; }
     .sv { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
-    .sv .sk { font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); min-width: 56px; }
-    .sv b { font-family: var(--font-mono); color: var(--text-bright); }
-    .sv b.big { font-size: 18px; font-weight: 700; }
+    .sv .sk { font-size: 9px; text-transform: uppercase; letter-spacing: 0.4px; color: var(--text-dim); min-width: 52px; }
+    /* Harmonised + compact metric readout: every value shares ONE mono
+       size/weight so the grid reads as an even table (current was an 18px
+       outlier that skewed the baseline + dwarfed the others). Current keeps a
+       touch more weight + the stall-warn colour for emphasis, NOT a bigger
+       font. */
+    .sv b { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text-bright); }
+    .sv b.big { font-size: 12px; font-weight: 700; }
     .sv b.warn, .warn { color: var(--error); }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); display: inline-block; }
     .dot.on { background: var(--error); box-shadow: 0 0 4px var(--error); }

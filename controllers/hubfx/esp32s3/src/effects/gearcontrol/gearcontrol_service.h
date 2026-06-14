@@ -94,9 +94,18 @@ public:
     }
 
     /// Fleet command — the same path GEAR_ALL takes on the wire (action:
-    /// 0 = stop, 1 = deploy, 2 = retract), exposed for the RC-channel
-    /// GearActivationDriver.  Honours the coord mode (incl. Sequenced).
+    /// 0 = stop/hold, 1 = deploy, 2 = retract).  Stop → emergency-hold every
+    /// strut; deploy/retract → `commandAllTarget(Down/Up)`.
     void commandAll(uint8_t action);
+
+    /// Fleet target — drive every strut to `t` honouring the coord mode
+    /// (Independent = full-cycle each; DoorSync/FullSync = barrier-stepped;
+    /// Sequenced = one at a time).  The RC-channel + GEAR_ALL entry point;
+    /// a mid-transit re-target reverses each strut cleanly.
+    void commandAllTarget(Gear::Target t);
+
+    /// Emergency hold every strut in place (brake + freeze).  GEAR_ESTOP `[]`.
+    void emergencyHoldAll();
 
     // ── SystemServicePolicy surface ──────────────────────────────────
 
@@ -109,7 +118,9 @@ public:
             || type == GearPacket::GEAR_ALL
             || type == GearPacket::GEAR_STATUS_REQ
             || type == GearPacket::GEAR_LIST_REQ
-            || type == GearPacket::GEAR_RESET;
+            || type == GearPacket::GEAR_RESET
+            || type == GearPacket::GEAR_ESTOP
+            || type == GearPacket::GEAR_STEP;
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -142,6 +153,8 @@ private:
     void handleStatusReq  ();
     void handleListReq    ();
     void handleReset      (const uint8_t* p, size_t len);
+    void handleEstop      (const uint8_t* p, size_t len);
+    void handleStep       (const uint8_t* p, size_t len);
 
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);
@@ -155,16 +168,13 @@ private:
                                    uint8_t portKind, uint8_t portIdx,
                                    uint8_t state);
 
-    /// Multi-gear coordinator (instructions/29 decision #2): release the
-    /// sync barriers when all mid-cycle gears sit at the same barrier, and
-    /// drive the Sequenced one-gear-at-a-time chain.  Called from update().
-    void releaseBarriersIfReady();
+    /// Multi-strut coordinator — called from update().  Sequenced: advance the
+    /// chain when the active strut settles.  DoorSync/FullSync: step every
+    /// strut to the next leg once ALL sit at the current barrier (legComplete).
+    void driveCoordinator();
+    void driveSyncStep();
 
-    /// Per-cycle sync flags for a gear, derived from `_coordMode`.
-    void applySyncFlags(Gear& g) const;
-
-    /// Sequenced mode: index of the gear currently running its full cycle
-    /// (0xFF = none).  Advanced as each gear settles.
+    /// Sequenced mode: start the next strut's full cycle (toward `_seqTarget`).
     void sequencedKick();
 
     static bool sendRoleCmdTrampoline(void* ctx, const PortRef& addr,
@@ -172,8 +182,8 @@ private:
                                       const uint8_t* p, size_t len);
     static void beginBatchTrampoline (void* ctx);
     static void commitBatchTrampoline(void* ctx);
-    static void phaseEventTrampoline (void* ctx, uint8_t id,
-                                      uint8_t newPhase, uint8_t newSubPhase);
+    static void phaseEventTrampoline (void* ctx, uint8_t id, uint8_t newPhase,
+                                      uint8_t newSubPhase, uint8_t errReason);
     static void roleEventTrampoline  (void* ctx, const char* guid,
                                       uint8_t innerType,
                                       const uint8_t* p, size_t len);
@@ -182,7 +192,7 @@ private:
     // matching state to every gear-bound landing light.
     void forwardToLandings(uint8_t newPhase);
 
-    void emitPhaseEvent(uint8_t id, uint8_t phase, uint8_t subPhase);
+    void emitPhaseEvent(uint8_t id, uint8_t phase, uint8_t subPhase, uint8_t errReason);
 
     /// Transit-sound edge detector (called each update()): start the
     /// direction-matched loop when ANY gear begins moving, stop it when the
@@ -199,8 +209,10 @@ private:
     uint8_t _numDefs              = 0;
     bool    _enabled              = true;     // runtime enable flag (config-driven)
     uint8_t _coordMode            = CoordMode::Independent;
-    uint8_t _seqActive            = 0xFF;     // Sequenced: gear index mid-cycle
-    bool    _seqDeploying         = false;    // Sequenced: direction of the chain
+    uint8_t _seqActive            = 0xFF;     // Sequenced: strut index mid-cycle
+    Gear::Target _seqTarget       = Gear::Target::Up;   // Sequenced: chain direction
+    bool    _syncActive           = false;    // DoorSync/FullSync: a barrier walk is in flight
+    Gear::Target _syncTarget      = Gear::Target::Up;   // DoorSync/FullSync: barrier-walk target
     bool    _deployOnConnLoss     = false;    // item 6: emergency deploy on input link loss
     bool    _connLossLatched      = false;    // one deploy per loss (cleared on recovery)
 

@@ -61,6 +61,7 @@ public:
         _send        = sendFn;
         _sendCtx     = sendCtx;
         _state       = State::Idle;
+        _doorEnd[0]  = _doorEnd[1] = -1;   // position unknown until first commanded
     }
 
     /// Open the doors before the motor seek.  Honours `openMode`.  NONE /
@@ -85,11 +86,22 @@ public:
     /// matching door done + dispatches the deferred door for DUAL_SEQ.
     void onServoMotionDone(uint8_t portIdx);
 
+    /// Reverse an in-flight open↔close: re-command every door to the OPPOSITE
+    /// target + reset the per-door bookkeeping.  Used by the strut FSM when the
+    /// gear target flips while the doors are moving (a closing set re-opens).
+    void reverse() { begin(!_opening, /*doorMask=*/0x03); }
+
+    /// Emergency freeze: stop driving the sequence.  The servos hold their last
+    /// commanded position (there is no feedback to halt mid-travel, so a door
+    /// caught mid-move completes that small move, then holds).  The motor brake
+    /// in `Gear::emergencyHold()` is the load-bearing safety action.
+    void freeze() { _state = State::Idle; _doorEnd[0] = _doorEnd[1] = -1; }
+
     bool isComplete() const { return _state == State::Complete; }
     bool isIdle()     const { return _state == State::Idle; }
     bool isBusy()     const { return _state == State::Opening || _state == State::Closing; }
 
-    void reset() { _state = State::Idle; }
+    void reset() { _state = State::Idle; _doorEnd[0] = _doorEnd[1] = -1; }
 
 private:
     enum class State : uint8_t { Idle, Opening, Closing, Complete };
@@ -122,6 +134,12 @@ private:
     // Per-door bookkeeping for the active sequence.
     bool          _commanded[2] = { false, false };  ///< did we command this door?
     bool          _done[2]      = { false, false };  ///< has it reported SERVO_MOTION_DONE?
+
+    // Persistent (cross-sequence) door end: 1 = open, 0 = closed, -1 = unknown.
+    // Lets a repeat command (e.g. open already-open doors on a close_policy=none
+    // retract) complete instantly instead of waiting on a SERVO_MOTION_DONE that
+    // never comes (the servo doesn't move) — the door-pause bug.
+    int8_t        _doorEnd[2]   = { -1, -1 };
 
     // DUAL_DELAY / DUAL_SEQ deferred-second-door bookkeeping.
     bool          _secondPending = false;   ///< second door not yet dispatched

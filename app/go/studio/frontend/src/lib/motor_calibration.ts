@@ -26,11 +26,21 @@ import { pollMotorStatus } from './motor_status'
 
 export type GuardMode = 'live' | 'fixed'
 
-/** What `Save to strut` writes back into the gear channel draft. */
+/** What `Save to strut` writes back into the gear channel draft.  `guard` is
+ *  the persisted stall-guard calibration (mirrors GearGuardT in gear.ts) —
+ *  ratioX100 = ratio×100. */
 export interface MotorCommitT {
     deployDuty:  number
     retractDuty: number
     timeoutMs:   number
+    guard: {
+        mode: GuardMode
+        ratioX100: number
+        sampleMs: number
+        windowMs: number
+        thresholdMa: number
+        ceilingMa: number
+    }
 }
 
 /** One leg / move outcome (mirror of Go DiagEndstopResult). */
@@ -88,6 +98,9 @@ export interface OpenMotorCalArgs {
     deployDuty: number          // current strut values (seed)
     retractDuty: number
     timeoutMs: number
+    // The strut's SAVED stall guard (seed) so the dialog opens on the last
+    // calibration; absent → LiveRatio default.  ratioX100 = ratio×100.
+    guard?: { mode: GuardMode; ratioX100: number; sampleMs: number; windowMs: number; thresholdMa: number; ceilingMa: number }
     onCommit: (c: MotorCommitT) => void
 }
 
@@ -98,12 +111,19 @@ export interface OpenMotorCalArgs {
  *  first live sample. */
 export async function openMotorCalibrationFor(args: OpenMotorCalArgs): Promise<void> {
     const dutyMag = Math.abs(args.deployDuty) || 20000
+    const g = args.guard
     openMotorCalibration.set({
         guid: args.guid, portIdx: args.portIdx, label: args.label,
         duty: dutyMag,
-        timeoutS: Math.max(1, Math.round((args.timeoutMs || 4000) / 1000)),
-        guardMode: 'live',
-        ratio: 2.5, sample: 200, window: 80, threshold: 1000, ceiling: 0,
+        timeoutS: Math.max(1, Math.round((args.timeoutMs || 30000) / 1000)),
+        // Seed from the strut's SAVED guard so the dialog opens on the last
+        // calibration; fall back to the LiveRatio default for an un-tuned strut.
+        guardMode: g?.mode ?? 'live',
+        ratio:     g ? g.ratioX100 / 100 : 2.5,
+        sample:    g?.sampleMs ?? 200,
+        window:    g?.windowMs ?? 80,
+        threshold: g?.thresholdMa ?? 1000,
+        ceiling:   g?.ceilingMa ?? 0,
         move: null, calib: null,
         rowBusy: '', busy: true, error: '',
         deployDuty: args.deployDuty, retractDuty: args.retractDuty, timeoutMs: args.timeoutMs,
@@ -209,13 +229,21 @@ export async function motorStop(): Promise<void> {
 }
 
 /** Hold-to-jog: raw signed duty (NO stall guard). `dir` = +1 / −1. */
+let jogging = false
 export async function motorJogStart(dir: number): Promise<void> {
     const s = get(openMotorCalibration)
     if (!s || s.rowBusy) return
+    jogging = true
     try { await GearMotorJog(s.guid, s.portIdx, dir * s.duty) }
     catch (e) { openMotorCalibration.update(x => x ? { ...x, error: String(e) } : x) }
 }
 export async function motorJogStop(): Promise<void> {
+    // Guard: the jog buttons fire this on `mouseleave` too, so a stray cursor
+    // pass would otherwise send setSigned(0) — which the firmware treats as an
+    // explicit drive that ABORTS any in-flight seek (move-to-end / calibrate).
+    // Only send the brake if a jog was actually started.
+    if (!jogging) return
+    jogging = false
     const s = get(openMotorCalibration)
     if (!s) return
     try { await GearMotorJog(s.guid, s.portIdx, 0) }
@@ -244,6 +272,16 @@ export async function saveMotorToStrut(): Promise<void> {
         deployDuty:  Math.abs(s.duty),
         retractDuty: -Math.abs(s.duty),
         timeoutMs:   suggested > 0 ? suggested : s.timeoutMs,
+        // Persist the tuned stall guard so real deploy/retract uses it (the
+        // gear effect pushes it before each seek).  ratioX100 = ratio×100.
+        guard: {
+            mode:        s.guardMode,
+            ratioX100:   Math.round(s.ratio * 100),
+            sampleMs:    Math.round(s.sample),
+            windowMs:    Math.round(s.window),
+            thresholdMa: Math.round(s.threshold),
+            ceilingMa:   Math.round(s.ceiling),
+        },
     })
     await closeMotorCalibration()
 }
