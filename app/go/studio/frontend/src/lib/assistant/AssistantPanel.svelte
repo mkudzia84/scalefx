@@ -5,8 +5,10 @@
     import { onMount } from 'svelte'
     import { messages, busy, status, ask, refreshStatus, setKey, clearChat } from './store'
     import { renderMarkdown } from './markdown'
+    import FaqView from './FaqView.svelte'
     import { ListAssistantModels, SetAssistantModel } from '../../../wailsjs/go/main/App'
 
+    let mode: 'chat' | 'faq' = 'chat'
     let input = ''
     let keyInput = ''
     let listEl: HTMLElement
@@ -29,6 +31,15 @@
     function provLabel(s: any): string {
         if (s && s.providers) { const p = s.providers.find((x: any) => x.id === s.provider); if (p) return p.label }
         return s && s.provider === 'groq' ? 'Groq' : s && s.provider === 'mistral' ? 'Mistral' : 'Gemini'
+    }
+
+    // Monochrome SVG icons (currentColor), matching the TabBar convention.
+    const ICONS: Record<string, string> = {
+        chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+        faq: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.82 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/>',
+    }
+    function icon(name: string): string {
+        return `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] ?? ''}</svg>`
     }
 
     const SUGGESTIONS = [
@@ -107,23 +118,32 @@
 
 <div class="asst">
     <div class="asst-head">
-        <span class="asst-title">🤖 Assistant</span>
-        {#if $status && $status.available}
-            <span class="asst-prov">{provLabel($status)}</span>
-            <select class="asst-modelsel" bind:value={selModel} on:change={onModelChange}
-                    disabled={modelsLoading} title="Model — saved automatically">
-                {#each (modelOptions) as o}<option value={o.id}>{o.label}</option>{/each}
-            </select>
-        {:else if $status}
-            <span class="asst-model">no key</span>
+        <div class="asst-modeseg">
+            <button class="seg" class:on={mode === 'chat'} on:click={() => (mode = 'chat')}><span class="seg-ico">{@html icon('chat')}</span>Assistant</button>
+            <button class="seg" class:on={mode === 'faq'} on:click={() => (mode = 'faq')}><span class="seg-ico">{@html icon('faq')}</span>FAQ</button>
+        </div>
+        {#if mode === 'chat'}
+            {#if $status && $status.available}
+                <span class="asst-prov">{provLabel($status)}</span>
+                <select class="asst-modelsel" bind:value={selModel} on:change={onModelChange}
+                        disabled={modelsLoading} title="Model — saved automatically">
+                    {#each (modelOptions) as o}<option value={o.id}>{o.label}</option>{/each}
+                </select>
+            {:else if $status}
+                <span class="asst-model">no key</span>
+            {/if}
+            <button class="small clear" on:click={clearChat} disabled={$busy || $messages.length === 0}
+                    title="Clear the conversation">Clear</button>
         {/if}
-        <button class="small clear" on:click={clearChat} disabled={$busy || $messages.length === 0}
-                title="Clear the conversation">Clear</button>
     </div>
+
+  {#if mode === 'faq'}
+    <FaqView />
+  {:else}
 
     {#if $status && !$status.available}
         <div class="asst-nokey">
-            <p class="nokey-title">⚙ Set up the AI assistant</p>
+            <p class="nokey-title">Set up the AI assistant</p>
             <p>It needs a free API key. Choose a provider in <strong>View → Settings…</strong>
                (currently <strong>{provLabel($status)}</strong>), then get a key:</p>
             <ol class="nokey-steps">
@@ -144,7 +164,7 @@
     <div class="asst-list" bind:this={listEl}>
         {#if $messages.length === 0 && $status && $status.available}
             <div class="asst-empty">
-                <p>Ask about configuring your model — features, channels, ports, or why something isn't working. I advise and point you to the <strong>🪄 Setup Wizard</strong>; I don't change settings myself.</p>
+                <p>Ask about configuring your model — features, channels, ports, or why something isn't working. I advise and point you to the <strong>Setup Wizard</strong>; I don't change settings myself.</p>
                 <div class="asst-sugg">
                     {#each (SUGGESTIONS) as s}
                         <button class="asst-chip" on:click={() => pick(s)} disabled={$busy}>{s}</button>
@@ -171,6 +191,7 @@
                   bind:value={input} on:keydown={onKey} disabled={$busy}></textarea>
         <button class="small primary send" on:click={send} disabled={$busy || !input.trim()}>Send</button>
     </div>
+  {/if}
 </div>
 
 <style>
@@ -180,7 +201,15 @@
         padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--bg-raised);
         flex-shrink: 0;
     }
-    .asst-title { font-size: 13px; font-weight: 700; color: var(--text-bright); }
+    .asst-modeseg { display: inline-flex; gap: 2px; background: var(--bg-input); border-radius: 5px; padding: 2px; }
+    .asst-modeseg .seg {
+        display: inline-flex; align-items: center; gap: 5px;
+        font-size: 11px; padding: 3px 9px; border: none; background: none; color: var(--text-dim);
+        cursor: pointer; border-radius: 4px;
+    }
+    .asst-modeseg .seg-ico { display: flex; }
+    .asst-modeseg .seg:hover { color: var(--text); }
+    .asst-modeseg .seg.on { background: var(--bg-surface); color: var(--text-bright); font-weight: 600; }
     .asst-model { font-size: 10px; font-family: var(--font-mono); color: var(--text-dim);
         border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
     .asst-prov {

@@ -1388,6 +1388,20 @@ export namespace main {
 	}
 	
 	
+	export class FAQItemDTO {
+	    question: string;
+	    answer: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FAQItemDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.question = source["question"];
+	        this.answer = source["answer"];
+	    }
+	}
 	export class FanDTO {
 	    port: PortRefDTO;
 	    elementMv: number;

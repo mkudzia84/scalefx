@@ -10,6 +10,10 @@ export function AssistantAsk(arg1, arg2) {
   return window['go']['main']['App']['AssistantAsk'](arg1, arg2);
 }
 
+export function AssistantFAQ() {
+  return window['go']['main']['App']['AssistantFAQ']();
+}
+
 export function AssistantStatus() {
   return window['go']['main']['App']['AssistantStatus']();
 }

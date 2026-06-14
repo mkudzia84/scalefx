@@ -19,6 +19,7 @@
     } from '../auto-apply'
     import { showPcbOverlay, connectionInfo } from '../stores'
     import { openWizard } from '../wizard'
+    import { svgIcon, WAND_PATHS } from '../icons'
     import { diag } from '../diag'
     import { SetInputRouting, GetInputRouting } from '../../../wailsjs/go/main/App'
     import { EventsOn } from '../../../wailsjs/runtime/runtime'
@@ -98,7 +99,7 @@
   {#if isHub}
     <div class="left">
         <button class="small primary" on:click={openWizard}
-                title="Guided setup — pick features, set up the radio, and configure each effect step by step">🪄 Setup Wizard</button>
+                title="Guided setup — pick features, set up the radio, and configure each effect step by step">{@html svgIcon(WAND_PATHS, 13, 'vertical-align:-2px;margin-right:5px')}Setup Wizard</button>
         <button class="small" on:click={() => ($showPcbOverlay = true)}
                 title="Open the board diagram — assign roles on the PCB photo">▣ Diagram</button>
         <button class="small" on:click={onRefresh} disabled={busy}

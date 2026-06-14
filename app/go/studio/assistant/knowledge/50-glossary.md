@@ -8,10 +8,13 @@
   in: **servo**, **LED/PWM**, **motor**, or **input** (receiver).
 - **Port label** — a port's human-readable name: the label you give it, or its
   on-board silkscreen marking (like "SRV1"). Use these, not internal ids.
-- **Channel function** — a name you assign to an RC channel (*engine on/off*,
-  *landing gear*, *landing lights*, *gun fire*, *gun fire mode*, *gun smoke*,
-  *gun yaw*, *gun pitch*, *light program*, *light brightness*, *master volume*).
-  Effects refer to the name, not the channel number.
+- **Channel function** — a name you assign to an RC channel; effects refer to the
+  name, not the channel number. The effect functions are: `Engine On / Off`,
+  `Light Program`, `Light Brightness`, `Landing Lights On / Off`,
+  `Landing Gear Deploy / Retract`, `Gun Fire`, `Gun Fire Mode`,
+  `Gun Smoke On / Off`, `Gun Yaw (turret)`, `Gun Pitch (turret)`, `Gun Retract`,
+  and `Master Volume`. (Flight channels like throttle/aileron are mapped too, but
+  ScaleFX doesn't act on them.)
 - **Draft** — your in-progress edits in Studio. They become live only when you
   **Apply**.
 - **Apply** — save all your changes to the model and make them take effect (no

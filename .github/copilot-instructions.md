@@ -2588,6 +2588,37 @@ report).  Applies to status/control rows AND config form-rows; free-flowing
 hint/help text is exempt (it's prose, not a row control).  Reference: GearPanel
 `.sctl-acts` / `.form-row` controls.
 
+### 64. Keep the AI Assistant Grounding In Sync (approved 2026-06-14)
+
+The Studio config assistant (instructions/33 §12) answers from THREE grounding
+surfaces — they are **docs-as-code** (an extension of Rule 0) and must be updated
+in the **same commit** as any feature change that affects them:
+
+1. **Textbook** — `app/go/studio/assistant/knowledge/*.md` (embedded). Add/adjust
+   the user-facing description when you add or change an effect, a channel
+   function, a role kind, a port kind, a Studio surface, or a Console command.
+   Stay in the user/setup register (no firmware/protocol internals — that was the
+   whole point of the rewrite). New channel function in
+   `devicemodel.ChannelFunctionCatalog()` ⇒ add its **label** to the channel-
+   function reference in `50-glossary.md`.
+2. **FAQ** — `knowledge/40-faq.md`. When a workflow changes (a setting moves, a
+   default changes, a new "why doesn't X work" failure mode appears), update or
+   add the Q&A. The FAQ is ALSO the source for the non-LLM FAQ tab, so a stale
+   FAQ ships stale answers with no key required.
+3. **Live-context builder** — `app/go/studio/frontend/src/lib/assistant/
+   context.ts`. A new effect / draft field the operator can set must be surfaced
+   here, by its human-readable name, so the assistant can see it (it builds from
+   the effect drafts + device model, NOT the vestigial claims — that was the
+   "Configured effects = none" bug).
+
+**Guarded by the pre-merge gate (Rule 52):** `tests/host/go_unit/assistant_docs_test`
+asserts the textbook documents every *effect* channel-function label
+(`ChannelFunctionCatalog()` groups Engine/Lights/Gear/Gun/Audio). Add a new
+effect channel function and forget the glossary ⇒ the gate fails. Extend the test
+the same way when you add a class of grounding worth guarding (roles, effects).
+The assistant stays **advisory** — it never gains a tool that applies config or
+actuates hardware.
+
 ### Client-Server Topology
 ```
 HubFX ESP32-S3 (Client) - USB Host

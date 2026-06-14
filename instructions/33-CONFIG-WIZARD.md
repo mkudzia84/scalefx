@@ -340,5 +340,16 @@ in Go from the device-model *claims* (which are vestigial — that was the
 enabled state + unsaved edits, names ports by their friendly label resolving
 hub-local vs expander via the canonical `guid|kind|index` key (`modelPortKey`/
 `portRefToKey` — a bare `kind:idx` key collides across boards), and cites
-channels as `CHn` + label. Deferred: write-tools (still advisory-only), the FAQ
-(non-LLM) responder, streaming.
+channels as `CHn` + label. Deferred: write-tools (still advisory-only), streaming.
+
+**FAQ tab + drift guard (branch `assistant-faq`).** The Assistant dock has a
+**Chat | FAQ** toggle; the FAQ is the **non-LLM, offline, no-key** path — a
+searchable accordion parsed from `knowledge/40-faq.md` (`assistant.FAQItems()` →
+`AssistantFAQ()` binding → `FaqView.svelte`), answers rendered through the shared
+markdown renderer. To stop the grounding rotting (the textbook's hand-maintained
+half), **Rule 64** makes the textbook + FAQ + `context.ts` docs-as-code, and
+`tests/host/go_unit/assistant_docs_test` (pre-merge gate) asserts the textbook
+documents every effect channel-function label from
+`devicemodel.ChannelFunctions()` — add a channel function + forget the glossary
+and the gate fails. The glossary's channel-function list is now the canonical
+reference (verbatim labels).
