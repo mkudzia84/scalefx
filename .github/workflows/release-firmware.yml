@@ -110,11 +110,17 @@ jobs:
             exit 1
           fi
           echo "Found FIRMWARE_VERSION=$SOURCE_VER in $INO"
-          if [ "$SOURCE_VER" != "${{ inputs.version }}" ]; then
-            echo "::error::Source FIRMWARE_VERSION ($SOURCE_VER) does not match requested version (${{ inputs.version }})"
+          # Compare on the numeric core only — strip any trailing -suffix so a
+          # source "2.33.2-hubfx" matches a release "2.33.2" or "2.33.2-rc1".
+          SRC_CORE="${SOURCE_VER%%-*}"
+          REQ_CORE="${INPUT_VER%%-*}"
+          if [ "$SRC_CORE" != "$REQ_CORE" ]; then
+            echo "::error::Source FIRMWARE_VERSION core ($SRC_CORE from $SOURCE_VER) does not match requested version core ($REQ_CORE from $INPUT_VER)"
             exit 1
           fi
-          echo "Source version verified: $SOURCE_VER"
+          echo "Source version verified: core $SRC_CORE (source $SOURCE_VER, requested $INPUT_VER)"
+        env:
+          INPUT_VER: ${{ inputs.version }}
 
       - name: Build firmware
         run: |

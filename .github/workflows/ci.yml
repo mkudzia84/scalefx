@@ -1,0 +1,92 @@
+# Continuous integration — build-validation on every push/PR.
+#
+#   host job      : Go (build + unit suites) + Studio frontend (build + Vitest)
+#   firmware job  : PlatformIO build of every controller (hubfx / gearcontrol /
+#                   lightfx) — the "does it still compile" gate.
+#
+# This does NOT need hardware (the HubFX integration suite is a separate,
+# HW-gated pre-merge step run locally — see tools/run-tests.ps1 -Premerge).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  host:
+    name: host (go + studio frontend)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Go (wire-mirror sync check)
+        working-directory: app/go
+        run: go build ./...
+
+      - name: Go unit suites
+        run: |
+          fail=0
+          for d in tests/host/go_unit/*/; do
+            [ -f "$d/go.mod" ] || continue
+            echo "::group::go test $d"
+            ( cd "$d" && go test -short ./... ) || fail=1
+            echo "::endgroup::"
+          done
+          exit $fail
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: app/go/studio/frontend/package-lock.json
+
+      - name: Build + test Studio frontend
+        working-directory: app/go/studio/frontend
+        run: |
+          npm ci
+          npm run build
+          npm run test
+
+  firmware:
+    name: firmware (${{ matrix.controller }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { controller: hubfx,       subdir: hubfx/esp32s3,   env: esp32s3 }
+          - { controller: gearcontrol, subdir: gearcontrol/pico, env: pico }
+          - { controller: lightfx,     subdir: lightfx/pico,     env: pico }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            controllers/${{ matrix.subdir }}/.pio
+          key: pio-${{ matrix.controller }}-${{ hashFiles(format('controllers/{0}/platformio.ini', matrix.subdir)) }}
+          restore-keys: pio-${{ matrix.controller }}-
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: python -m platformio run -e ${{ matrix.env }} -d "controllers/${{ matrix.subdir }}"

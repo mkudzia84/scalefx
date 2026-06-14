@@ -170,7 +170,7 @@ Authoritative rules with full rationale + examples: [.github/copilot-instruction
 - **0** Docs are code — update README / instructions / copilot-instructions.md in the same commit as the code.
 - **9 / 10** Bump `BUILD_NUMBER` every flash (auto); bump `FIRMWARE_VERSION` proactively (MAJOR wire-breaking / MINOR additive / PATCH logic). Verify via `init`.
 - **21** Tests live in [tests/](tests/) (`go_unit` / `go_integration` / `native` / `hw`), never under `controllers/*/test/` or `app/go/tests/`. Production code never imports from `tests/`.
-- **22** Release notes mandatory — categorize New Features / Bug Fixes / Protocol Changes / Breaking ⚠️ / Internal; explain the version bump.
+- **22** Release notes mandatory — categorize New Features / Bug Fixes / Protocol Changes / Breaking ⚠️ / Internal; explain the version bump. Repo-level notes live in [RELEASES.md](RELEASES.md) (per-component, tag `‹component›-v‹version›`); the same body seeds the GitHub release. CI: `.github/workflows/ci.yml` (build-validation on push/PR) + `release-firmware.yml` (manual per-controller firmware release).
 - **51** Tests must build cleanly; a refactor moves/deletes its tests in the SAME commit. Integration tests `t.Skip` on `testing.Short()` + missing `SCALEFX_HUBFX_PORT`.
 - **52** Pre-merge gate: `tools/run-tests.ps1 -Premerge` MUST exit 0 before merging to `main` (unit + integration-vs-HubFX + `scalefx-flash build hubfx`).
 ## Key architectural touchstones
