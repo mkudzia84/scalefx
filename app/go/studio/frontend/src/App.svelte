@@ -10,6 +10,8 @@
     import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
     import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
     import MotorCalibrationDialog from './lib/dialogs/MotorCalibrationDialog.svelte'
+    import ConfigWizard from './lib/dialogs/ConfigWizard.svelte'
+    import { installWizardAutoOffer } from './lib/wizard'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
@@ -47,6 +49,8 @@
         installDeviceModelBridge()
         installInputValuesBridge()
         installEngineStateBridge()
+        // Setup Wizard: offer it on connect to a fresh (un-set-up) HubFX.
+        installWizardAutoOffer()
         try { await loadCatalogs() } catch { /* app still starting */ }
 
         // Rule 46 — register every config source at app startup so the
@@ -210,6 +214,10 @@
 <!-- Gear-motor (H-bridge) calibration popup — opened from the GearPanel
      strut motor card via `openMotorCalibrationFor(...)`. -->
 <MotorCalibrationDialog />
+
+<!-- Setup Wizard — guided config (opened from the toolbar or auto-offered
+     on connect to a fresh board).  Visibility via `showConfigWizard`. -->
+<ConfigWizard />
 
 <style>
     .app-layout {

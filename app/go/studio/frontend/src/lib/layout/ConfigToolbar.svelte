@@ -14,6 +14,7 @@
     import { onMount } from 'svelte'
     import { anyDirty, anyErrors, dirtyLabels, errorLabels, applyAll, refreshAll } from '../dirty-registry'
     import { showPcbOverlay } from '../stores'
+    import { openWizard } from '../wizard'
     import { diag } from '../diag'
     import { SetInputRouting, GetInputRouting } from '../../../wailsjs/go/main/App'
     import { EventsOn } from '../../../wailsjs/runtime/runtime'
@@ -80,6 +81,8 @@
 
 <div class="config-toolbar">
     <div class="left">
+        <button class="small primary" on:click={openWizard}
+                title="Guided setup — pick features, set up the radio, and configure each effect step by step">🪄 Setup Wizard</button>
         <button class="small" on:click={() => ($showPcbOverlay = true)}
                 title="Open the board diagram — assign roles on the PCB photo">▣ Diagram</button>
         <button class="small" on:click={onRefresh} disabled={busy}
