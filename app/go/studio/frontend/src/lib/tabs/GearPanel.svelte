@@ -35,8 +35,8 @@
         updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
-        gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll, gearStep,
-        GearAllDeploy, GearAllRetract, GearStepUp, GearStepDown,
+        gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll,
+        GearAllDeploy, GearAllRetract,
         type GearConfigT, type GearChannelT, type CoordMode,
         type PortRefT, type GearPhaseT,
     } from '../gear'
@@ -386,16 +386,6 @@
                  title: 'Lower this strut: open doors → run motor down → close doors. Apply edits first (runs the loaded config).',
                  fn: deploy }]
     }
-    // Step target: advance toward the OPPOSITE of the settled state (or
-    // continue toward the in-flight direction).
-    function stepTarget(p: number): number {
-        if (p === 2) return GearStepDown   // mid-lowering → keep stepping down
-        if (p === 4) return GearStepUp     // mid-raising → keep stepping up
-        return isDownP(p) ? GearStepUp : GearStepDown
-    }
-    function stepLabel(p: number): string {
-        return stepTarget(p) === GearStepDown ? 'Step ▾' : 'Step ▴'
-    }
 
     // ─── Field setters ───────────────────────────────────────────────
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
@@ -614,53 +604,35 @@
                             title="EMERGENCY STOP — brake every motor + freeze the doors. Resume with Gear Up/Down.">⏹ E-Stop</button>
                 </div>
             </div>
-            <!-- Per-strut control rows -->
+            <!-- Per-strut STATUS rows (read-only): name + phase on the left,
+                 the door + lifecycle status right-aligned.  Manual control of a
+                 single strut lives in its config-card header below. -->
             {#each cfg.gears as gch (gch.id)}
-                {@const issues     = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports)}
-                {@const chanErrors = issues.length > 0}
+                {@const chanErrors = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports).length > 0}
                 {@const phT        = $gearPhases[gch.id]}
                 {@const ph         = phT?.phase ?? 6}
                 {@const errored    = ph === 5}
-                {@const gated      = busy || dirty || chanErrors}
-                {@const acts       = strutActions(gch.id, ph)}
                 {@const life       = lifecycle(phT, gch.doors.length > 0)}
                 {@const order      = cfg.gears.findIndex(g => g.id === gch.id)}
                 {@const doors      = doorStatus(gch, phT)}
-                <div class="sctl-row" class:invalid={chanErrors}>
+                <div class="sctl-row status-only" class:invalid={chanErrors}>
                     <div class="sctl-id">
                         <span class="sctl-name">{gch.name || `Strut ${order + 1}`}</span>
                         <span class="state-pill phase {phaseClass(ph)}">{pillText(phT)}</span>
+                    </div>
+                    <div class="sctl-status">
                         {#if doors}
                             <span class="door-chip door-{doors.state}" title="Door state: {doors.label}">⌂ {doors.label}</span>
                         {/if}
-                    </div>
-                    <div class="sctl-life lifecycle" class:held={isHeld(ph)} class:errored={errored} class:unknown={isUnknown(ph)}>
-                        <div class="life-stages">
-                            {#each life.stages as st, si}
-                                {#if si > 0}<span class="life-arrow">▸</span>{/if}
-                                <span class="life-stage {st.state}">{st.label}</span>
-                            {/each}
+                        <div class="sctl-life lifecycle" class:held={isHeld(ph)} class:errored={errored} class:unknown={isUnknown(ph)}>
+                            <div class="life-stages">
+                                {#each life.stages as st, si}
+                                    {#if si > 0}<span class="life-arrow">▸</span>{/if}
+                                    <span class="life-stage {st.state}">{st.label}</span>
+                                {/each}
+                            </div>
+                            {#if life.caption}<span class="life-caption">{life.caption}</span>{/if}
                         </div>
-                        {#if life.caption}<span class="life-caption">{life.caption}</span>{/if}
-                    </div>
-                    <div class="sctl-acts">
-                        {#if chanErrors}
-                            <span class="hint err compact" title={issues.join(' ')}>⚠ fix config below</span>
-                        {:else}
-                            {#each acts as a}
-                                <button class="small state-toggle" class:danger={a.danger}
-                                        on:click={a.fn} disabled={busy || (a.gate && gated)}
-                                        title={a.gate && dirty ? 'Apply your edits first — runs the LOADED config' : a.title}>{a.label}</button>
-                            {/each}
-                            <!-- Single-step: advance ONE leg then park (do one item in the sequence). -->
-                            <button class="small btn-step" on:click={() => safe(() => gearStep(gch.id, stepTarget(ph)))}
-                                    disabled={busy || isMoving(ph) || (stepTarget(ph) === GearStepDown && gated)}
-                                    title="Advance this strut ONE leg toward {stepTarget(ph) === GearStepDown ? 'down' : 'up'} (open doors → run strut → close doors), then park. Manual single-step.">{stepLabel(ph)}</button>
-                            {#if errored}
-                                <button class="small" on:click={() => safe(() => gearReset(gch.id))} disabled={busy}
-                                        title="Clear the error without moving (ERROR → unknown). Deploy/Retract also clear it automatically.">⟳ Reset</button>
-                            {/if}
-                        {/if}
                     </div>
                 </div>
             {/each}
@@ -728,13 +700,32 @@
         {@const doorAddPool  = doorPool($deviceModel.ports, xClaims, usedDoors, null)}
         {@const doorPoolEmpty= doorAddPool.length === 0 && gch.doors.length === 0}
         {@const order        = cfg.gears.findIndex(g => g.id === gch.id)}
+        {@const phT          = $gearPhases[gch.id]}
+        {@const ph           = phT?.phase ?? 6}
+        {@const errored      = ph === 5}
+        {@const gated        = busy || dirty || chanErrors}
+        {@const acts         = strutActions(gch.id, ph)}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
                 <h4>{gch.name || `Landing Strut ${order + 1}`}</h4>
                 <div class="header-actions">
-                    <!-- Config card = editing only.  Live state + deploy/retract/
-                         step/hold/reset live in the Control section at the top. -->
-                    <span class="state-pill phase {phaseClass($gearPhases[gch.id]?.phase ?? 6)} pill-compact">{pillText($gearPhases[gch.id])}</span>
+                    <!-- Per-strut manual control (context-aware: Gear Up/Down ·
+                         Hold · Reverse · Resume · Retry) — the singular control,
+                         no single-step.  Live status is in the Control section. -->
+                    <span class="state-pill phase {phaseClass(ph)} pill-compact">{pillText(phT)}</span>
+                    {#if chanErrors}
+                        <span class="hint err compact" title={issues.join(' ')}>⚠ fix config</span>
+                    {:else}
+                        {#each acts as a}
+                            <button class="small state-toggle" class:danger={a.danger}
+                                    on:click={a.fn} disabled={busy || (a.gate && gated)}
+                                    title={a.gate && dirty ? 'Apply your edits first — runs the LOADED config' : a.title}>{a.label}</button>
+                        {/each}
+                        {#if errored}
+                            <button class="small" on:click={() => safe(() => gearReset(gch.id))} disabled={busy}
+                                    title="Clear the error without moving (ERROR → unknown). Deploy/Retract also clear it automatically.">⟳ Reset</button>
+                        {/if}
+                    {/if}
                     <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
@@ -1026,7 +1017,7 @@
 
     /* Emergency-stop button — strong outline so it stands apart from Gear
        Up/Down in the status row. */
-    .controls .estop { border-color: var(--error); color: var(--error); font-weight: 600; }
+    .estop { border-color: var(--error); color: var(--error); font-weight: 600; }
 
     /* Single-step button — quiet accent so it reads as a secondary, manual
        control next to the primary direction action. */
@@ -1062,6 +1053,13 @@
     /* The sync segmented toggle shares the fleet action row with Gear Up/Down
        (its .seg buttons inherit the Rule 63 .sctl-acts button height). */
     .sync-seg { margin-right: 2px; }
+
+    /* Status-only per-strut row: name + phase on the left, the door + lifecycle
+       status pushed RIGHT (where the per-strut buttons used to be).  Overrides
+       the grid so it's a single flexible line that wraps when narrow. */
+    .sctl-row.status-only { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sctl-status { margin-left: auto; display: flex; align-items: center; gap: 8px;
+                   flex-wrap: wrap; justify-content: flex-end; min-width: 0; }
 
     .ctl-frame { border: 1px solid var(--border); border-radius: 5px;
                  background: var(--bg-raised); padding: 4px; margin: 0 0 8px;
