@@ -577,20 +577,24 @@
             <span class="hint">live state + manual control. Runs the LOADED config — Apply edits first.</span>
         </div>
         <div class="ctl-frame ctl-single">
-            <!-- Fleet row: sync mode + Gear Up/Down/E-Stop together. -->
+            <!-- Sync mode — its own row. -->
+            <div class="sctl-row sync-row">
+                <span class="sctl-name">Sync</span>
+                <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
+                    {#each coordOptions as o}
+                        <button class="seg" class:on={cfg?.coord === o.id}
+                                on:click={() => setGearCoord(o.id)} disabled={busy}
+                                title={o.hint}>{o.label}</button>
+                    {/each}
+                </div>
+            </div>
+            <!-- Fleet row: Gear Up/Down/E-Stop. -->
             <div class="sctl-row fleet">
                 <div class="sctl-id">
                     <span class="sctl-name">All struts</span>
                     <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : allRetracted ? 'phase-retracted' : 'phase-unknown'}">{fleetText}</span>
                 </div>
                 <div class="sctl-acts">
-                    <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
-                        {#each coordOptions as o}
-                            <button class="seg" class:on={cfg?.coord === o.id}
-                                    on:click={() => setGearCoord(o.id)} disabled={busy}
-                                    title={o.hint}>{o.label}</button>
-                        {/each}
-                    </div>
                     <button class="small state-toggle" on:click={() => safe(() => gearAll(GearAllDeploy))}
                             disabled={busy || dirty || hasErrors}
                             title={dirty ? 'Apply your edits first — fleet deploy runs the LOADED config'
@@ -1045,9 +1049,10 @@
        SINGLE column: stack each row's id / lifecycle / actions instead of the
        3-col grid. */
     .ctl-single .sctl-row { grid-template-columns: 1fr; }
-    /* The sync segmented toggle shares the fleet action row with Gear Up/Down
-       (its .seg buttons inherit the Rule 63 .sctl-acts button height). */
-    .sync-seg { margin-right: 2px; }
+    /* Sync mode on its own row: "Sync" label (fixed-width like the others) +
+       the segmented toggle. */
+    .sctl-row.sync-row { display: flex; align-items: center; gap: 8px; }
+    .sync-row .sctl-name { color: var(--text-dim); text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; }
 
     /* Status-only per-strut row: name + phase on the left, the door + lifecycle
        status pushed RIGHT (where the per-strut buttons used to be).  Overrides
