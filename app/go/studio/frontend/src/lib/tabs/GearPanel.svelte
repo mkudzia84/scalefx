@@ -525,40 +525,82 @@
     {/if}
 
   {#if enabled}
-    <!-- gear-top-stack: the Input/Sounds split + the Undercarriage Control
-         group, reordered so Control sits BELOW the split (CSS order — Control
-         stays first in the DOM for tab order). -->
-    <div class="gear-top-stack">
-    <!-- ═══ CONTROL — the command surface: a fleet row + ONE row per strut,
-         each showing live state (lifecycle strip) and that strut's controls.
-         Runs the LOADED config (Apply edits first); the config cards below are
-         editing-only. ═══ -->
-    {#if strutCount > 0}
-      <div class="ctl-section">
-        <div class="section-head ctl-head">
-            <span class="ctl-title">Undercarriage Control</span>
-            <span class="hint">live state + manual control — fleet and per-strut. Runs the LOADED config, so Apply edits first.</span>
-            <!-- Cross-strut sync mode moved into the header (Rule 60 — ops/mode
-                 in the section header). -->
-            <div class="ctl-sync" title="Cross-strut coordination">
-                <span class="ctl-sync-label">Sync</span>
-                <div class="seg-select">
-                    {#each coordOptions as o}
-                        <button class="seg" class:on={cfg?.coord === o.id}
-                                on:click={() => setGearCoord(o.id)} disabled={busy}
-                                title={o.hint}>{o.label}</button>
-                    {/each}
+    <!-- ═══ Top split: LEFT = Input group (RC up/down channel + signal-loss
+         failsafe) · RIGHT = Undercarriage Control (single column) above the
+         transition sounds.  Struts config spans full width below. ═══ -->
+    <div class="two-col gear-top-cols">
+      <div class="col">
+        <!-- ═══ Input (LEFT) — framed group: channel on top, signal-loss below. ═══ -->
+        <div class="section-head">
+            Input
+            <span class="hint">how the set is commanded from the radio — the RC up/down channel and the signal-loss failsafe. Pick a channel + Apply to drive the gear from the stick.</span>
+        </div>
+        <div class="sub-frame">
+            <!-- RC up/down (Rule 36 cluster + Rule 43 named inputs): one switch
+                 drives the WHOLE set; firmware failsafe always deploys on RC loss. -->
+            <ChannelToggleCluster
+                channelLabel="Up/down channel"
+                emptyOption="— manual only —"
+                options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
+                inputId={cfg?.input?.name ?? ''}
+                thresholdUs={cfg?.input?.thresholdUs ?? 1500}
+                hysteresisUs={cfg?.input?.hysteresisUs ?? 50}
+                liveUs={liveUs?.us ?? null}
+                liveValid={liveUs?.valid ?? false}
+                busy={busy}
+                actionVerb="Lowers"
+                onChange={(n) => updateGearInput(i => ({
+                    ...i, name: n.inputId,
+                    thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
+                }))} />
+            {#if cfg?.input?.name}
+                <div class="form-row">
+                    <span class="hint">switch ON (above threshold) lowers the gear, OFF (below) raises it — flip the channel ON THE RADIO if it's reversed. RC-loss always lowers the gear.</span>
                 </div>
+            {:else if chanOpts.length === 0}
+                <div class="form-row"><span class="field-label"></span>
+                    <span class="hint warn">No named input channels — name one in /hubfx.yaml's inputs (IO tab) to drive the gear from the radio.</span>
+                </div>
+            {/if}
+
+            <div class="form-row">
+                <span class="field-label">On signal loss</span>
+                <button class="small state-toggle" class:state-on={cfg?.deployOnConnectionLoss}
+                        on:click={() => setGearDeployOnConnLoss(!cfg?.deployOnConnectionLoss)} disabled={busy}
+                        title={cfg?.deployOnConnectionLoss
+                            ? 'Enabled: if an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. Click to disable.'
+                            : 'Disabled: input link loss does not auto-deploy. Click to enable emergency deploy on connection loss.'}>
+                    {cfg?.deployOnConnectionLoss ? '✓ Emergency deploy' : '○ Ignore link loss'}
+                </button>
+                <span class="hint">deploys the whole set if the input link (UART) drops — distinct from the per-channel RC-loss failsafe.</span>
             </div>
         </div>
-        <div class="ctl-frame">
-            <!-- Fleet row -->
+      </div><!-- /col — Input (left) -->
+
+      <div class="col">
+        <!-- ═══ Undercarriage Control (single column) — the command surface:
+             fleet row (sync mode + Gear Up/Down) + one compact row per strut.
+             Sits ABOVE the transition sounds in the right column. ═══ -->
+        {#if strutCount > 0}
+        <div class="section-head">
+            Undercarriage Control
+            <span class="hint">live state + manual control. Runs the LOADED config — Apply edits first.</span>
+        </div>
+        <div class="ctl-frame ctl-single">
+            <!-- Fleet row: sync mode + Gear Up/Down/E-Stop together. -->
             <div class="sctl-row fleet">
                 <div class="sctl-id">
                     <span class="sctl-name">All struts</span>
                     <span class="state-pill phase {anyErrored ? 'phase-error' : anyMoving ? 'phase-deploying' : allDeployed ? 'phase-deployed' : allRetracted ? 'phase-retracted' : 'phase-unknown'}">{fleetText}</span>
                 </div>
                 <div class="sctl-acts">
+                    <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
+                        {#each coordOptions as o}
+                            <button class="seg" class:on={cfg?.coord === o.id}
+                                    on:click={() => setGearCoord(o.id)} disabled={busy}
+                                    title={o.hint}>{o.label}</button>
+                        {/each}
+                    </div>
                     <button class="small state-toggle" on:click={() => safe(() => gearAll(GearAllDeploy))}
                             disabled={busy || dirty || hasErrors}
                             title={dirty ? 'Apply your edits first — fleet deploy runs the LOADED config'
@@ -623,68 +665,9 @@
                 </div>
             {/each}
         </div>
-      </div><!-- /ctl-section -->
-    {/if}
+        {/if}
 
-    <!-- ═══ Top split: LEFT = Input group (RC up/down channel + signal-loss
-         failsafe) · RIGHT = transit sounds.  The Undercarriage Control group
-         (with the sync toggle in its header) follows BELOW, full width
-         (Rule 60.1 two-column; collapses when narrow). ═══ -->
-    <div class="two-col gear-top-cols">
-      <div class="col">
-        <!-- ═══ Input (LEFT) — framed group: (2) channel on top,
-             (3) signal-loss below. ═══ -->
-        <div class="section-head">
-            Input
-            <span class="hint">how the set is commanded from the radio — the RC up/down channel and the signal-loss failsafe. Pick a channel + Apply to drive the gear from the stick.</span>
-        </div>
-        <div class="sub-frame">
-            <!-- (2) Channel selection — TOP.  RC up/down (Rule 36 cluster +
-                 Rule 43 named inputs): one switch drives the WHOLE set;
-                 firmware failsafe always deploys on RC loss. -->
-            <ChannelToggleCluster
-                channelLabel="Up/down channel"
-                emptyOption="— manual only —"
-                options={chanOpts.map(o => ({ id: o.fnId, label: o.label }))}
-                inputId={cfg?.input?.name ?? ''}
-                thresholdUs={cfg?.input?.thresholdUs ?? 1500}
-                hysteresisUs={cfg?.input?.hysteresisUs ?? 50}
-                liveUs={liveUs?.us ?? null}
-                liveValid={liveUs?.valid ?? false}
-                busy={busy}
-                actionVerb="Lowers"
-                onChange={(n) => updateGearInput(i => ({
-                    ...i, name: n.inputId,
-                    thresholdUs: n.thresholdUs, hysteresisUs: n.hysteresisUs,
-                }))} />
-            {#if cfg?.input?.name}
-                <div class="form-row">
-                    <span class="hint">switch ON (above threshold) lowers the gear, OFF (below) raises it — flip the channel ON THE RADIO if it's reversed. RC-loss always lowers the gear.</span>
-                </div>
-            {:else if chanOpts.length === 0}
-                <div class="form-row"><span class="field-label"></span>
-                    <span class="hint warn">No named input channels — name one in /hubfx.yaml's inputs (IO tab) to drive the gear from the radio.</span>
-                </div>
-            {/if}
-
-            <!-- (3) Signal-loss failsafe — BELOW the channel. -->
-            <div class="form-row">
-                <span class="field-label">On signal loss</span>
-                <button class="small state-toggle" class:state-on={cfg?.deployOnConnectionLoss}
-                        on:click={() => setGearDeployOnConnLoss(!cfg?.deployOnConnectionLoss)} disabled={busy}
-                        title={cfg?.deployOnConnectionLoss
-                            ? 'Enabled: if an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. Click to disable.'
-                            : 'Disabled: input link loss does not auto-deploy. Click to enable emergency deploy on connection loss.'}>
-                    {cfg?.deployOnConnectionLoss ? '✓ Emergency deploy' : '○ Ignore link loss'}
-                </button>
-                <span class="hint">deploys the whole set if the input link (UART) drops — distinct from the per-channel RC-loss failsafe.</span>
-            </div>
-        </div>
-      </div><!-- /col — Input (left) -->
-
-      <div class="col">
-        <!-- ═══ Transition sounds (RIGHT) — framed group (strut-sync moved to
-             the Undercarriage Control header). ═══ -->
+        <!-- ═══ Transition sounds — below the control group in the right col. ═══ -->
         <div class="section-head" class:section-error={soundsHaveErrors}>
             Transition sounds
             <span class="hint">optional — the matching WAV loops on the dedicated Gear audio channel while any strut is moving, and stops when the set settles.</span>
@@ -706,9 +689,8 @@
                     onClear={() => clearSound(f)} />
             {/each}
         </div>
-      </div><!-- /col — Transition sounds (right) -->
+      </div><!-- /col — Control + Transition sounds (right) -->
     </div><!-- /two-col gear-top-cols -->
-    </div><!-- /gear-top-stack -->
 
     <!-- ═══ Landing struts — FULL width, spanning both columns above ═══ -->
     <div class="section-head">
@@ -1073,16 +1055,13 @@
     .lifecycle.held .life-caption    { color: var(--warning); font-style: normal; }
 
     /* ── Control section (top): fleet row + one row per strut ─────────── */
-    /* Reorder: Input/Sounds split on top, Undercarriage Control below. */
-    .gear-top-stack { display: flex; flex-direction: column; }
-    .gear-top-stack > .two-col   { order: 1; }
-    .gear-top-stack > .ctl-section { order: 2; }
-
-    /* Undercarriage Control header carries the sync mode toggle on the right. */
-    .ctl-head { align-items: center; }
-    .ctl-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); }
-    .ctl-sync { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-    .ctl-sync-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); font-weight: 600; }
+    /* Undercarriage Control lives in the (half-width) right column, so it's a
+       SINGLE column: stack each row's id / lifecycle / actions instead of the
+       3-col grid. */
+    .ctl-single .sctl-row { grid-template-columns: 1fr; }
+    /* The sync segmented toggle shares the fleet action row with Gear Up/Down
+       (its .seg buttons inherit the Rule 63 .sctl-acts button height). */
+    .sync-seg { margin-right: 2px; }
 
     .ctl-frame { border: 1px solid var(--border); border-radius: 5px;
                  background: var(--bg-raised); padding: 4px; margin: 0 0 8px;
