@@ -631,7 +631,6 @@
                                     <span class="life-stage {st.state}">{st.label}</span>
                                 {/each}
                             </div>
-                            {#if life.caption}<span class="life-caption">{life.caption}</span>{/if}
                         </div>
                     </div>
                 </div>
@@ -707,12 +706,11 @@
         {@const acts         = strutActions(gch.id, ph)}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
-                <!-- Fixed-width name so the per-strut controls line up across
-                     cards.  Live status lives in the Control section (no pill
-                     here).  Manual control (context-aware: Gear Up/Down · Hold ·
-                     Reverse · Resume · Retry) + Remove. -->
-                <h4 class="strut-title">{gch.name || `Landing Strut ${order + 1}`}</h4>
-                <div class="header-actions strut-ctl">
+                <h4>{gch.name || `Landing Strut ${order + 1}`}</h4>
+                <div class="header-actions">
+                    <!-- Per-strut manual control (context-aware: Gear Up/Down ·
+                         Hold · Reverse · Resume · Retry) — the singular control. -->
+                    <span class="state-pill phase {phaseClass(ph)} pill-compact">{pillText(phT)}</span>
                     {#if chanErrors}
                         <span class="hint err compact" title={issues.join(' ')}>⚠ fix config</span>
                     {:else}
@@ -726,7 +724,7 @@
                                     title="Clear the error without moving (ERROR → unknown). Deploy/Retract also clear it automatically.">⟳ Reset</button>
                         {/if}
                     {/if}
-                    <button class="small danger remove-btn" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
+                    <button class="small danger" on:click={() => removeGearChannel(gch.id)} disabled={busy}>× Remove</button>
                 </div>
             </div>
 
@@ -995,14 +993,8 @@
        only the .sub-frame subsystem boxes inside it go --bg-raised. */
     .group-card { margin: 6px 0 12px; }
     .group-card.invalid { border-color: var(--error); background: rgba(255,80,80,0.05); }
-    .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px;
-                         justify-content: flex-start; gap: 10px; }
+    .card-header.inner { padding: 4px 0 8px; border-bottom: 1px dashed var(--border); margin-bottom: 8px; }
     .card-header.inner h4 { font-size: 13px; font-weight: 600; color: var(--text-bright); }
-    /* Fixed-width name so the per-strut controls start at the same x across
-       cards; the control cluster fills the rest and pushes Remove to the right. */
-    .strut-title { flex: 0 0 150px; width: 150px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .strut-ctl { flex: 1 1 auto; flex-wrap: wrap; }
-    .strut-ctl .remove-btn { margin-left: auto; }
 
     .section-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px; color: var(--text-bright); margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
     .section-head.sub { font-size: 10px; margin-top: 12px; border-bottom-style: dashed; }
@@ -1047,9 +1039,6 @@
                           background: rgba(255,180,0,0.14); font-weight: 700; }
     .life-stage.pending { color: var(--text-dim); opacity: 0.6; }
     .life-stage.idle    { color: var(--text-dim); opacity: 0.45; }
-    .life-caption { font-size: 10px; color: var(--text-dim); font-style: italic; margin-left: auto; }
-    .lifecycle.errored .life-caption { color: var(--error); font-style: normal; font-weight: 600; }
-    .lifecycle.held .life-caption    { color: var(--warning); font-style: normal; }
 
     /* ── Control section (top): fleet row + one row per strut ─────────── */
     /* Undercarriage Control lives in the (half-width) right column, so it's a
@@ -1076,7 +1065,9 @@
     .sctl-row.fleet { background: var(--bg-input); border: 1px solid var(--border); }
     .sctl-row.invalid { border: 1px solid var(--error); background: rgba(255,80,80,0.05); }
     .sctl-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
-    .sctl-name { font-size: 12px; font-weight: 600; color: var(--text-bright);
+    /* Fixed-width name so the phase pill ("GEAR UP") starts at the same x on
+       every row (fleet + struts). */
+    .sctl-name { flex: 0 0 100px; width: 100px; font-size: 12px; font-weight: 600; color: var(--text-bright);
                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .sctl-row.fleet .sctl-name { text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; color: var(--text-dim); }
     .sctl-acts { display: flex; align-items: center; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
@@ -1097,6 +1088,8 @@
     .door-chip.door-closed { color: var(--text-dim); }
     .door-chip.door-moving { color: var(--warning); border-color: var(--warning); background: rgba(255,180,0,0.12); }
     .door-chip.door-unknown{ color: var(--text-dim); border-style: dashed; }
+
+    .pill-compact { font-size: 9px; }
 
     .form-row.sub { margin-left: 0; }
 
