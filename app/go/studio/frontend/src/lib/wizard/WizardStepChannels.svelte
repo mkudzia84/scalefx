@@ -66,7 +66,7 @@
 {/if}
 
 <style>
-    .ch-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); padding: 10px 12px; margin-bottom: 10px; }
+    .ch-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); padding: 10px 12px; margin-bottom: 10px; }
     .ch-head { font-size: 12px; font-weight: 700; color: var(--text-bright); margin-bottom: 6px; }
     .ch-row { display: flex; align-items: center; gap: 10px; margin: 4px 0; }
     .ch-n { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); min-width: 36px; }

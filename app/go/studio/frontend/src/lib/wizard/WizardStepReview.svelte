@@ -88,7 +88,7 @@
     .rev-apply { flex: 1 1 240px; display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
     .rev-head { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-dim); margin: 0 0 6px; }
     .rev-head.warn-head { color: var(--warning); margin-top: 14px; }
-    .rev-fx { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-input); margin-bottom: 5px; }
+    .rev-fx { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-raised); margin-bottom: 5px; }
     .rev-icon { font-size: 14px; }
     .rev-name { font-size: 12px; font-weight: 600; color: var(--text-bright); }
     .rev-ch { margin-left: auto; font-size: 11px; font-family: var(--font-mono); color: var(--text-dim); }

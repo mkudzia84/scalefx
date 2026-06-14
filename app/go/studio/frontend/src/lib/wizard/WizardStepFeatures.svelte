@@ -48,7 +48,7 @@
     .feat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; }
     .feat-card {
         text-align: left; cursor: pointer; padding: 12px 14px;
-        background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px;
+        background: var(--bg-raised); border: 1px solid var(--border); border-radius: 8px;
         color: var(--text); transition: border-color .12s, background .12s;
     }
     .feat-card:hover { border-color: var(--text-dim); }

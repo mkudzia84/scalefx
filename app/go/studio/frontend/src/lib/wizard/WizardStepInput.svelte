@@ -66,7 +66,7 @@
 <p class="muted hint">Next you'll name what each channel does. The radio frame usually pads to a fixed width — name only the channels you actually use.</p>
 
 <style>
-    .in-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-input); padding: 12px 14px; margin-bottom: 10px; }
+    .in-card { border: 1px solid var(--border); border-radius: 6px; background: var(--bg-raised); padding: 12px 14px; margin-bottom: 10px; }
     .in-head { font-size: 12px; font-weight: 700; color: var(--text-bright); margin-bottom: 8px; }
     .in-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
     .lbl { font-size: 11px; color: var(--text-dim); min-width: 70px; }
