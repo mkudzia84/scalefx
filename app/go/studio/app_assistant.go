@@ -283,6 +283,23 @@ func (a *App) ListAssistantModels() ([]AssistantModelDTO, error) {
 	return out, nil
 }
 
+// FAQItemDTO is one curated question + markdown answer (the non-LLM FAQ tab).
+type FAQItemDTO struct {
+	Question string `json:"question"`
+	Answer   string `json:"answer"`
+}
+
+// AssistantFAQ returns the curated FAQ parsed from the embedded textbook — a
+// deterministic, offline, no-key answer source (the FAQ tab).
+func (a *App) AssistantFAQ() []FAQItemDTO {
+	items := assistant.FAQItems()
+	out := make([]FAQItemDTO, 0, len(items))
+	for _, it := range items {
+		out = append(out, FAQItemDTO{Question: it.Question, Answer: it.Answer})
+	}
+	return out
+}
+
 // AssistantAsk runs one advisory turn through the active provider.  liveContext
 // is the operator's current setup, assembled by the frontend (device model +
 // effect drafts, with human-readable names).  history is the full conversation

@@ -8,6 +8,8 @@ export function ApplyDefaults():Promise<main.DeviceModelSnapshot>;
 
 export function AssistantAsk(arg1:Array<main.AssistantMessage>,arg2:string):Promise<main.AssistantReply>;
 
+export function AssistantFAQ():Promise<Array<main.FAQItemDTO>>;
+
 export function AssistantStatus():Promise<main.AssistantStatusDTO>;
 
 export function AttachRole(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DeviceModelSnapshot>;
