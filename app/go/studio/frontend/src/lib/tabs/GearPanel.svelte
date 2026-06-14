@@ -577,18 +577,7 @@
             <span class="hint">live state + manual control. Runs the LOADED config — Apply edits first.</span>
         </div>
         <div class="ctl-frame ctl-single">
-            <!-- Sync mode — its own row. -->
-            <div class="sctl-row sync-row">
-                <span class="sctl-name">Sync</span>
-                <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
-                    {#each coordOptions as o}
-                        <button class="seg" class:on={cfg?.coord === o.id}
-                                on:click={() => setGearCoord(o.id)} disabled={busy}
-                                title={o.hint}>{o.label}</button>
-                    {/each}
-                </div>
-            </div>
-            <!-- Fleet row: Gear Up/Down/E-Stop. -->
+            <!-- Fleet row (single line): All struts + state + Gear Up/Down/E-Stop. -->
             <div class="sctl-row fleet">
                 <div class="sctl-id">
                     <span class="sctl-name">All struts</span>
@@ -606,6 +595,17 @@
                     <button class="small danger estop" on:click={() => safe(() => gearEStopAll())}
                             disabled={busy}
                             title="EMERGENCY STOP — brake every motor + freeze the doors. Resume with Gear Up/Down.">⏹ E-Stop</button>
+                </div>
+            </div>
+            <!-- Sync mode — its own row, under All struts. -->
+            <div class="sctl-row sync-row">
+                <span class="sctl-name">Sync</span>
+                <div class="seg-select sync-seg" title="Cross-strut coordination (Independent / Full-sync)">
+                    {#each coordOptions as o}
+                        <button class="seg" class:on={cfg?.coord === o.id}
+                                on:click={() => setGearCoord(o.id)} disabled={busy}
+                                title={o.hint}>{o.label}</button>
+                    {/each}
                 </div>
             </div>
             <!-- Per-strut STATUS rows (read-only): name + phase on the left,
@@ -1067,7 +1067,11 @@
     .sctl-row { display: grid; grid-template-columns: minmax(150px, 1.1fr) minmax(180px, 1.6fr) auto;
                 align-items: center; gap: 10px; padding: 5px 8px; border-radius: 4px;
                 background: var(--bg-surface); }
-    .sctl-row.fleet { background: var(--bg-input); border: 1px solid var(--border); }
+    /* Fleet row is a SINGLE line: All struts + state on the left, the
+       Gear Up/Down/E-Stop buttons pushed right (overrides the ctl-single grid). */
+    .sctl-row.fleet { background: var(--bg-input); border: 1px solid var(--border);
+                      display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .sctl-row.fleet .sctl-acts { margin-left: auto; }
     .sctl-row.invalid { border: 1px solid var(--error); background: rgba(255,80,80,0.05); }
     .sctl-id { display: flex; align-items: center; gap: 8px; min-width: 0; }
     /* Fixed-width name so the phase pill ("GEAR UP") starts at the same x on
