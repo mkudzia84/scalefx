@@ -1,11 +1,70 @@
 <!-- ScaleFX Studio — View Settings Dialog -->
 <script lang="ts">
+    import { onMount } from 'svelte'
     import { showViewSettings } from '../stores'
     import {
         themeChoice, fontSize,
         MIN_FONT_SIZE, MAX_FONT_SIZE, DEFAULT_FONT_SIZE, DEFAULT_THEME
     } from '../theme'
     import type { ThemeChoice } from '../theme'
+    import { AssistantStatus, SetAssistantKey, SetAssistantProvider } from '../../../wailsjs/go/main/App'
+    import { refreshStatus as refreshAssistant } from '../assistant/store'
+
+    // ─── AI Assistant — provider + key ───  (model is chosen in the Assistant dock)
+    interface ProviderInfo { id: string; label: string; hasKey: boolean; keySource: string }
+    interface AiStatus { available: boolean; provider: string; model: string; keySource: string; providers: ProviderInfo[] }
+    let aiStatus: AiStatus | null = null
+    let keyInput = ''
+    let aiSaving = false
+    let aiMsg = ''
+    const selValue = (e: Event) => (e.target as HTMLSelectElement).value
+
+    async function loadAi() {
+        try { aiStatus = (await AssistantStatus()) as AiStatus } catch { aiStatus = null }
+    }
+    onMount(loadAi)
+
+    async function chooseProvider(id: string) {
+        aiSaving = true; aiMsg = ''
+        try {
+            await SetAssistantProvider(id)
+            keyInput = ''
+            await loadAi()
+            await refreshAssistant()
+        } catch (e) { aiMsg = 'Failed: ' + String(e) } finally { aiSaving = false }
+    }
+    async function saveAiKey() {
+        if (!aiStatus) return
+        aiSaving = true; aiMsg = ''
+        try {
+            await SetAssistantKey(aiStatus.provider, keyInput.trim())
+            keyInput = ''
+            await loadAi()
+            await refreshAssistant()
+            aiMsg = 'Saved.'
+        } catch (e) { aiMsg = 'Failed: ' + String(e) } finally { aiSaving = false }
+    }
+    async function clearAiKey() {
+        if (!aiStatus) return
+        aiSaving = true; aiMsg = ''
+        try {
+            await SetAssistantKey(aiStatus.provider, '')
+            keyInput = ''
+            await loadAi()
+            await refreshAssistant()
+            aiMsg = 'Cleared.'
+        } catch (e) { aiMsg = 'Failed: ' + String(e) } finally { aiSaving = false }
+    }
+    function activeLabel(s: AiStatus | null): string {
+        if (!s || !s.providers) return 'AI'
+        const p = s.providers.find(x => x.id === s.provider)
+        return p ? p.label : 'AI'
+    }
+    function aiStateLabel(s: AiStatus | null): string {
+        if (!s) return ''
+        if (!s.available) return 'Not configured — paste a key for this provider to enable the assistant.'
+        return s.keySource === 'builtin' ? 'Enabled via built-in key.' : 'Enabled · key stored locally.'
+    }
 
     function close() {
         $showViewSettings = false
@@ -32,7 +91,7 @@
 
 <div class="modal-backdrop" on:click|self={close}>
     <div class="modal settings-modal">
-        <h2>View Settings</h2>
+        <h2>Settings</h2>
 
         <!-- Theme selection -->
         <div class="setting-group">
@@ -60,6 +119,35 @@
             </div>
             <span class="setting-hint">
                 Affects all text in the application ({MIN_FONT_SIZE}–{MAX_FONT_SIZE} px)
+            </span>
+        </div>
+
+        <!-- AI Assistant — provider + key -->
+        <div class="setting-group">
+            <span class="setting-label">AI Assistant</span>
+            <div class="ai-row">
+                <span class="ai-sublabel">Provider</span>
+                <select class="ai-key" value={aiStatus ? aiStatus.provider : 'gemini'}
+                        on:change={(e) => chooseProvider(selValue(e))} disabled={aiSaving}>
+                    {#each ((aiStatus && aiStatus.providers) || []) as p}
+                        <option value={p.id}>{p.label}{p.hasKey ? '  ✓ key set' : ''}</option>
+                    {/each}
+                </select>
+            </div>
+            <div class="ai-row">
+                <input class="ai-key" type="password"
+                       placeholder={`Paste ${activeLabel(aiStatus)} API key…`}
+                       bind:value={keyInput} disabled={aiSaving} />
+                <button class="primary" on:click={saveAiKey} disabled={aiSaving || !keyInput.trim()}>Save</button>
+                <button on:click={clearAiKey}
+                        disabled={aiSaving || !(aiStatus && aiStatus.keySource === 'settings')}
+                        title="Remove the locally-stored key for this provider">Clear</button>
+            </div>
+            <span class="setting-hint">
+                {aiStateLabel(aiStatus)}{aiMsg ? ` — ${aiMsg}` : ''}<br />
+                Powers the Assistant dock; pick the model there. Keys are stored locally on this machine
+                (never uploaded or committed). Free keys: Gemini → Google AI Studio · Groq → console.groq.com ·
+                Mistral → console.mistral.ai.
             </span>
         </div>
 
@@ -179,5 +267,36 @@
         font-size: 11px;
         color: var(--text-dim);
         margin-top: 4px;
+        line-height: 1.5;
+    }
+
+    /* ─── AI assistant key ─── */
+
+    .ai-row {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        margin-bottom: 6px;
+    }
+
+    .ai-sublabel {
+        font-size: 11px;
+        color: var(--text-dim);
+        min-width: 56px;
+    }
+
+    .ai-key {
+        flex: 1;
+        background: var(--bg-input);
+        color: var(--text);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 6px 8px;
+        font-size: 12px;
+    }
+
+    .ai-key:focus {
+        outline: none;
+        border-color: var(--accent);
     }
 </style>

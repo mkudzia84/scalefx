@@ -5,6 +5,7 @@
     import StatusBar from './StatusBar.svelte'
     import ConfigToolbar from './ConfigToolbar.svelte'
     import ConsolePanel from '../dialogs/ConsoleDialog.svelte'
+    import AssistantPanel from '../assistant/AssistantPanel.svelte'
     import FirmwareTab from '../tabs/FirmwareTab.svelte'
     import IoTab from '../tabs/IoTab.svelte'
     import EnginePanel from '../tabs/EnginePanel.svelte'
@@ -13,7 +14,7 @@
     import GearLandingTab from '../tabs/GearLandingTab.svelte'
     import GearDiagnosticsTab from '../tabs/GearDiagnosticsTab.svelte'
     import NotImplementedTab from '../tabs/NotImplementedTab.svelte'
-    import { showConsole, activeTab, connectionInfo } from '../stores'
+    import { showConsole, showAssistant, activeTab, connectionInfo } from '../stores'
     import { studioTabs } from '../devicemodel'
     import { SetInputLiveView } from '../../../wailsjs/go/main/App'
     import { diag } from '../diag'
@@ -69,6 +70,20 @@
         window.removeEventListener('mousemove', onGripMove)
         window.removeEventListener('mouseup', onGripUp)
     }
+
+    // Console + Assistant share the one right dock — opening either closes the
+    // other (one resize pane, two possible contents).
+    function toggleDock(which: 'console' | 'assistant') {
+        if (which === 'assistant') {
+            const next = !$showAssistant
+            showAssistant.set(next)
+            if (next) showConsole.set(false)
+        } else {
+            const next = !$showConsole
+            showConsole.set(next)
+            if (next) showAssistant.set(false)
+        }
+    }
 </script>
 
 <div class="main-layout">
@@ -112,20 +127,29 @@
             </div>
         </div>
 
-        {#if $showConsole}
+        {#if $showConsole || $showAssistant}
             <!-- svelte-ignore a11y-no-static-element-interactions -->
             <div class="resize-grip" on:mousedown={onGripDown}></div>
             <div class="console-pane" style="width: {consoleWidthPct}%">
-                <ConsolePanel />
+                {#if $showAssistant}<AssistantPanel />{:else}<ConsolePanel />{/if}
             </div>
         {/if}
 
-        <!-- Right-edge ticker tab to toggle console -->
+        <!-- Right-edge ticker tabs: Assistant above Console (one shared dock). -->
+        <button
+            class="console-ticker assistant"
+            class:open={$showAssistant}
+            style={$showAssistant ? `right: ${consoleWidthPct}%` : ''}
+            on:click={() => toggleDock('assistant')}
+            title={$showAssistant ? 'Hide Assistant' : 'Show Assistant (AI config help)'}
+        >
+            <span class="ticker-label">Assistant</span>
+        </button>
         <button
             class="console-ticker"
             class:open={$showConsole}
             style={$showConsole ? `right: ${consoleWidthPct}%` : ''}
-            on:click={() => $showConsole = !$showConsole}
+            on:click={() => toggleDock('console')}
             title={$showConsole ? 'Hide Console (Ctrl+`)' : 'Show Console (Ctrl+`)'}
         >
             <span class="ticker-label">Console</span>
@@ -225,6 +249,15 @@
         text-transform: uppercase;
         z-index: 10;
         transition: background 0.15s, color 0.15s, right 0.15s;
+    }
+
+    /* Assistant ticker stacks directly above the Console ticker (shared dock). */
+    .console-ticker.assistant {
+        top: calc(50% - 96px);
+    }
+    .console-ticker.assistant.open,
+    .console-ticker.assistant:hover {
+        color: var(--accent);
     }
 
     .console-ticker:hover {

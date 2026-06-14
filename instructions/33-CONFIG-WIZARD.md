@@ -295,3 +295,50 @@ Two global config-toolbar changes landed with the wizard:
   bar ALWAYS occupies its row and self-gates its content to HubFX inside (an
   expander shows a muted note at the same height) so the tab bar never jumps when
   the controller type changes.
+
+## 12. As-built — the Config Assistant (branch `chatbot-assistant`)
+
+The Claude-powered assistant (§7) shipped as an **advisory, multi-provider chat
+dock**. It answers ScaleFX setup questions grounded in an embedded textbook +
+the operator's live config; it does NOT apply config or actuate hardware (it has
+no such tool) — it explains and points at the Wizard/tabs.
+
+**Reusable AI layer** — `app/go/studio/genai/` (provider-agnostic, no ScaleFX
+coupling): `Provider` interface (`Generate`/`Name`/`Model`); a native **Gemini**
+client + a generic **OpenAI-compatible** client used for **Groq** + **Mistral**;
+`ListGeminiModels`/`ListOpenAIModels` for live model lists; build-time
+`Builtin{,Groq,Mistral}Key` vars (ldflags `-X studio/genai.BuiltinKey=…`).
+
+**ScaleFX assistant** — `app/go/studio/assistant/`: an embedded markdown
+**textbook** (`knowledge/*.md`, `go:embed`) written purely from the user/setup
+perspective (overview, effects, Studio navigation, Console + commands, setup
+workflow, FAQ, glossary, output-format) + a guardrail (`assistant.go`) that
+scopes answers to ScaleFX, enforces the output format, and forbids
+apply/actuate. `SystemPrompt(liveContext)` = guardrail + textbook + the live
+context. The Snapshot is NOT built in Go — see below.
+
+**Bindings + multi-provider** — `app_assistant.go`: settings in
+`%APPDATA%/ScaleFX/settings.json` (active provider + per-provider key/model);
+`AssistantStatus`/`AssistantAsk(history, liveContext)`/`SetAssistantProvider`/
+`SetAssistantKey(provider,key)`/`SetAssistantModel`/`ListAssistantModels`. Key
+precedence: settings key → build-time builtin → none. Providers registered in
+one `aiProviders` slice.
+
+**Frontend** — `lib/assistant/`: the dock (`AssistantPanel.svelte`, mirrors the
+Console dock), a dependency-free **markdown renderer** (`markdown.ts` — safe
+HTML-escape + fixed tag set; headings/lists/inline-code/fenced-code/links/
+blockquotes/**tables**) with a colour scheme (teal items, plain-bold headers,
+RED safety blockquotes), the **live-context builder** (`context.ts`), and the
+store. Per-provider model **allow-lists** live in one `ALLOWLISTS` map in the
+panel; the live list only flags availability. Settings (`ViewSettingsDialog`)
+holds the provider dropdown + per-provider key.
+
+**The "(None)" bug + the key architectural call:** the live context is built in
+the FRONTEND (`context.ts`) from the device model + the **effect drafts** — NOT
+in Go from the device-model *claims* (which are vestigial — that was the
+"Configured effects = none" bug). So the assistant sees each effect's real
+enabled state + unsaved edits, names ports by their friendly label resolving
+hub-local vs expander via the canonical `guid|kind|index` key (`modelPortKey`/
+`portRefToKey` — a bare `kind:idx` key collides across boards), and cites
+channels as `CHn` + label. Deferred: write-tools (still advisory-only), the FAQ
+(non-LLM) responder, streaming.
