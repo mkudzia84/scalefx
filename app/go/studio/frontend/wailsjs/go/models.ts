@@ -1426,8 +1426,6 @@ export namespace main {
 	}
 	export class GearDoorDTO {
 	    port: PortRefDTO;
-	    open: number;
-	    close: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new GearDoorDTO(source);
@@ -1436,8 +1434,6 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.port = this.convertValues(source["port"], PortRefDTO);
-	        this.open = source["open"];
-	        this.close = source["close"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1458,6 +1454,28 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class GearGuardDTO {
+	    mode: string;
+	    ratioX100: number;
+	    sampleMs: number;
+	    windowMs: number;
+	    thresholdMa: number;
+	    ceilingMa: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearGuardDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.mode = source["mode"];
+	        this.ratioX100 = source["ratioX100"];
+	        this.sampleMs = source["sampleMs"];
+	        this.windowMs = source["windowMs"];
+	        this.thresholdMa = source["thresholdMa"];
+	        this.ceilingMa = source["ceilingMa"];
+	    }
+	}
 	export class GearChannelDTO {
 	    id: number;
 	    name: string;
@@ -1465,6 +1483,7 @@ export namespace main {
 	    deployDuty: number;
 	    retractDuty: number;
 	    timeoutMs: number;
+	    guard?: GearGuardDTO;
 	    doors: GearDoorDTO[];
 	    doorMode: string;
 	    doorDelayMs: number;
@@ -1482,6 +1501,7 @@ export namespace main {
 	        this.deployDuty = source["deployDuty"];
 	        this.retractDuty = source["retractDuty"];
 	        this.timeoutMs = source["timeoutMs"];
+	        this.guard = this.convertValues(source["guard"], GearGuardDTO);
 	        this.doors = this.convertValues(source["doors"], GearDoorDTO);
 	        this.doorMode = source["doorMode"];
 	        this.doorDelayMs = source["doorDelayMs"];
@@ -1585,12 +1605,15 @@ export namespace main {
 	
 	
 	
+	
 	export class GearStatusEntry {
 	    id: number;
 	    phase: number;
 	    phaseName: string;
 	    subPhase: number;
 	    subPhaseName: string;
+	    errReason: number;
+	    errReasonTag: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GearStatusEntry(source);
@@ -1603,6 +1626,8 @@ export namespace main {
 	        this.phaseName = source["phaseName"];
 	        this.subPhase = source["subPhase"];
 	        this.subPhaseName = source["subPhaseName"];
+	        this.errReason = source["errReason"];
+	        this.errReasonTag = source["errReasonTag"];
 	    }
 	}
 	export class GunAxisDTO {

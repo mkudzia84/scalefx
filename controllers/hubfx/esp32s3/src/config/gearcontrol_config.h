@@ -22,7 +22,7 @@
  *     name: gear_updown          # named channel from /hubfx.yaml inputs[] (Rule 43)
  *     threshold_us: 1500         # Boolean threshold
  *     hysteresis_us: 50
- *     invert: false              # false: above threshold = RETRACT (gear up)
+ *     invert: false              # false: above threshold (ON) = DEPLOY (gear down)
  *   sounds:                      # OPTIONAL — transit sounds on the Gear mixer channel
  *     deploy:  /sounds/gear/deploy.wav    # looped while any gear is deploying
  *     retract: /sounds/gear/retract.wav   # looped while any gear is retracting
@@ -33,7 +33,7 @@
  *       motor: { guid: "AB12", kind: hbridge, idx: 0 }
  *       deploy_duty:  20000      # signed H-bridge duty for "going down"
  *       retract_duty: -20000     # signed duty for "going up"
- *       timeout_ms:   4000       # full-travel watchdog
+ *       timeout_ms:   30000      # full-travel watchdog
  *       doors:                   # ≤2 ServoActuator door servos
  *         - { port: { kind: servo, idx: 0 }, open: 10000, close: 0 }
  *         - { port: { kind: servo, idx: 1 }, open: 10000, close: 0 }
@@ -78,7 +78,7 @@ struct GearActivation {
     char     input[24]    = {};     ///< named channel; empty = manual only
     uint16_t thresholdUs  = 1500;   ///< Boolean threshold
     uint16_t hysteresisUs = 50;
-    bool     invert       = false;  ///< false: above threshold = RETRACT (up)
+    bool     invert       = false;  ///< false: above threshold (ON) = DEPLOY (down)
 };
 
 /// OPTIONAL transit sounds, played on the dedicated Gear mixer channel:
@@ -182,10 +182,27 @@ struct GearControlConfigSchema {
 
             def.deployDuty  = (int16_t) g->template childAs<int32_t>("deploy_duty",   20000);
             def.retractDuty = (int16_t) g->template childAs<int32_t>("retract_duty", -20000);
-            def.timeoutMs   = (uint32_t)g->template childAs<int32_t>("timeout_ms",     4000);
+            def.timeoutMs   = (uint32_t)g->template childAs<int32_t>("timeout_ms",    30000);
+
+            // guard: { mode, ratio_x100, sample_ms, window_ms, threshold_ma,
+            //   ceiling_ma } — persisted stall-guard calibration (Studio's
+            //   "Save to strut").  Absent block → keep the GearDef defaults
+            //   (= the role's LiveRatio default).  Pushed to the motor before
+            //   each seek; see Gear::commandGuard.
+            if (const auto* gd = g->child("guard")) {
+                const char* gm = gd->template childAs<const char*>("mode", "live");
+                def.guardMode        = (gm && std::strcmp(gm, "fixed") == 0) ? 0 : 1;
+                def.guardRatioX100   = (uint16_t)gd->template childAs<int32_t>("ratio_x100",   250);
+                def.guardSampleMs    = (uint16_t)gd->template childAs<int32_t>("sample_ms",    200);
+                def.guardWindowMs    = (uint16_t)gd->template childAs<int32_t>("window_ms",     80);
+                def.guardThresholdMa = (uint16_t)gd->template childAs<int32_t>("threshold_ma", 1000);
+                def.guardCeilingMa   = (uint16_t)gd->template childAs<int32_t>("ceiling_ma",     0);
+            }
 
             // ── Door servos (v2) ──────────────────────────────────────
-            // doors: [ { port: {kind: servo, idx}, open: N, close: N }, … ]
+            // doors: [ { port: {kind: servo, idx} }, … ] — a door opens to its
+            // servo's calibrated MAX end, closes to MIN (REV flips); no per-door
+            // position.  Any legacy `open:`/`close:` keys are simply ignored.
             def.numDoors = 0;
             const auto* doorsNode = g->child("doors");
             if (doorsNode && doorsNode->type == YamlNode::Sequence) {
@@ -200,8 +217,6 @@ struct GearControlConfigSchema {
                                      i, di);
                         continue;
                     }
-                    door.openNorm  = (uint16_t)dNode->template childAs<int32_t>("open",  10000);
-                    door.closeNorm = (uint16_t)dNode->template childAs<int32_t>("close", 0);
                     def.numDoors++;
                 }
             }

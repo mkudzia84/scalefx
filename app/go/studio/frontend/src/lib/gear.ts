@@ -18,6 +18,7 @@ import type { DirtySource } from './dirty-registry'
 import {
     LoadGearConfig, SaveGearConfig, GearStatus,
     GearDeploy, GearRetract, GearStop, GearAll, GearReset,
+    GearEStop, GearEStopAll, GearStep,
 } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { deviceModel, RoleKind, type Port } from './devicemodel'
@@ -26,17 +27,30 @@ import { deviceModel, RoleKind, type Port } from './devicemodel'
 
 export interface PortRefT { board: string; guid: string; kind: string; idx: number }
 
-/** One door servo on a gear.  open / close are NORMALISED [0..10000]
- *  positions (servo-intent rule); the role honours its own REV flag. */
+/** One door servo on a gear.  Open drives the servo to its calibrated MAX
+ *  end, close to its calibrated MIN end (the per-door REV flag in the servo
+ *  calibration flips the physical direction) — same parametrisation as a
+ *  landing-light servo: travel lives in the servo calibration, not here. */
 export interface GearDoorT {
     port: PortRefT
-    open: number
-    close: number
 }
 
 export type DoorMode    = 'sync' | 'delay' | 'sequence'
 export type ClosePolicy = 'both' | 'first' | 'none'
 export type CoordMode   = 'independent' | 'door_sync' | 'full_sync' | 'sequenced'
+
+/** Persisted stall-guard calibration for a strut's motor (Studio's "Save to
+ *  strut").  Mirrors the firmware GearDef guard + BIMOTOR_SET_GUARD; the gear
+ *  effect pushes it to the motor before each seek so a saved calibration
+ *  drives real deploy/retract.  ratioX100 = ratio×100 (250 = 2.5×). */
+export interface GearGuardT {
+    mode: 'live' | 'fixed'
+    ratioX100: number
+    sampleMs: number
+    windowMs: number
+    thresholdMa: number
+    ceilingMa: number
+}
 
 export interface GearChannelT {
     id: number
@@ -45,6 +59,7 @@ export interface GearChannelT {
     deployDuty: number
     retractDuty: number
     timeoutMs: number
+    guard: GearGuardT
     doors: GearDoorT[]
     doorMode: DoorMode
     doorDelayMs: number
@@ -52,7 +67,7 @@ export interface GearChannelT {
 }
 
 /** OPTIONAL one-channel RC up/down binding (Rule 43 named channel from
- *  /hubfx.yaml inputs[]).  Above the threshold = retract (gear up);
+ *  /hubfx.yaml inputs[]).  Above the threshold (switch ON) = deploy (gear down);
  *  invert flips.  Empty name = manual-only.  Failsafe is firmware-fixed
  *  to the DEPLOY side (gear down on RC loss). */
 export interface GearInputT {
@@ -84,10 +99,12 @@ export interface GearConfigT {
 /** Live per-channel state from the `gear:phase` event / status poll. */
 export interface GearPhaseT {
     id: number
-    phase: number          // 0..5 — unconfigured / retracted / deploying / deployed / retracting / error
+    phase: number          // 0..7 — unconfigured/up/movingDown/down/movingUp/error/unknown/held
     phaseName: string
-    subPhase: number       // 0..5 — idle / doors-opening / doors-open / motor-running / motor-done / doors-closing
+    subPhase: number       // 0..6 — idle / doors-opening / doors-open / strut-moving / strut-done / doors-closing / doors-closed
     subPhaseName: string
+    errReason?: number     // GearError code behind an Error phase (0 otherwise)
+    errReasonTag?: string  // short tag — "timeout" / "no motor" / "fault"
 }
 
 export interface GearStatusEntryT {
@@ -96,6 +113,8 @@ export interface GearStatusEntryT {
     phaseName: string
     subPhase: number
     subPhaseName: string
+    errReason?: number
+    errReasonTag?: string
 }
 
 // ─── Defaults ─────────────────────────────────────────────────────────
@@ -103,7 +122,12 @@ export interface GearStatusEntryT {
 const emptyPort = (kind: string): PortRefT => ({ board: '', guid: '', kind, idx: 0 })
 
 export function defaultGearDoor(): GearDoorT {
-    return { port: emptyPort('servo'), open: 10000, close: 0 }
+    return { port: emptyPort('servo') }
+}
+
+/** Default stall guard = the firmware/role LiveRatio default (2.5×). */
+export function defaultGearGuard(): GearGuardT {
+    return { mode: 'live', ratioX100: 250, sampleMs: 200, windowMs: 80, thresholdMa: 1000, ceilingMa: 0 }
 }
 
 export function defaultGearChannel(id: number): GearChannelT {
@@ -113,7 +137,8 @@ export function defaultGearChannel(id: number): GearChannelT {
         motor: emptyPort('hbridge'),
         deployDuty: 20000,
         retractDuty: -20000,
-        timeoutMs: 4000,
+        timeoutMs: 30000,
+        guard: defaultGearGuard(),
         doors: [],
         doorMode: 'sync',
         doorDelayMs: 500,
@@ -291,7 +316,10 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         name:         out.input?.name ?? '',
         thresholdUs:  out.input?.thresholdUs || 1500,
         hysteresisUs: out.input?.hysteresisUs || 50,
-        invert:       !!out.input?.invert,
+        // Direction/reverse is set ON THE RADIO, not here — the gear channel is
+        // never inverted (switch ON/above threshold = lower (gear down), OFF =
+        // raise (gear up); RC-loss lowers).
+        invert:       false,
     }
     out.sounds = {
         deploy:     out.sounds?.deploy ?? '',
@@ -305,11 +333,17 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         motor:       g.motor ?? emptyPort('hbridge'),
         deployDuty:  g.deployDuty ?? 20000,
         retractDuty: g.retractDuty ?? -20000,
-        timeoutMs:   g.timeoutMs ?? 4000,
+        timeoutMs:   g.timeoutMs ?? 30000,
+        guard:       g.guard ? {
+            mode:        g.guard.mode === 'fixed' ? 'fixed' : 'live',
+            ratioX100:   g.guard.ratioX100 ?? 250,
+            sampleMs:    g.guard.sampleMs ?? 200,
+            windowMs:    g.guard.windowMs ?? 80,
+            thresholdMa: g.guard.thresholdMa ?? 1000,
+            ceilingMa:   g.guard.ceilingMa ?? 0,
+        } : defaultGearGuard(),
         doors:       Array.isArray(g.doors) ? g.doors.map(d => ({
             port:  d.port ?? emptyPort('servo'),
-            open:  d.open ?? 10000,
-            close: d.close ?? 0,
         })) : [],
         doorMode:    (g.doorMode ?? 'sync') as DoorMode,
         doorDelayMs: g.doorDelayMs ?? 500,
@@ -334,6 +368,7 @@ export async function refreshGearStatus(): Promise<void> {
             next[s.id] = {
                 id: s.id, phase: s.phase, phaseName: s.phaseName,
                 subPhase: s.subPhase, subPhaseName: s.subPhaseName,
+                errReason: s.errReason, errReasonTag: s.errReasonTag,
             }
         }
         return next
@@ -346,12 +381,20 @@ export async function gearDeploy(id: number): Promise<void>  { return GearDeploy
 export async function gearRetract(id: number): Promise<void> { return GearRetract(id) }
 export async function gearStop(id: number): Promise<void>    { return GearStop(id) }
 export async function gearReset(id: number): Promise<void>   { return GearReset(id) }
-/** Fleet trigger (decision #4): 0 = stop, 1 = deploy, 2 = retract. */
+/** Emergency hold (brake + freeze in place → HELD). */
+export async function gearEStop(id: number): Promise<void>   { return GearEStop(id) }
+export async function gearEStopAll(): Promise<void>          { return GearEStopAll() }
+/** Fleet trigger: 0 = stop/hold, 1 = deploy (down), 2 = retract (up). */
 export async function gearAll(action: number): Promise<void> { return GearAll(action) }
+/** Single-step a strut ONE leg toward target (0=up, 1=down) then park. */
+export async function gearStep(id: number, target: number): Promise<void> { return GearStep(id, target) }
 
 export const GearAllStop = 0
 export const GearAllDeploy = 1
 export const GearAllRetract = 2
+
+export const GearStepUp = 0
+export const GearStepDown = 1
 
 // ─── Phase-event listener (idempotent) ────────────────────────────────
 

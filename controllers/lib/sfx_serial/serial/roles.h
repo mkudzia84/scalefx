@@ -301,12 +301,16 @@ namespace BiMotorSeekOutcome {
     constexpr uint8_t Reached = 0;   ///< stall hit = endstop reached
     constexpr uint8_t Timeout = 1;   ///< timeout elapsed before any stall
     constexpr uint8_t Aborted = 2;   ///< cancelled by BRAKE / COAST / SET_SIGNED
+    constexpr uint8_t NoLoad  = 3;   ///< driven, but current stayed ~0 under
+                                     ///< load → no motor / open circuit / blown
+                                     ///< H-bridge output (Rule 11 append)
 
     inline const char* getName(uint8_t o) {
         switch (o) {
             case Reached: return "reached";
             case Timeout: return "timeout";
             case Aborted: return "aborted";
+            case NoLoad:  return "no-load";
             default:      return "?";
         }
     }

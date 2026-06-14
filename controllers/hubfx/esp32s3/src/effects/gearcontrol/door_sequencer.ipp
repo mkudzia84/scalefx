@@ -12,13 +12,25 @@ namespace hubfx::effects::gearctrl {
 inline void DoorSequencer::commandDoor(uint8_t i, uint16_t posNorm) {
     if (i >= _numDoors) return;
     _commanded[i] = true;
-    _done[i]      = false;
+    const int8_t targetEnd = (posNorm == RolePacket::kPosNormFull) ? 1 : 0;
+    const bool   noop      = (_doorEnd[i] == targetEnd);   // already at this end
+    _doorEnd[i] = targetEnd;                               // optimistic: heading there
+    _done[i]    = false;
     if (!_send) { _done[i] = true; return; }   // no transport — treat as instant
+    // Re-assert the position even on a no-op (cheap, guarantees the door is at
+    // the commanded end before the strut moves) — but DON'T wait for a
+    // SERVO_MOTION_DONE that won't come because the servo doesn't actually move
+    // (the close_policy=none retract re-opening already-open doors = the pause).
     uint8_t payload[3];
     payload[0] = _doors[i].servo.portIdx;
     SfxWire::putU16LE(&payload[1], posNorm);
     _send(_sendCtx, _doors[i].servo,
           RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload));
+    if (noop) {
+        _done[i] = true;
+        SFX_LOG_DEBUG("[gear-door] door %u already %s — no-op (no wait)",
+                      (unsigned)i, targetEnd ? "open" : "closed");
+    }
 }
 
 inline bool DoorSequencer::allCommandedDone() const {
@@ -44,8 +56,10 @@ inline void DoorSequencer::begin(bool opening, uint8_t doorMask) {
 
     _state = opening ? State::Opening : State::Closing;
 
-    auto targetFor = [&](uint8_t i) -> uint16_t {
-        return opening ? _doors[i].openNorm : _doors[i].closeNorm;
+    // Open → calibrated MAX-µs end, close → MIN-µs end (the servo role's REV
+    // flag flips direction); travel lives in the servo calibration, not here.
+    auto targetFor = [&](uint8_t /*i*/) -> uint16_t {
+        return opening ? RolePacket::kPosNormFull : (uint16_t)0;
     };
 
     const bool d0 = (doorMask & 0x01) != 0;

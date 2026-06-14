@@ -30,13 +30,26 @@ import (
 // config file.  Gear motors narrow to `kind: hbridge` (BiDcMotor role);
 // door servos to `kind: servo` (ServoActuator role).
 
-// GearDoorDTO — one entry in a gear's doors[] block.  open / close are
-// NORMALISED positions [0..10000] (Rule: servo intent is normalised);
-// the servo role honours its own REV flag + calibration.
+// GearDoorDTO — one entry in a gear's doors[] block.  A door drives its
+// servo to the calibrated MAX end on open and the MIN end on close (the
+// servo's own REV flag flips direction) — the travel lives in the servo
+// calibration, NOT here (same parametrisation as a landing-light servo).
 type GearDoorDTO struct {
-	Port  PortRefDTO `yaml:"port"  json:"port"`
-	Open  uint16     `yaml:"open"  json:"open"`
-	Close uint16     `yaml:"close" json:"close"`
+	Port PortRefDTO `yaml:"port" json:"port"`
+}
+
+// GearGuardDTO — persisted stall-guard calibration for a strut's motor
+// (Studio's "Save to strut").  Mirrors the firmware GearDef guard fields +
+// BIMOTOR_SET_GUARD; the gear effect pushes it to the motor before each seek
+// so a saved calibration drives REAL deploy/retract (not the role default).
+// `mode` = "live" (LiveRatio) | "fixed".  ratio_x100 = ratio×100 (250 = 2.5×).
+type GearGuardDTO struct {
+	Mode        string `yaml:"mode"          json:"mode"`
+	RatioX100   uint16 `yaml:"ratio_x100"    json:"ratioX100"`
+	SampleMs    uint16 `yaml:"sample_ms"     json:"sampleMs"`
+	WindowMs    uint16 `yaml:"window_ms"     json:"windowMs"`
+	ThresholdMa uint16 `yaml:"threshold_ma"  json:"thresholdMa"`
+	CeilingMa   uint16 `yaml:"ceiling_ma"    json:"ceilingMa"`
 }
 
 // GearChannelDTO mirrors the firmware GearDef.  door_mode maps onto the
@@ -49,6 +62,7 @@ type GearChannelDTO struct {
 	DeployDuty  int16         `yaml:"deploy_duty"              json:"deployDuty"`
 	RetractDuty int16         `yaml:"retract_duty"             json:"retractDuty"`
 	TimeoutMs   uint32        `yaml:"timeout_ms"               json:"timeoutMs"`
+	Guard       *GearGuardDTO `yaml:"guard,omitempty"          json:"guard,omitempty"` // persisted stall guard (append-only)
 	Doors       []GearDoorDTO `yaml:"doors,omitempty"          json:"doors"`
 	DoorMode    string        `yaml:"door_mode"                json:"doorMode"`     // sync | delay | sequence
 	DoorDelayMs uint16        `yaml:"door_delay_ms,omitempty"  json:"doorDelayMs"`  // delay mode only
@@ -57,7 +71,7 @@ type GearChannelDTO struct {
 
 // GearInputDTO — the OPTIONAL one-channel RC up/down binding (`input:`
 // block).  Name is a NAMED channel from /hubfx.yaml inputs[] (Rule 43);
-// above the threshold = retract (gear up), Invert flips.  Empty name =
+// above the threshold (switch ON) = deploy (gear down), Invert flips.  Empty name =
 // manual-only (Studio / CLI).
 type GearInputDTO struct {
 	Name         string `yaml:"name,omitempty"          json:"name"`
@@ -90,13 +104,16 @@ type GearConfig struct {
 }
 
 // GearStatusEntry is one row of GearStatus() — the live per-channel
-// phase + sub-phase the panel renders in its status pill.
+// phase + sub-phase the panel renders in its status pill.  ErrReason +
+// ErrReasonTag carry the fault behind an Error phase (timeout / no motor).
 type GearStatusEntry struct {
 	ID           uint8  `json:"id"`
 	Phase        byte   `json:"phase"`
 	PhaseName    string `json:"phaseName"`
 	SubPhase     byte   `json:"subPhase"`
 	SubPhaseName string `json:"subPhaseName"`
+	ErrReason    byte   `json:"errReason"`
+	ErrReasonTag string `json:"errReasonTag"`
 }
 
 // GearPhaseDTO mirrors gear.PhaseChange for the `gear:phase` event.
@@ -106,6 +123,8 @@ type GearPhaseDTO struct {
 	PhaseName    string `json:"phaseName"`
 	SubPhase     byte   `json:"subPhase"`
 	SubPhaseName string `json:"subPhaseName"`
+	ErrReason    byte   `json:"errReason"`
+	ErrReasonTag string `json:"errReasonTag"`
 }
 
 func defaultGearConfig() GearConfig {
@@ -323,6 +342,41 @@ func (a *App) GearReset(id uint8) error {
 	return a.logGearErr("GearReset", map[string]any{"id": id}, c.Gear.Reset(id))
 }
 
+// GearEStop emergency-holds gear `id` (brake + freeze in place → HELD).
+func (a *App) GearEStop(id uint8) error {
+	defer a.diag.Around("GearEStop", map[string]any{"id": id})()
+	a.diag.Info("GEAR", "GearEStop id=%d", id)
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearEStop", map[string]any{"id": id}, c.Gear.EStop(id))
+}
+
+// GearEStopAll emergency-holds EVERY strut in place (brake + freeze → HELD).
+func (a *App) GearEStopAll() error {
+	defer a.diag.Around("GearEStopAll", nil)()
+	a.diag.Info("GEAR", "GearEStopAll")
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearEStopAll", nil, c.Gear.EStopAll())
+}
+
+// GearStep advances gear `id` ONE leg toward `target` (0 = up, 1 = down)
+// then parks at the next boundary — the manual "do one item in the
+// sequence" command.  Auto-clears a prior error first.
+func (a *App) GearStep(id uint8, target uint8) error {
+	defer a.diag.Around("GearStep", map[string]any{"id": id, "target": target})()
+	a.diag.Info("GEAR", "GearStep id=%d target=%d", id, target)
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearStep", map[string]any{"id": id, "target": target}, c.Gear.Step(id, target))
+}
+
 // GearStatus returns the current phase + sub-phase for every configured
 // channel.  Polled when the panel mounts (live updates flow through the
 // `gear:phase` event stream below) so the pill self-heals after a dropped
@@ -345,6 +399,8 @@ func (a *App) GearStatus() ([]GearStatusEntry, error) {
 			PhaseName:    gear.PhaseName(s.Phase),
 			SubPhase:     s.SubPhase,
 			SubPhaseName: gear.SubPhaseName(s.SubPhase),
+			ErrReason:    s.ErrReason,
+			ErrReasonTag: gear.ErrorReasonTag(s.ErrReason),
 		}
 	}
 	a.diag.Debug("GEAR", "GearStatus: %d channel(s)", len(out))
@@ -370,6 +426,8 @@ func (a *App) installGearStream() {
 			PhaseName:    gear.PhaseName(ev.Phase),
 			SubPhase:     ev.SubPhase,
 			SubPhaseName: gear.SubPhaseName(ev.SubPhase),
+			ErrReason:    ev.ErrReason,
+			ErrReasonTag: gear.ErrorReasonTag(ev.ErrReason),
 		})
 	})
 }

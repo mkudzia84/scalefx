@@ -94,6 +94,10 @@ export function GearAll(arg1:number):Promise<void>;
 
 export function GearDeploy(arg1:number):Promise<void>;
 
+export function GearEStop(arg1:number):Promise<void>;
+
+export function GearEStopAll():Promise<void>;
+
 export function GearMotorCalibrate(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DiagCalibration>;
 
 export function GearMotorGuardFixed(arg1:string,arg2:number,arg3:number,arg4:number):Promise<void>;
@@ -113,6 +117,8 @@ export function GearReset(arg1:number):Promise<void>;
 export function GearRetract(arg1:number):Promise<void>;
 
 export function GearStatus():Promise<Array<main.GearStatusEntry>>;
+
+export function GearStep(arg1:number,arg2:number):Promise<void>;
 
 export function GearStop(arg1:number):Promise<void>;
 
