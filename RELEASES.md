@@ -143,6 +143,13 @@ The redesigned Gear / Undercarriage panel and the gear CLI commands described
 above. Internal: Rule 63 (uniform control-row height); Rule 11 wire mirrors for
 the gear additions.
 
+Shipped as a **self-contained Windows package** (`scalefx-studio-v1.0.0-rc1.zip`)
+— unzip and run `scalefx-studio.exe`, no Python or toolchain needed. Bundles
+`scalefx-studio.exe`, `scalefx-cli.exe`, `scalefx-flash.exe`, and `esptool.exe`
+(the ESP32-S3 flashing backend, found colocated next to `scalefx-flash.exe`).
+Reproduce the package with [`tools/package-studio.ps1`](tools/package-studio.ps1)
+(`pwsh tools/package-studio.ps1 -Version 1.0.0-rc1`).
+
 ---
 
 ## Verification & known issues

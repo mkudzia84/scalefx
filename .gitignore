@@ -122,3 +122,6 @@ _bringup_backup/
 # Local device backups (e.g. configs pulled off a board before a card swap /
 # reflash — see backups/flash-config-<date>/).  Operator-local, not source.
 backups/
+
+# Studio distribution packages
+dist/
