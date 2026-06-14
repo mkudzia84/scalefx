@@ -9,14 +9,14 @@
         WIZARD_STEPS, wizardStep, nextStep, prevStep, gotoStep,
         closeWizard, isFirstStep, isLastStep,
     } from '../wizard'
+    import WizardStepFeatures from '../wizard/WizardStepFeatures.svelte'
+    import WizardStepInput from '../wizard/WizardStepInput.svelte'
+    import WizardStepChannels from '../wizard/WizardStepChannels.svelte'
+    import WizardStepEffects from '../wizard/WizardStepEffects.svelte'
+    import WizardStepReview from '../wizard/WizardStepReview.svelte'
 
     $: step = $wizardStep
     $: current = WIZARD_STEPS[step]
-
-    function onApply() {
-        // Phase-1 stub — the real Review step runs applyAll().
-        closeWizard()
-    }
 </script>
 
 {#if $showConfigWizard}
@@ -53,11 +53,12 @@
                     <p>{current.blurb}</p>
                 </header>
                 <div class="wiz-step-content">
-                    <!-- Phase 1: placeholder. Real step components land next. -->
-                    <div class="wiz-placeholder">
-                        <p><strong>Step {step + 1} of {WIZARD_STEPS.length}: {current.title}</strong></p>
-                        <p class="muted">This step is being built. It will let you {current.blurb.charAt(0).toLowerCase() + current.blurb.slice(1)}</p>
-                    </div>
+                    {#if current.id === 'features'}<WizardStepFeatures />
+                    {:else if current.id === 'input'}<WizardStepInput />
+                    {:else if current.id === 'channels'}<WizardStepChannels />
+                    {:else if current.id === 'effects'}<WizardStepEffects />
+                    {:else if current.id === 'review'}<WizardStepReview />
+                    {/if}
                 </div>
             </section>
         </div>
@@ -67,7 +68,7 @@
             <div class="wiz-foot-right">
                 <button class="small" on:click={prevStep} disabled={isFirstStep(step)}>← Back</button>
                 {#if isLastStep(step)}
-                    <button class="small primary" on:click={onApply}>✓ Finish</button>
+                    <button class="small" on:click={closeWizard}>Done</button>
                 {:else}
                     <button class="small primary" on:click={nextStep}>Next →</button>
                 {/if}
@@ -134,11 +135,6 @@
     .wiz-step-head h3 { font-size: 16px; font-weight: 700; color: var(--text-bright); margin: 0 0 4px; }
     .wiz-step-head p { font-size: 12px; color: var(--text-dim); margin: 0 0 14px; }
     .wiz-step-content { flex: 1; }
-    .wiz-placeholder {
-        border: 1px dashed var(--border); border-radius: 6px;
-        padding: 24px; color: var(--text-dim); font-size: 13px;
-    }
-    .wiz-placeholder .muted { color: var(--text-dim); margin-top: 8px; }
 
     .wiz-footer {
         display: flex; align-items: center; justify-content: space-between;
