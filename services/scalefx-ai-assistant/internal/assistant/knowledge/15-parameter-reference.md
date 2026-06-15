@@ -1,240 +1,235 @@
 # Parameter reference (per tab / feature)
 
-This is the authoritative list of the settings ScaleFX Studio actually exposes,
-grouped by the tab/effect where you set them. Each row is: the setting, what it
-does, its options/range, and its **default** (the value a freshly-added item or an
-unset field takes).
+This is the authoritative list of the settings ScaleFX Studio exposes, grouped by
+the tab/effect where you set them. The descriptions are taken from Studio's own
+in-app help text, so they match exactly what each control does. Each row gives the
+setting, an accurate description (including its options), and its default.
 
-**Rule for the assistant:** only describe settings, options, modes, ranges, and
-defaults that appear on THIS page (cross-referenced with the operator's live
-state). Do not invent parameters, extra modes, value ranges, or defaults. If the
-operator asks about something not here, say you're not certain it exists, name the
-closest real setting, and point them at the tab — rather than guessing. The live
-state shows the operator's CURRENT values; this page shows the defaults so you can
-tell them what an unset setting falls back to.
+**Rule for the assistant:** describe ONLY the settings, behaviours, options, and
+defaults on THIS page (cross-referenced with the operator's live state). Do not
+invent parameters, modes, ranges, or defaults, and do not embellish a setting's
+behaviour beyond what's written here. If asked about something not listed, say
+you're not certain it exists, name the closest real setting, and point the
+operator at the tab — never guess. The live state shows the operator's CURRENT
+values; this page gives the behaviour and the defaults.
 
 Units: **µs** = servo/RC pulse width (1000–2000 µs is the normal RC range),
-**ms** = milliseconds, **%** = 0–100 percent, **mV/mA** = millivolts/milliamps.
+**ms** = milliseconds, **%** = 0–100 percent, **mV** = millivolts.
+
+A recurring pattern — **RC channel gating** (used by engine on/off, gun trigger,
+gun smoke activation, gear up/down, landing activation): you pick a *named*
+channel (defined on the Input & Ports tab), and the effect triggers when that
+channel's value rises past a **threshold**; the **hysteresis** is a dead-band
+around the threshold that stops stick jitter from re-triggering. Leaving the
+channel empty means manual control only.
 
 ---
 
 ## Input & Ports tab
 
-### Input port (the RC receiver link)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Protocol | how the receiver connects | `PPM` / `SBUS` / `Jeti EX Input` (limited by what the port supports) | — (operator picks) |
-| Channel count | how many RC channels to read | up to the protocol's max; can auto-expand from the live signal | — |
+| Setting | What it does | Default |
+|---|---|---|
+| Protocol | Input decoding mode for the receiver link, limited to the roles this port can host (`PPM` / `SBUS` / `Jeti EX Input`). | operator picks |
+| Channel count | How many channels are decoded from this input (capped at the protocol's max). "Autodetect" sets it from the live signal. | from signal |
+| Channel function | Names a channel so effects can reference it by name (defined in the Input & Ports `inputs[]` block). | unset |
+| Port role | The hardware function attached to an output port: `ServoActuator`, `LedAnimator`, `DcMotor`, `BiDcMotor` (H-bridge), `Heater`, or the input roles. Output pickers only list ports with the role the effect needs. | unset |
 
-### Channel mapping (one per RC channel)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Function | what the channel drives | a named function (`engine_toggle`, `gun_trigger`, `gear_updown`, `gun_rof`, `light_program`, `light_brightness`, `gun_smoke`, `gun_yaw`, `gun_pitch`, `master_volume`) or a custom name | unset |
-
-Effects reference channels by this **name**, not by number.
-
-### Port roles & servo calibration
-A port is given a **role**: `ServoActuator`, `LedAnimator`, `DcMotor`, `BiDcMotor`
-(H-bridge), `Heater`, or the input roles `RcPwmInput`/`SbusInput`/`JetiExInput`/
-`JetiExTelemetry`. A servo's calibration/motion profile (set in the calibration
-dialog) has: Min/Max endpoint (µs), Centre (µs), Max speed/acceleration/jerk, and
-Reversed. Effects command a servo by intent (deploy/retract or 0–100%); the role
-maps that onto these calibrated limits. Defaults come from the servo dialog, not a
-fixed number.
-
-### Expanders
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Alias | friendly name for a connected expander | text (e.g. `gear1`) | — |
-| GUID | the board's hardware id | read-only | — |
+**Servo calibration** (the ⚙ Calibrate… popup — live jog, set limits, edit speed /
+accel / jerk): Min/Max endpoint µs, Centre µs, Max speed/accel/jerk, and a
+**Reversed** toggle ("open" maps to min µs instead of max). Effects command a servo
+by intent; the role maps that onto these calibrated limits.
 
 ---
 
 ## Engine tab (EngineFX)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Enabled | master on/off for engine sound | on / off | **off** |
-| Type | engine character | `Turbine` / `Radial (planned)` / `Diesel (planned)` | `Turbine` |
-| Speaker output | which channels carry the sound | `Stereo` / `Left` / `Right` | `Stereo` |
-| Channel (toggle input) | RC channel that starts/stops | a named channel | unset |
-| Threshold | pulse above which the engine is ON | within the RC range | `1500µs` |
-| Hysteresis | dead-band around the threshold | small µs value | `50µs` |
-| Failsafe | behaviour on signal loss | `Hold` / `Force OFF` / `Force ON` | `Force OFF` |
-| Starting / Running / Stopping sound | WAV files on SD (Running is required) | file paths | empty |
-| Starting offset | delay before the start sound | ≥ 0 ms | `0ms` |
-| Stopping offset | delay before the stop sound | ≥ 0 ms | `0ms` |
-| Start fade-in | fade the running sound in | ≥ 0 ms | `0ms` |
-| Stop fade-out | fade the running sound out | ≥ 0 ms | `0ms` |
+
+| Setting | What it does | Default |
+|---|---|---|
+| Enable | Master on/off for EngineFX (press Apply to push). | off |
+| Type | Engine character — `Turbine`, or `Radial`/`Diesel` (planned). | `Turbine` |
+| Speaker output | Which audio channels carry the sound: `Stereo`, `Left`, or `Right`. | `Stereo` |
+| On/off channel | The RC channel that starts/stops the engine (RC-gated; see threshold/hysteresis). Empty = manual. | unset |
+| Threshold | Engine turns on when the channel rises past this pulse. | `1500µs` |
+| Hysteresis | Dead-band around the threshold that prevents stick jitter from re-triggering. | `50µs` |
+| Failsafe | Behaviour on RC signal loss: `Hold` last value, `Force OFF`, or `Force ON`. | `Force OFF` |
+| Starting / Running / Stopping sound | WAV files on the SD card for ignition, the running loop (required), and shutdown. | empty |
+| Starting offset | Delay before the starting sound begins after the engine switches on. | `0ms` |
+| Stopping offset | Delay before the stopping sound begins after the engine switches off. | `0ms` |
+| Start fade-in | Linear volume ramp from silent to full at the start of the engine sound. | `0ms` |
+| Stop fade-out | Linear volume ramp from full to silent at shutdown. | `0ms` |
 
 ---
 
-## GunFX tab
-Per gun:
+## GunFX tab (per gun, up to 4)
 
 ### Trigger
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Name | label for the gun | text | empty |
-| Trigger channel | RC channel that fires it | a named channel | unset |
-| Trigger threshold | when the channel counts as firing | within the RC range | `1500µs` |
-| Trigger hysteresis | dead-band | small µs value | `25µs` |
+| Setting | What it does | Default |
+|---|---|---|
+| Name | Label for the gun. | empty |
+| Trigger channel | The RC channel that fires the gun (RC-gated). | unset |
+| Threshold / Hysteresis | Fire when the channel rises past the threshold; hysteresis is the dead-band. | `1500µs` / `25µs` |
 
-### Rate of fire (ROF)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| ROF selector channel | RC channel that picks a band (empty ⇒ always the first ROF) | a named channel | unset |
-| ROF item: Name | label for this rate | text | `rof1` |
-| ROF item: Band lo / hi | stick range that selects this rate (0 = unbounded); bands must not overlap | µs | `0` / `0` (unbounded) |
-| ROF item: RPM | shots per minute | a number | `600` |
-| ROF item: Sound path | per-shot WAV on SD | file path | empty |
-| ROF item: Speaker output | which channel(s) the shot plays on | `Left` / `Right` / `Stereo` | `Stereo` |
+### Rate of fire (ROF) — one or more rate items, selected by an RC channel
+| Setting | What it does | Default |
+|---|---|---|
+| ROF selector channel | RC channel whose stick position arms one ROF item (each item arms when the channel falls within its band). Empty ⇒ always the first item. | unset |
+| Band low / high µs | The selector-stick window (in µs) that arms this rate item. `0`/`0` = unbounded (covers any position). Items must not overlap. | `0` / `0` |
+| Rate of fire | Firing cadence in rounds per minute when this item is armed. | `600` rpm |
+| Sound | Per-shot WAV on the SD card. | empty |
+| Speaker | Which channel(s) the shot sound plays on: `Left`, `Right`, or `Stereo`. | `Stereo` |
 
 ### Muzzle flash
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Port | LED/PWM output for the flash | a free LED port | unassigned |
-| Duration | how long the flash stays lit per shot | ms | `30ms` |
-| Brightness | flash intensity | 0–100% | `100%` |
+| Setting | What it does | Default |
+|---|---|---|
+| LED port | The PWM port (with the LedAnimator role) that flashes per shot. | unassigned |
+| Duration | How long the LED stays lit per shot. | `30ms` |
+| Brightness | LED brightness during the flash. | `100%` |
 
-### Recoil
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Recoil enabled | adds a kick per shot | on / off | **on** |
-| Strength / jerk | size of the kick on the aim servo | µs (0 = none) | `200µs` |
-| Hold | how long the kick is held before settling | ms | `80ms` |
+### Recoil (an impulse added to the aim servos)
+| Setting | What it does | Default |
+|---|---|---|
+| Recoil | Enables the per-shot recoil kick. | on |
+| Jerk | Maximum random recoil kick: each shot, each axis gets a random ± offset up to this added to its output. | `200µs` |
+| Hold | (Advanced) How long the recoil offset rides on the aim before the role de-jerks it back. | `80ms` |
 
 ### Smoke — heater (warms the cartridge)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Port | PWM output to the heating element | a free port | unassigned |
-| Voltage | element supply rail | mV | `6000mV` |
-| Mode | always-on or pulsed | `continuous` / `cycle` | `continuous` |
-| Cycle on / off | on and off durations when Mode = Cycle | ms | `5000ms` / `3000ms` |
-| Activation channel | optional RC gate that enables the heater | a named channel | unset |
-| Activation threshold / hysteresis | the gate's trip point + dead-band | µs | `1500µs` / `25µs` |
+| Setting | What it does | Default |
+|---|---|---|
+| Port | The PWM port (with the Heater role) driving the heating element. | unassigned |
+| Element | Rated voltage of the heating element. Firmware scales duty against the port rail, so a 6 V element on an 8 V rail never sees more than its rated average. | `6000mV` |
+| Mode | `continuous` = drive at element-scaled duty whenever activated. `cycle` = pulse on for the on-time then off for the off-time, repeating while smoke is armed (power saving / temperature limiting without a thermistor). | `continuous` |
+| On / Off | The cycle on-phase and off-phase durations (Mode = cycle). | `5000ms` / `3000ms` |
+| Activation channel | Optional RC gate that enables the heater (and fan); empty = always allowed when armed. | unset |
+| Activation threshold / hysteresis | The gate's trip point and dead-band. | `1500µs` / `25µs` |
 
 ### Smoke — fan (pushes the smoke out)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Port | PWM output to the fan | a free port | unassigned |
-| Voltage | fan supply rail | mV | `6000mV` |
-| Mode | always-on or a per-shot ramp | `continuous` / `pulse` | `pulse` |
-| Pulse duration | length of one fan pulse when Mode = Pulse | ms | `100ms` |
+| Setting | What it does | Default |
+|---|---|---|
+| Port | The PWM port (with the DcMotor role) driving the fan. | unassigned |
+| Element | Rated voltage of the fan motor; firmware scales duty against the port rail. | `6000mV` |
+| Mode | `continuous` = fan at 100% of element-rated voltage while firing and armed. `pulse` = sinusoidal envelope per shot — idles at 50% base, ramps to 100% then back to 50% over the pulse duration on each shot. | `pulse` |
+| Duration | One sinusoid period (Mode = pulse): rises 50%→100% over the first half and back over the second. 100 ms matches 600 rpm so the envelope completes once per shot. | `100ms` |
 
 ### Turret axes (Yaw, Pitch) — each axis
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Enabled | turns this axis on | on / off | **off** |
-| Servo port | the servo for this axis | a free servo port | unassigned |
-| Input channel | RC channel that aims it | a named channel | unset |
-| Neutral | the centre/rest position | within the RC range | `1500µs` |
+| Setting | What it does | Default |
+|---|---|---|
+| Enabled | Turns this turret axis on. | off |
+| Servo port | The servo that moves this axis. | unassigned |
+| Channel | The RC channel that aims this axis (proportional). | unset |
+| Neutral | The servo position used when the input channel isn't driving it. | `1500µs` |
 
 ---
 
 ## Lighting tab (LightFX)
+
 ### Master
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Enabled | master on/off for lighting | on / off | **on** |
-| Master brightness | scales every channel in every program | 0–100% | `100%` |
+| Setting | What it does | Default |
+|---|---|---|
+| Enable | Master on/off for LightFX. | on |
+| Master brightness | 0–100% applied as an additional multiplier on every channel — a global dimmer. | `100%` |
 
 ### LED channels (shared by all programs)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Name | label (e.g. `Nav Red`, `Strobe`) | text | empty |
-| Port | the LED/PWM output it drives | a free LED port | unassigned |
-| Default brightness | base level when a program doesn't override it | 0–100% | `0%` (off) |
+| Setting | What it does | Default |
+|---|---|---|
+| Name | Channel name that programs reference. | empty |
+| Port | An unclaimed PWM port with the led-animator role. | unassigned |
 
-### Program tracks & events
-A program has one track per channel; each track is a timeline of light **events**.
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Track brightness | per-track level (overrides the channel default) | 0–100% | `100%` |
-| Track loop | repeat the track's events | on / off | off |
-| Event: Kind | the light behaviour | `on` / `off` / `flash` / `fade_in` / `fade_out` / `fading` / `beacon` | `on` |
-| Event: Duration | how long an on/off/fade event lasts | ms | `0ms` |
-| Event: Cycle | period of a repeating pattern (flash/fading/beacon) | ms | `0ms` |
-| Event: Brightness | level for an `on`/peak | 0–100% | `100%` |
-| Event: Min / Max | low/high of a `fading`/`beacon` oscillation | 0–100% | `0%` / `100%` |
-| Event: Flash | bright-pulse share of a `beacon`/`flash` cycle | 0–100% | `50%` |
+### Program selector (an RC stick picks the active program)
+| Setting | What it does | Default |
+|---|---|---|
+| Selector channel | The named RC channel; each band below arms when the channel value falls within it. | unset |
+| Hysteresis | Dead-band at band edges to prevent chatter. | `50µs` |
+| Band low / high µs + Program | A stick window and the program it activates. | operator adds |
 
-### Program selector (RC stick picks the program)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Selector enabled | turns RC program selection on | on / off | **off** |
-| Input channel | the RC channel that selects | a named channel | unset |
-| Hysteresis | dead-band at band edges | µs | `50µs` |
-| Range: From / To + Program | a stick band and the program it activates | µs + a program name | — (operator adds) |
+### Per-program tracks (one per channel) and their events
+| Setting | What it does | Default |
+|---|---|---|
+| Drive (per track) | Whether this program drives this channel; unchecking mutes the channel for this program. | — |
+| Track brightness | Per-program brightness scale for this channel (0 = off). | `100%` |
+| Loop | Phase-locked repeating cycle (period = the sum of the events' durations). | off |
+
+An event timeline runs in order. Event **kind** and the fields that apply to it:
+| Kind | What it renders |
+|---|---|
+| `on` | Constant on at the event's brightness (duration 0 = hold indefinitely). |
+| `off` | Off for the event's duration. |
+| `fade_in` | Linear ramp from 0 to brightness over the duration, then holds on. |
+| `fade_out` | Linear ramp from brightness to 0 over the duration, ends off. |
+| `flash` | Square-wave on/off at the cycle period; the flash % is the on-share of each cycle. |
+| `fading` | Sinusoidal oscillation between min% and max% over the cycle period. |
+| `beacon` | A brief bright pulse (flash % of the cycle) up to max%, dim at min% the rest of the cycle. |
+
+Event fields: **duration** (ms; 0 = indefinite), **cycle** (ms period for flash/fading/beacon),
+**brightness** (% for on/flash/fade), **min/max** (% for fading/beacon), **flash** (% pulse share for flash/beacon).
+Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `100%`, flash `50%`.
 
 ---
 
-## Retractable / Landing lights
-Per group (a searchlight). The servo Open/Close are clamped to the servo's
-calibrated travel.
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Name | label for the group | text | `landing<id>` |
-| Servo port(s) | the servo(s) that deploy/retract it | free servo ports | none |
-| Open | deployed servo position | within the calibrated travel | `2500µs` (clamped) |
-| Close | stowed servo position | within the calibrated travel | `500µs` (clamped) |
-| LED port(s) + Brightness | searchlight LED(s) and level | free LED ports + 0–100% | none / set per LED |
-| Fade-in | LED soft-start after deploy | ms (0 = instant) | `400ms` |
-| Activation mode | how the group is triggered | `Manual` / `Input channel` / `Program` | `Manual` |
-| Channel + threshold / hysteresis | the RC gate (mode = Input channel) | a named channel + µs | unset / `1500µs` / `50µs` |
-| Program + When | the LightFX program that drives it (mode = Program) | a program name + `active` / `inactive` | empty / `active` |
+## Retractable / Landing lights (per group)
+
+| Setting | What it does | Default |
+|---|---|---|
+| Name | Label for the group. | `landing<id>` |
+| Deploy direction | Which calibrated servo end is the DEPLOYED position; retract goes to the other end. (Set by a toggle, not raw µs — the servo's calibration defines the travel.) | deploy → MAX end |
+| Servo port(s) | The servo(s) that deploy/retract the light. | none |
+| LED port(s) + Brightness | The searchlight LED(s) and their brightness % when deployed. | none / per LED |
+| Fade-in | LED soft-start: ramp 0→brightness over this many ms once the servo is fully deployed (0 = hard on). | `400ms` |
+| Activation mode | How the group is triggered: `Manual`, `Input channel` (RC-gated), or `Program` (follows a LightFX program). | `Manual` |
+| Deploy channel + threshold / hysteresis | The RC gate when mode = Input channel. | unset / `1500µs` / `50µs` |
+| Program + When | The LightFX program that drives it, and whether to deploy when that program is `active` or `inactive` (mode = Program). | empty / `active` |
 
 ---
 
 ## Gear / undercarriage tab (GearControl)
+
 ### Master
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Enabled | master on/off for the gear | on / off | **off** |
-| Coordination | how the legs move together | `Independent` / `Full-sync` (legacy configs may also carry `door_sync` / `sequenced`) | `Independent` |
-| Channel | RC channel for deploy/retract | a named channel | unset |
-| Threshold | when "down" is commanded | within the RC range | `1500µs` |
-| Hysteresis | dead-band | small µs value | `50µs` |
-| Deploy on connection loss | emergency-deploy if the RC link drops | on / off | **off** |
-| Deploy / Retract sound + Speaker output | optional transit WAVs and channel(s) | file paths + `Left`/`Right`/`Stereo` | empty / `Stereo` |
+| Setting | What it does | Default |
+|---|---|---|
+| Enable | Master on/off for the whole undercarriage (radio + control). | off |
+| Coordination | `Independent` = each strut deploys/retracts on its own, no cross-strut sync. `Full-sync` = all struts move in lockstep: doors open together, then struts run together, then doors close together. | `Independent` |
+| Up/down channel | The RC channel that deploys/retracts the gear (RC-gated). | unset |
+| Threshold / Hysteresis | Deploy when the channel rises past the threshold; hysteresis is the dead-band. | `1500µs` / `50µs` |
+| On signal loss (deploy) | If an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. | off |
+| Deploy / Retract sound + Speaker | Optional transit WAVs and the channel(s) they play on. | empty / `Stereo` |
 
 ### Per strut (leg)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Name | label (e.g. `Main Left`, `Nose`) | text | `Main Left` / `Main Right` / `Front/Back` for the first three |
-| Motor port | the H-bridge output that drives the leg | a free H-bridge port | unassigned |
-| Deploy duty | motor power+direction while lowering | signed value (full = `20000`) | `20000` |
-| Retract duty | motor power+direction while raising | signed value (full reverse = `-20000`) | `-20000` |
-| Timeout | max run time before the motor force-stops (jam protection) | ms | `30000ms` |
+| Setting | What it does | Default |
+|---|---|---|
+| Name | Label (e.g. `Main Left`, `Nose`). | first three: `Main Left` / `Main Right` / `Front/Back` |
+| Motor port | The H-bridge port (BiDcMotor role) that drives the leg. | unassigned |
+| Deploy direction | `Forward` = deploy runs the motor forward (retract reverses). `Reverse` = deploy runs in reverse. | `Forward` |
+| Travel timeout | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
 
-### Stall guard (per strut, motor protection)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Mode | auto-detect vs. operator-calibrated threshold | `live` / `fixed` | `live` |
-| Ratio | stall threshold as a multiple of baseline current (`250` = 2.5×) | a number (×100) | `250` (2.5×) |
-| Sample / Window | the detector's averaging windows | ms | `200ms` / `80ms` |
-| Threshold | absolute current limit | mA | `1000mA` |
-| Ceiling | optional hard current limit (0 = none) | mA | `0` (disabled) |
+**Motor / stall guard** (set in the ⚙ Calibrate motor… popup — live drive, A→B
+sweep that measures travel + stall current, stall-guard tuning):
+| Setting | What it does | Default |
+|---|---|---|
+| Mode | `live` = trip when current spikes to the ratio × the measured running baseline. `fixed` = trip at an absolute current threshold. | `live` |
+| Ratio | (live mode) Stall threshold as a multiple of baseline current — `250` means 2.5×. | `250` (2.5×) |
+| Threshold | (fixed mode) Absolute stall current. | `1000mA` |
+| Ceiling | Hard over-current cutoff regardless of mode; `0` = none. | `0` |
 
 ### Doors (per strut, 0–2 servos)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Door port(s) | the gear-bay door servo(s) | free servo ports | none |
-| Open / Close | door servo positions | within the calibrated travel | from the servo calibration |
-| Door mode | how multiple doors move | `sync` / `delay` / `sequence` | `sync` |
-| Door delay | the stagger when mode = delay | ms | `500ms` |
-| Close policy | which doors close after the strut moves | `both` / `first` / `none` | `both` |
+| Setting | What it does | Default |
+|---|---|---|
+| Door port(s) | The gear-bay door servo(s). | none |
+| Door mode | `Together` = both doors open together. `Staggered` = door 1 opens, door 2 follows after a fixed delay. `One, then other` = door 1 opens fully (motion-done monitored), then door 2 starts. | `Together` |
+| Stagger | (Staggered mode) Delay before door 2 starts opening. | `500ms` |
+| After deploy (close policy) | `Both close` = both doors close once the gear is down. `One closes` = door 1 closes, door 2 stays open around the leg. `None close` = both stay open. | `Both close` |
 
 ---
 
 ## Battery (on boards with a sensor)
-| Setting | What it does | Options / range | Default |
-|---|---|---|---|
-| Cutoff voltage | the low-voltage warning/cutoff level | a voltage | depends on the pack |
-| Chemistry / cell count | the pack type used to compute thresholds | the supported pack options | depends on the pack |
+
+| Setting | What it does | Default |
+|---|---|---|
+| Cutoff voltage | The low-voltage warning/cutoff level. | depends on the pack |
+| Chemistry / cell count | The pack type used to compute thresholds. | depends on the pack |
 
 ---
 
 ## Audio / Alerts
+
 Sound files are chosen per effect (engine, gun ROF items, gear transit) as SD-card
 paths, each with a speaker-routing choice (`Left` / `Right` / `Stereo`, default
 `Stereo`). Some audio/alert settings live in the board's config file rather than a
