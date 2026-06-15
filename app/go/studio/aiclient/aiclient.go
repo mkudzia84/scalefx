@@ -1,5 +1,5 @@
 // Package aiclient is ScaleFX Studio's thin REST client to the standalone
-// AI-assistant service (services/ai-assistant).  Studio no longer carries
+// AI-assistant service (services/scalefx-ai-assistant).  Studio no longer carries
 // provider API keys — it sends the conversation + the live-config context and
 // the service does the grounding + model routing.
 package aiclient

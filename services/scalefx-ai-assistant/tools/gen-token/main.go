@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"time"
 
-	"scalefx/ai-assistant/internal/auth"
+	"scalefx-ai-assistant/internal/auth"
 )
 
 func main() {
@@ -35,6 +35,6 @@ func main() {
 	fmt.Printf("secret: %s\n", s)
 	fmt.Printf("token:  %s\n", tok)
 	fmt.Println()
-	fmt.Println("Service:  -ldflags \"-X scalefx/ai-assistant/internal/auth.Secret=<secret>\"")
+	fmt.Println("Service:  -ldflags \"-X scalefx-ai-assistant/internal/auth.Secret=<secret>\"")
 	fmt.Println("Studio:   -ldflags \"-X studio/aiclient.AuthToken=<token>\"")
 }

@@ -1,4 +1,4 @@
-module scalefx/ai-assistant
+module scalefx-ai-assistant
 
 go 1.22
 

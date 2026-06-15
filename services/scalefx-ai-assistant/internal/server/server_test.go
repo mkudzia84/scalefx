@@ -8,9 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"scalefx/ai-assistant/internal/auth"
-	"scalefx/ai-assistant/internal/config"
-	"scalefx/ai-assistant/internal/genai"
+	"scalefx-ai-assistant/internal/auth"
+	"scalefx-ai-assistant/internal/config"
+	"scalefx-ai-assistant/internal/genai"
 )
 
 // stubProvider lets us exercise the chat route without real API calls.

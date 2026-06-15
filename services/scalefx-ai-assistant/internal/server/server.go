@@ -12,11 +12,11 @@ import (
 	"sort"
 	"strings"
 
-	"scalefx/ai-assistant/internal/assistant"
-	"scalefx/ai-assistant/internal/auth"
-	"scalefx/ai-assistant/internal/config"
-	"scalefx/ai-assistant/internal/genai"
-	"scalefx/ai-assistant/internal/ratelimit"
+	"scalefx-ai-assistant/internal/assistant"
+	"scalefx-ai-assistant/internal/auth"
+	"scalefx-ai-assistant/internal/config"
+	"scalefx-ai-assistant/internal/genai"
+	"scalefx-ai-assistant/internal/ratelimit"
 )
 
 type modelInfo struct {

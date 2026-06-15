@@ -15,7 +15,7 @@ import (
 )
 
 // Secret is the HS256 signing secret, shared between this service and the
-// client.  Override at build time: -ldflags "-X scalefx/ai-assistant/internal/auth.Secret=...".
+// client.  Override at build time: -ldflags "-X scalefx-ai-assistant/internal/auth.Secret=...".
 // The committed default makes localhost work out of the box — CHANGE for prod.
 var Secret = "scalefx-dev-secret-change-me"
 

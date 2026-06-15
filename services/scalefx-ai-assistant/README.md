@@ -42,7 +42,7 @@ go run ./tools/gen-token            # prints a random secret + a 5-year token
 Build with the secret injected (the client builds with the token injected):
 
 ```sh
-go build -ldflags "-X scalefx/ai-assistant/internal/auth.Secret=<secret>" -o ai-assistant .
+go build -ldflags "-X scalefx-ai-assistant/internal/auth.Secret=<secret>" -o scalefx-ai-assistant .
 ```
 
 A committed **dev default** (`scalefx-dev-secret-change-me` + a matching token in
@@ -52,8 +52,8 @@ an embedded secret is extractable from a shipped binary.
 ## Run
 
 ```sh
-go build -o ai-assistant .
-./ai-assistant -config config.yaml
+go build -o scalefx-ai-assistant .
+./scalefx-ai-assistant -config config.yaml
 ```
 
 ## Deploy (Docker / OVHcloud)

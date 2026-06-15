@@ -7,7 +7,7 @@ import (
 	"studio/aiclient"
 )
 
-// The AI assistant is a standalone service now (services/ai-assistant).  These
+// The AI assistant is a standalone service now (services/scalefx-ai-assistant).  These
 // bindings are a thin proxy: Studio builds the live-config context in the
 // frontend and forwards it + the conversation to the service over REST (the
 // service owns the provider tokens, textbook, model routing, and rate limiting).

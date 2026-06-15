@@ -2594,7 +2594,7 @@ hint/help text is exempt (it's prose, not a row control).  Reference: GearPanel
 ### 64. Keep the AI Assistant Grounding In Sync (approved 2026-06-14; service split 2026-06-15)
 
 The config assistant was **factored out of Studio into a standalone service**
-(`services/ai-assistant/`, module `scalefx/ai-assistant`, deployable on
+(`services/scalefx-ai-assistant/`, module `scalefx-ai-assistant`, deployable on
 OVHcloud) — the service owns the provider tokens (YAML config), the `genai`
 providers (Gemini + Mistral only; **Groq removed**), the embedded textbook +
 guardrail, model aggregation/routing, JWT auth (HS256, build-time
@@ -2605,12 +2605,12 @@ hardcoded `http://localhost:8080` endpoint (both `-ldflags`-overridable);
 `AssistantAsk(history, context, model)`/`AssistantFAQ`). There is **no
 provider/key UI in Studio Settings** anymore; the model is chosen in the
 Assistant dock (dropdown when >1, static label when 1, "service unreachable"
-notice when down). See [README](../services/ai-assistant/README.md) for build +
+notice when down). See [README](../services/scalefx-ai-assistant/README.md) for build +
 deploy. The assistant answers from THREE grounding surfaces — **docs-as-code**
 (an extension of Rule 0), updated in the **same commit** as any feature change
 that affects them:
 
-1. **Textbook** — `services/ai-assistant/internal/assistant/knowledge/*.md`
+1. **Textbook** — `services/scalefx-ai-assistant/internal/assistant/knowledge/*.md`
    (embedded in the SERVICE). Add/adjust the user-facing description when you add
    or change an effect, a channel function, a role kind, a port kind, a Studio
    surface, or a Console command. Stay in the user/setup register (no
@@ -2629,10 +2629,10 @@ that affects them:
    that was the "Configured effects = none" bug).
 
 **Guarded by the pre-merge gate (Rule 52):** `tests/host/go_unit/assistant_docs_test`
-asserts the textbook (now under `services/ai-assistant/…/knowledge`) documents
+asserts the textbook (now under `services/scalefx-ai-assistant/…/knowledge`) documents
 every *effect* channel-function label (`ChannelFunctionCatalog()` groups
 Engine/Lights/Gear/Gun/Audio). Add a new effect channel function and forget the
-glossary ⇒ the gate fails. `services/ai-assistant/internal/server` tests cover
+glossary ⇒ the gate fails. `services/scalefx-ai-assistant/internal/server` tests cover
 model aggregation, chat routing, 401 (no token), and 429 (rate limit). Extend
 either the same way when you add a class of grounding worth guarding. The
 assistant stays **advisory** — it never gains a tool that applies config or

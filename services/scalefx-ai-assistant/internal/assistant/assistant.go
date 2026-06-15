@@ -14,7 +14,7 @@ import (
 	"context"
 	"strings"
 
-	"scalefx/ai-assistant/internal/genai"
+	"scalefx-ai-assistant/internal/genai"
 )
 
 // Assistant answers config questions for one provider.

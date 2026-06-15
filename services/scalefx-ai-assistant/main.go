@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"scalefx/ai-assistant/internal/config"
-	"scalefx/ai-assistant/internal/server"
+	"scalefx-ai-assistant/internal/config"
+	"scalefx-ai-assistant/internal/server"
 )
 
 func main() {

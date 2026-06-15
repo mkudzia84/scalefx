@@ -361,7 +361,7 @@ standalone Go service** — every client used to carry provider tokens + the ful
 provider surface, which is unsafe to ship. The service is deployable on a
 hosting platform (OVHcloud).
 
-**`services/ai-assistant/`** (module `scalefx/ai-assistant`) now OWNS what used
+**`services/scalefx-ai-assistant/`** (module `scalefx-ai-assistant`) now OWNS what used
 to live in Studio: the `genai` providers (**Gemini + Mistral only — Groq
 removed**), the embedded textbook + guardrail (`internal/assistant/`,
 `knowledge/*.md` moved here verbatim), provider tokens (`config.yaml`, gitignored
@@ -389,5 +389,5 @@ service offers >1 model, a static label when exactly 1, a "service unreachable"
 notice (with Retry) when down — no more `ALLOWLISTS` map, no no-key box. The
 **live-context builder (`context.ts`) stays in Studio** and is sent in each chat
 request (unchanged). The textbook drift-guard test was retargeted to
-`services/ai-assistant/internal/assistant/knowledge`; `internal/server` tests add
+`services/scalefx-ai-assistant/internal/assistant/knowledge`; `internal/server` tests add
 model-aggregation / chat-routing / 401 / 429 coverage.
