@@ -2591,35 +2591,69 @@ report).  Applies to status/control rows AND config form-rows; free-flowing
 hint/help text is exempt (it's prose, not a row control).  Reference: GearPanel
 `.sctl-acts` / `.form-row` controls.
 
-### 64. Keep the AI Assistant Grounding In Sync (approved 2026-06-14)
+### 64. Keep the AI Assistant Grounding In Sync (approved 2026-06-14; service split 2026-06-15)
 
-The Studio config assistant (instructions/33 §12) answers from THREE grounding
-surfaces — they are **docs-as-code** (an extension of Rule 0) and must be updated
-in the **same commit** as any feature change that affects them:
+The config assistant was **factored out of Studio into a standalone service**
+(`services/scalefx-ai-assistant/`, module `scalefx-ai-assistant`, deployable on
+OVHcloud) — the service owns the provider tokens (YAML config), the `genai`
+providers (Gemini + Mistral only; **Groq removed**), the embedded textbook +
+guardrail, model aggregation/routing, JWT auth (HS256, build-time
+secret/token), and per-IP rate limiting. **Studio is a thin REST client**: the
+`aiclient` package (`app/go/studio/aiclient`) carries the compiled-in JWT +
+hardcoded `http://localhost:8080` endpoint (both `-ldflags`-overridable);
+`app_assistant.go` is an HTTP proxy (`AssistantStatus`/`ListAssistantModels`/
+`AssistantAsk(history, context, model)`/`AssistantFAQ`). There is **no
+provider/key UI in Studio Settings** anymore; the model is chosen in the
+Assistant dock (dropdown when >1, static label when 1, "service unreachable"
+notice when down). See [README](../services/scalefx-ai-assistant/README.md) for build +
+deploy. The assistant answers from THREE grounding surfaces — **docs-as-code**
+(an extension of Rule 0), updated in the **same commit** as any feature change
+that affects them:
 
-1. **Textbook** — `app/go/studio/assistant/knowledge/*.md` (embedded). Add/adjust
-   the user-facing description when you add or change an effect, a channel
-   function, a role kind, a port kind, a Studio surface, or a Console command.
-   Stay in the user/setup register (no firmware/protocol internals — that was the
-   whole point of the rewrite). New channel function in
+1. **Textbook** — `services/scalefx-ai-assistant/internal/assistant/knowledge/*.md`
+   (embedded in the SERVICE). Add/adjust the user-facing description when you add
+   or change an effect, a channel function, a role kind, a port kind, a Studio
+   surface, or a Console command. Stay in the user/setup register (no
+   firmware/protocol internals). New channel function in
    `devicemodel.ChannelFunctionCatalog()` ⇒ add its **label** to the channel-
    function reference in `50-glossary.md`.
-2. **FAQ** — `knowledge/40-faq.md`. When a workflow changes (a setting moves, a
-   default changes, a new "why doesn't X work" failure mode appears), update or
-   add the Q&A. The FAQ is ALSO the source for the non-LLM FAQ tab, so a stale
-   FAQ ships stale answers with no key required.
+   - **Parameter reference (`15-parameter-reference.md`) is the authoritative
+     list of every setting/option each tab/feature exposes — and the assistant is
+     instructed to describe ONLY parameters on that page (never invent options,
+     modes, ranges, or defaults).** So when you ADD, REMOVE, or RENAME a
+     user-facing parameter (a draft-store field / panel control in
+     `app/go/studio/frontend/src/lib/{gear,gunfx,effects,lightfx,landing,…}.ts` or
+     a panel), or change its option set / range, **update `15-parameter-reference.md`
+     in the SAME commit**. A new enum mode/option ⇒ add it to that setting's
+     options cell; a new setting ⇒ add a row under the right tab. Keeping this page
+     in lock-step with the draft stores is what stops the assistant fabricating or
+     omitting settings. Ground every entry in the actual store/verifier — do NOT
+     add a parameter to the page that the code doesn't expose.
+2. **FAQ** — `knowledge/40-faq.md` (in the service). When a workflow changes (a
+   setting moves, a default changes, a new "why doesn't X work" failure mode
+   appears), update or add the Q&A. The FAQ is ALSO the source for the non-LLM
+   FAQ tab (served by `/v1/faq`), so a stale FAQ ships stale answers.
 3. **Live-context builder** — `app/go/studio/frontend/src/lib/assistant/
-   context.ts`. A new effect / draft field the operator can set must be surfaced
-   here, by its human-readable name, so the assistant can see it (it builds from
-   the effect drafts + device model, NOT the vestigial claims — that was the
-   "Configured effects = none" bug).
+   context.ts` (stays in STUDIO — it reads the device model + effect drafts and
+   is sent in the chat request). A new effect / draft field the operator can set
+   must be surfaced here, by its human-readable name, so the assistant can see it
+   (it builds from the effect drafts + device model, NOT the vestigial claims —
+   that was the "Configured effects = none" bug). **The export must be EXHAUSTIVE
+   — every operator-settable draft field, not a summary** (the 2026-06-15 audit
+   found engine fade-in/out, gun trigger thresholds + recoil hold + smoke
+   heater/fan modes, gear stall-guard + duties, lighting program events, and
+   landing thresholds were all silently omitted). When you add a draft field,
+   add it to the matching effect block in `context.ts`. Defaults belong in the
+   textbook's `15-parameter-reference.md`, current values in the live context.
 
 **Guarded by the pre-merge gate (Rule 52):** `tests/host/go_unit/assistant_docs_test`
-asserts the textbook documents every *effect* channel-function label
-(`ChannelFunctionCatalog()` groups Engine/Lights/Gear/Gun/Audio). Add a new
-effect channel function and forget the glossary ⇒ the gate fails. Extend the test
-the same way when you add a class of grounding worth guarding (roles, effects).
-The assistant stays **advisory** — it never gains a tool that applies config or
+asserts the textbook (now under `services/scalefx-ai-assistant/…/knowledge`) documents
+every *effect* channel-function label (`ChannelFunctionCatalog()` groups
+Engine/Lights/Gear/Gun/Audio). Add a new effect channel function and forget the
+glossary ⇒ the gate fails. `services/scalefx-ai-assistant/internal/server` tests cover
+model aggregation, chat routing, 401 (no token), and 429 (rate limit). Extend
+either the same way when you add a class of grounding worth guarding. The
+assistant stays **advisory** — it never gains a tool that applies config or
 actuates hardware.
 
 ### Client-Server Topology

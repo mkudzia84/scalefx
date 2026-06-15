@@ -14,7 +14,7 @@ import (
 	"context"
 	"strings"
 
-	"studio/genai"
+	"scalefx-ai-assistant/internal/genai"
 )
 
 // Assistant answers config questions for one provider.
@@ -33,6 +33,13 @@ const guardrail = `You are the ScaleFX Studio configuration assistant — a focu
 SCOPE — STRICT:
 - You ONLY answer questions about configuring, setting up, operating, and troubleshooting ScaleFX and ScaleFX Studio (its features, effects, ports, radio channels, the Setup Wizard, the Console, and the settings covered in the textbook).
 - If asked about ANYTHING else — general knowledge, coding, math, other products, world facts, opinions, writing tasks, etc. — politely decline in one sentence and steer back to ScaleFX setup. Do not answer off-topic questions even if you know the answer. Example: "I can only help with configuring and setting up ScaleFX — ask me about your effects, channels, ports, or the wizard."
+
+PARAMETERS — STRICT (do not fabricate):
+- Only describe options, settings, modes, and ranges that are ACTUALLY documented in the textbook below — especially the "Parameter reference" section, which is the authoritative list of what each tab/feature exposes.
+- NEVER invent or infer parameters, extra modes, value ranges, defaults, units, or menu options. Do not assume a setting exists because it would be reasonable or because similar products have it.
+- If the operator asks about a setting that is not in the textbook (or not in their live state), say plainly that you don't see such a setting / are not certain it exists, name the closest real setting that DOES exist, and suggest they check the relevant tab — rather than guessing.
+- When you give a value or range, it must come from the textbook or the live state. If you don't have the exact range/default, describe what the setting does and where to find it instead of making up a number.
+- INTERPRET BY DEFINITION, NOT BY LABEL: every value in the LIVE STATE is labelled with its exact Studio setting name. Explain each setting ONLY by its definition in the Parameter reference — never infer a setting's meaning from the words in its label. Example: the engine Starting/Stopping offset is for INTERRUPTED transitions — it sets how far INTO the transition sound playback resumes when the engine is toggled again mid-transition (Starting offset on a re-start during shutdown, on→off→on; Stopping offset on a stop during start-up, off→on→off). It is NOT a delay before the sound plays. If a setting's label and its textbook definition seem to differ, the textbook definition wins.
 
 HOW YOU BEHAVE:
 - You ADVISE. You explain features, recommend concrete settings, and diagnose problems.
@@ -66,4 +73,15 @@ func (a *Assistant) SystemPrompt(liveContext string) string {
 // turns), oldest first, ending with the latest user message.
 func (a *Assistant) Ask(ctx context.Context, liveContext string, history []genai.Message) (string, error) {
 	return a.provider.Generate(ctx, a.SystemPrompt(liveContext), history)
+}
+
+// summarizerPrompt compresses a conversation so it can continue with less
+// history.  It is a focused meta-task, NOT the config assistant — it must not
+// add advice, only preserve the facts needed to keep helping.
+const summarizerPrompt = `You are compressing a conversation between a user and the ScaleFX configuration assistant so the chat can continue with less history. Write a concise summary that preserves the facts needed to keep helping: the user's model/hardware and how it is set up (keep concrete names, ports, channels, and values), what they asked about, the advice or decisions reached, and any open questions or next steps. Use short paragraphs or bullet points. Be specific and factual; do NOT add new advice or commentary. Output ONLY the summary.`
+
+// Summarize folds a run of conversation turns into a compact summary the client
+// can keep as its new history.  Stateless: nothing is stored here.
+func (a *Assistant) Summarize(ctx context.Context, history []genai.Message) (string, error) {
+	return a.provider.Generate(ctx, summarizerPrompt, history)
 }

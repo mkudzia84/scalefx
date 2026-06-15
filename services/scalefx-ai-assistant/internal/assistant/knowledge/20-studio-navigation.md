@@ -54,6 +54,7 @@ advice.
 
 ## Settings
 
-**View → Settings…** holds display options (theme, font size) and the **AI
-Assistant** provider + API key. The assistant's model is picked in the Assistant
-dock itself.
+**View → Settings…** holds display options (theme, font size). The AI assistant
+needs no configuration here — it talks to a ScaleFX assistant service that owns
+the provider keys. The assistant's model is picked in the Assistant dock itself
+(a dropdown when several are offered, otherwise just the one in use).

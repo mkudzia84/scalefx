@@ -1,37 +1,16 @@
 <!-- AssistantPanel — the Assistant dock pane (chat).  Advisory: it answers and
-     points to the Wizard; it does not change config.  Mirrors the Console pane
-     docking. -->
+     points to the Wizard; it does not change config.  A thin client to the
+     standalone AI-assistant service (services/ai-assistant): the service owns the
+     provider tokens, textbook, model routing, and rate limiting. -->
 <script lang="ts">
     import { onMount } from 'svelte'
-    import { messages, busy, status, ask, refreshStatus, setKey, clearChat } from './store'
+    import { messages, busy, compacting, status, model, ask, refreshStatus, clearChat } from './store'
     import { renderMarkdown } from './markdown'
     import FaqView from './FaqView.svelte'
-    import { ListAssistantModels, SetAssistantModel } from '../../../wailsjs/go/main/App'
 
     let mode: 'chat' | 'faq' = 'chat'
     let input = ''
-    let keyInput = ''
     let listEl: HTMLElement
-
-    // Model dropdown — every provider is LIMITED to a sensible short-list of
-    // models for config-assistant chat; availableIds flags which the key can
-    // actually use.  A provider with no entry would fall back to its live list.
-    const ALLOWLISTS: Record<string, string[]> = {
-        gemini: ['gemini-2.5-flash', 'gemini-3.5-flash'],
-        groq: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'],
-        mistral: ['mistral-small-latest', 'mistral-medium-latest', 'mistral-large-latest'],
-    }
-    const allowFor = (prov: string): string[] | null => ALLOWLISTS[prov] || null
-    let liveModels: { id: string; displayName: string }[] = []
-    let availableIds: string[] = []
-    let selModel = ''
-    let modelsLoading = false
-    let lastProvider = ''
-    function activeProvider(): string { return ($status && $status.provider) || 'gemini' }
-    function provLabel(s: any): string {
-        if (s && s.providers) { const p = s.providers.find((x: any) => x.id === s.provider); if (p) return p.label }
-        return s && s.provider === 'groq' ? 'Groq' : s && s.provider === 'mistral' ? 'Mistral' : 'Gemini'
-    }
 
     // Monochrome SVG icons (currentColor), matching the TabBar convention.
     const ICONS: Record<string, string> = {
@@ -51,45 +30,9 @@
 
     onMount(refreshStatus)
 
-    // Load the active provider's models when the provider/key first appears
-    // or the provider changes (e.g. switched in Settings).
-    $: maybeReload(($status && $status.provider) || '', !!($status && $status.available))
-    function maybeReload(prov: string, avail: boolean) {
-        if (prov && avail && prov !== lastProvider) { lastProvider = prov; loadModels() }
-    }
-
-    async function loadModels() {
-        const prov = activeProvider()
-        if (!($status && $status.available)) { liveModels = []; availableIds = []; return }
-        modelsLoading = true
-        try { liveModels = await ListAssistantModels() } catch { liveModels = [] } finally { modelsLoading = false }
-        const liveIds = liveModels.map(m => m.id)
-        const allow = allowFor(prov)
-        const allowed = allow || liveIds
-        availableIds = allow ? allow.filter(id => liveIds.includes(id)) : liveIds
-        const cur = ($status && $status.model) || ''
-        if (cur && allowed.includes(cur)) {
-            selModel = cur
-        } else {
-            selModel = availableIds[0] || allowed[0] || cur
-            if (selModel && selModel !== cur) { await SetAssistantModel(selModel); await refreshStatus() }
-        }
-    }
-    async function onModelChange() {
-        await SetAssistantModel(selModel)
-        await refreshStatus()
-    }
-    // Gemini: exactly the two allowed (mark unavailable).  Groq: the live list.
-    $: modelOptions = buildModelOptions(($status && $status.provider) || 'gemini', liveModels, availableIds, ($status && $status.model) || '')
-    function buildModelOptions(prov: string, live: { id: string; displayName: string }[], avail: string[], cur: string) {
-        const allow = allowFor(prov)
-        if (allow) {
-            return allow.map(id => ({ id, label: (avail.length && !avail.includes(id)) ? `${id} (unavailable)` : id }))
-        }
-        let opts = live.map(m => ({ id: m.id, label: m.id }))
-        if (cur && !opts.some(o => o.id === cur)) opts = [{ id: cur, label: cur }, ...opts]
-        return opts
-    }
+    // Model UI: >1 model -> dropdown (bound to $model); ==1 -> static label; 0 -> nothing.
+    $: models = ($status && $status.models) || []
+    $: oneModelLabel = models.length === 1 ? (models[0].label || models[0].id) : ''
 
     // Auto-scroll to the newest message / the thinking indicator.
     $: scheduleScroll($messages.length, $busy)
@@ -107,13 +50,6 @@
         if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
     }
     function pick(s: string) { input = s }
-    async function saveKey() {
-        const k = keyInput.trim()
-        if (!k) return
-        keyInput = ''
-        await setKey(activeProvider(), k)
-        await loadModels()
-    }
 </script>
 
 <div class="asst">
@@ -122,16 +58,16 @@
             <button class="seg" class:on={mode === 'chat'} on:click={() => (mode = 'chat')}><span class="seg-ico">{@html icon('chat')}</span>Assistant</button>
             <button class="seg" class:on={mode === 'faq'} on:click={() => (mode = 'faq')}><span class="seg-ico">{@html icon('faq')}</span>FAQ</button>
         </div>
-        {#if mode === 'chat'}
-            {#if $status && $status.available}
-                <span class="asst-prov">{provLabel($status)}</span>
-                <select class="asst-modelsel" bind:value={selModel} on:change={onModelChange}
-                        disabled={modelsLoading} title="Model — saved automatically">
-                    {#each (modelOptions) as o}<option value={o.id}>{o.label}</option>{/each}
+        {#if mode === 'chat' && $status && $status.available}
+            {#if models.length > 1}
+                <select class="asst-modelsel" bind:value={$model} title="Model">
+                    {#each models as m}<option value={m.id}>{m.label || m.id}</option>{/each}
                 </select>
-            {:else if $status}
-                <span class="asst-model">no key</span>
+            {:else if models.length === 1}
+                <span class="asst-model" title="The only model the assistant service offers">{oneModelLabel}</span>
             {/if}
+        {/if}
+        {#if mode === 'chat'}
             <button class="small clear" on:click={clearChat} disabled={$busy || $messages.length === 0}
                     title="Clear the conversation">Clear</button>
         {/if}
@@ -142,22 +78,12 @@
   {:else}
 
     {#if $status && !$status.available}
-        <div class="asst-nokey">
-            <p class="nokey-title">Set up the AI assistant</p>
-            <p>It needs a free API key. Choose a provider in <strong>View → Settings…</strong>
-               (currently <strong>{provLabel($status)}</strong>), then get a key:</p>
-            <ol class="nokey-steps">
-                <li><strong>Gemini</strong> — open <code>aistudio.google.com/apikey</code>, sign in, click <em>Create API key</em>, copy it.</li>
-                <li><strong>Groq</strong> — open <code>console.groq.com/keys</code>, sign in, create a key, copy it.</li>
-                <li><strong>Mistral</strong> — open <code>console.mistral.ai</code>, sign in, create an API key, copy it.</li>
-                <li>Paste it below (or in Settings). It's stored locally on this machine and never uploaded.</li>
-            </ol>
-            <div class="asst-keyrow">
-                <input class="field-input" type="password"
-                       placeholder={`Paste ${provLabel($status)} API key`}
-                       bind:value={keyInput} on:keydown={(e) => { if (e.key === 'Enter') saveKey() }} />
-                <button class="small primary" on:click={saveKey} disabled={!keyInput.trim()}>Save</button>
-            </div>
+        <div class="asst-down">
+            <p class="down-title">Assistant service unreachable</p>
+            <p>Studio couldn't reach the AI-assistant service{#if $status.endpoint} at <code>{$status.endpoint}</code>{/if}.
+               Start the service (<code>services/ai-assistant</code>) and try again.</p>
+            {#if $status.error}<p class="down-err">{$status.error}</p>{/if}
+            <button class="small" on:click={refreshStatus}>Retry</button>
         </div>
     {/if}
 
@@ -173,23 +99,30 @@
             </div>
         {/if}
         {#each ($messages) as m}
-            <div class="asst-msg {m.role}" class:err={m.error}>
-                {#if m.role === 'model' && !m.error}
-                    <div class="asst-bubble md">{@html renderMarkdown(m.content)}</div>
-                {:else}
-                    <div class="asst-bubble">{m.content}</div>
-                {/if}
-            </div>
+            {#if m.summary}
+                <div class="asst-compacted" title={m.content}>🗜️ Earlier messages summarized to keep the chat fast</div>
+            {:else}
+                <div class="asst-msg {m.role}" class:err={m.error}>
+                    {#if m.role === 'model' && !m.error}
+                        <div class="asst-bubble md">{@html renderMarkdown(m.content)}</div>
+                    {:else}
+                        <div class="asst-bubble">{m.content}</div>
+                    {/if}
+                </div>
+            {/if}
         {/each}
         {#if $busy}
             <div class="asst-msg model"><div class="asst-bubble thinking">● ● ●</div></div>
+        {/if}
+        {#if $compacting}
+            <div class="asst-compacted">🗜️ Summarizing earlier messages…</div>
         {/if}
     </div>
 
     <div class="asst-input">
         <textarea rows="2" placeholder="Ask a question…  (Enter to send, Shift+Enter for newline)"
-                  bind:value={input} on:keydown={onKey} disabled={$busy}></textarea>
-        <button class="small primary send" on:click={send} disabled={$busy || !input.trim()}>Send</button>
+                  bind:value={input} on:keydown={onKey} disabled={$busy || !($status && $status.available)}></textarea>
+        <button class="small primary send" on:click={send} disabled={$busy || !input.trim() || !($status && $status.available)}>Send</button>
     </div>
   {/if}
 </div>
@@ -212,28 +145,20 @@
     .asst-modeseg .seg.on { background: var(--bg-surface); color: var(--text-bright); font-weight: 600; }
     .asst-model { font-size: 10px; font-family: var(--font-mono); color: var(--text-dim);
         border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
-    .asst-prov {
-        font-size: 10px; font-weight: 600; color: var(--accent);
-        text-transform: uppercase; letter-spacing: 0.3px;
-    }
     .asst-modelsel {
         font-size: 10px; font-family: var(--font-mono);
         background: var(--bg-input); color: var(--text);
         border: 1px solid var(--border); border-radius: 4px; padding: 2px 4px;
-        max-width: 190px;
+        max-width: 200px;
     }
     .asst-head .clear { margin-left: auto; }
 
-    .asst-nokey { padding: 12px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
-    .asst-nokey p { margin: 0 0 8px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
-    .nokey-title { font-size: 13px !important; font-weight: 700; color: var(--text-bright) !important; }
-    .asst-nokey :global(strong) { color: var(--text-bright); }
-    .asst-nokey :global(code) { font-family: var(--font-mono); font-size: 11px; color: var(--accent);
+    .asst-down { padding: 12px; border-bottom: 1px solid var(--border); background: var(--bg-raised); }
+    .asst-down p { margin: 0 0 8px; font-size: 11.5px; color: var(--text-dim); line-height: 1.5; }
+    .down-title { font-size: 13px !important; font-weight: 700; color: var(--text-bright) !important; }
+    .down-err { font-family: var(--font-mono); font-size: 10.5px; color: var(--error); }
+    .asst-down :global(code) { font-family: var(--font-mono); font-size: 11px; color: var(--accent);
         background: var(--bg-input); padding: 1px 4px; border-radius: 3px; }
-    .nokey-steps { margin: 0 0 10px; padding-left: 18px; font-size: 11.5px; color: var(--text-dim); line-height: 1.6; }
-    .nokey-steps li { margin: 2px 0; }
-    .asst-keyrow { display: flex; gap: 6px; }
-    .asst-keyrow .field-input { flex: 1; }
 
     .asst-list { flex: 1; overflow-y: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
     .asst-empty p { font-size: 12px; color: var(--text-dim); margin: 0 0 10px; line-height: 1.5; }
@@ -244,6 +169,11 @@
     }
     .asst-chip:hover:not(:disabled) { border-color: var(--accent); color: var(--text-bright); }
 
+    .asst-compacted {
+        align-self: center; max-width: 90%; text-align: center;
+        font-size: 10.5px; color: var(--text-dim); cursor: default;
+        padding: 2px 8px; border: 1px dashed var(--border); border-radius: 10px;
+    }
     .asst-msg { display: flex; }
     .asst-msg.user { justify-content: flex-end; }
     .asst-msg.model { justify-content: flex-start; }

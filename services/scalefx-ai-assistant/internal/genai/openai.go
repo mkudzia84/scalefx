@@ -13,10 +13,10 @@ import (
 )
 
 // OpenAIProvider talks to any OpenAI-compatible chat-completions endpoint
-// (Groq, Mistral, local servers, …) — reusable behind Provider.
+// (Mistral, local servers, …) — reusable behind Provider.
 type OpenAIProvider struct {
 	name    string
-	baseURL string // e.g. "https://api.groq.com/openai/v1"
+	baseURL string // e.g. "https://api.mistral.ai/v1"
 	apiKey  string
 	model   string
 	http    *http.Client
@@ -91,14 +91,11 @@ func (p *OpenAIProvider) Generate(ctx context.Context, system string, history []
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("%s: decode (http %d): %w", p.name, resp.StatusCode, err)
 	}
-	if out.Error != nil {
-		return "", fmt.Errorf("%s: %s", p.name, out.Error.Message)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s: http %d", p.name, resp.StatusCode)
+	if out.Error != nil || resp.StatusCode != http.StatusOK {
+		return "", &APIError{Provider: p.name, Status: resp.StatusCode, Body: truncateBody(string(raw))}
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("%s: empty response", p.name)
+		return "", ErrEmpty
 	}
 	return out.Choices[0].Message.Content, nil
 }

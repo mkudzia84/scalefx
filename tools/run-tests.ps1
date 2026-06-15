@@ -146,6 +146,9 @@ function Invoke-GoSuite { param($dir, [switch]$NoCache, [switch]$Integration)
 
 Write-Title "Go unit tests"
 $unitSuites = Get-GoTestSuites "tests/host/go_unit"
+# Standalone service modules (own go.mod, outside tests/) also run in the unit
+# tier — e.g. the AI-assistant service's handler tests.
+$unitSuites += Get-GoTestSuites "services"
 if ($unitSuites.Count -eq 0) {
     Write-Host "  (no suites discovered under tests/host/go_unit/)" -ForegroundColor DarkYellow
 } else {

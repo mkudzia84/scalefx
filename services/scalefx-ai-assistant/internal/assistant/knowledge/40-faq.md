@@ -48,8 +48,10 @@ Yes — the **Console** (right edge) has a command line. `system-info` and
 wired. See the Console section.
 
 **Q: Do I need internet / an API key for the assistant?**
-The AI assistant needs an API key (Gemini or Groq), set in **View → Settings…**.
-It's stored locally on your machine.
+You don't manage any API key — the assistant talks to a ScaleFX assistant service
+that holds the provider keys for you. Studio just needs to reach that service.
+The FAQ tab works without making an AI request; chat asks a model through the
+service and is lightly rate-limited.
 
 **Q: Will the assistant answer general questions?**
 No — it only helps with ScaleFX configuration and setup. Ask it about your

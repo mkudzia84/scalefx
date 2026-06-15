@@ -50,7 +50,7 @@
         {/each}
     </div>
 
-    <div class="faq-foot">Curated answers — works offline, no API key needed.</div>
+    <div class="faq-foot">Curated answers from the assistant service — no AI request, not rate-limited.</div>
 </div>
 
 <style>

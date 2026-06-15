@@ -1,0 +1,32 @@
+# ScaleFX AI-assistant service config. Copy to config.yaml (gitignored) and fill
+# in real provider tokens.  Run with:  ./ai-assistant -config config.yaml
+listen: ":8080"
+
+# Proxy IPs whose X-Forwarded-For header we trust for the real client IP.
+# Set to your OVHcloud load-balancer IP(s) when deployed behind one; leave empty
+# for direct exposure.
+trustedProxies: []
+
+rateLimit:
+  perMinute: 5          # model (chat) requests allowed per client IP
+
+# Verbose logging: adds request-arrival lines + health-check probes for tracing.
+# It does NOT log queries or responses — content is never recorded in any mode.
+# Off by default; the -verbose flag forces it on. (Even off, every request logs a
+# completion line with id/IP/status/latency, and chat logs the client's rate.)
+verbose: false
+
+# Each provider exposes an allow-listed set of models.  /v1/models returns the
+# union; /v1/chat routes a requested model id to its provider.
+providers:
+  - id: gemini
+    token: "REPLACE_WITH_GEMINI_API_KEY"
+    models:
+      - gemini-2.5-flash
+      - gemini-3.5-flash
+  - id: mistral
+    token: "REPLACE_WITH_MISTRAL_API_KEY"
+    models:
+      - mistral-small-latest
+      - mistral-medium-latest
+      - mistral-large-latest

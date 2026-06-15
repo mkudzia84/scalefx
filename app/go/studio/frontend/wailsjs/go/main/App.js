@@ -6,8 +6,8 @@ export function ApplyDefaults() {
   return window['go']['main']['App']['ApplyDefaults']();
 }
 
-export function AssistantAsk(arg1, arg2) {
-  return window['go']['main']['App']['AssistantAsk'](arg1, arg2);
+export function AssistantAsk(arg1, arg2, arg3) {
+  return window['go']['main']['App']['AssistantAsk'](arg1, arg2, arg3);
 }
 
 export function AssistantFAQ() {
@@ -16,6 +16,10 @@ export function AssistantFAQ() {
 
 export function AssistantStatus() {
   return window['go']['main']['App']['AssistantStatus']();
+}
+
+export function AssistantSummarize(arg1, arg2) {
+  return window['go']['main']['App']['AssistantSummarize'](arg1, arg2);
 }
 
 export function AttachRole(arg1, arg2, arg3, arg4) {
@@ -464,18 +468,6 @@ export function SendCommand(arg1) {
 
 export function ServoSetTarget(arg1, arg2, arg3) {
   return window['go']['main']['App']['ServoSetTarget'](arg1, arg2, arg3);
-}
-
-export function SetAssistantKey(arg1, arg2) {
-  return window['go']['main']['App']['SetAssistantKey'](arg1, arg2);
-}
-
-export function SetAssistantModel(arg1) {
-  return window['go']['main']['App']['SetAssistantModel'](arg1);
-}
-
-export function SetAssistantProvider(arg1) {
-  return window['go']['main']['App']['SetAssistantProvider'](arg1);
 }
 
 export function SetChannelFunction(arg1, arg2, arg3, arg4, arg5) {
