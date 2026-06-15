@@ -138,7 +138,7 @@ export function buildAssistantContext(): string {
         t.push(`Sounds: ${snd.length ? snd.join(', ') : 'none set'}`)
         const tr = s.transitions || {}
         // Offsets handle INTERRUPTED transitions (resume partway in), NOT a delay — spell it out inline so the model can't misread.
-        t.push(`Starting offset \`${tr.startingOffsetMs}ms\` (on a re-start during shutdown, on→off→on, resume the start sound this far in — not a delay), Stopping offset \`${tr.stoppingOffsetMs}ms\` (on a stop during start-up, off→on→off, begin the stop sound this far in — not a delay), Start fade-in \`${tr.startFadeInMs}ms\`, Stop fade-out \`${tr.stopFadeOutMs}ms\``)
+        t.push(`Starting offset \`${tr.startingOffsetMs}ms\` (on a re-start during shutdown, on→off→on, resume the start sound this far in — not a delay), Stopping offset \`${tr.stoppingOffsetMs}ms\` (on a stop during start-up, off→on→off, begin the stop sound this far in — not a delay), Start fade-in \`${tr.startFadeInMs}ms\` (cold start only — no fade on a warm re-start), Stop fade-out \`${tr.stopFadeOutMs}ms\``)
         fx.push(`Engine sound: ON — ${t.join('; ')}.`)
     } else fx.push('Engine sound: off.')
 

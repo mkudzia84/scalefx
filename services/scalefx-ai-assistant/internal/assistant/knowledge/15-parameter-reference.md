@@ -55,8 +55,8 @@ by intent; the role maps that onto these calibrated limits.
 | Starting / Running / Stopping sound | WAV files on the SD card for ignition, the running loop (required), and shutdown. | empty |
 | Starting offset | For the case where the engine is switched back ON while it is still shutting down (on → off → on). The starting sound then resumes this many ms INTO the track instead of replaying the full ignition from the beginning, so the re-start sounds continuous. A normal cold start (from fully stopped) plays from the start regardless. It is NOT a delay before the sound. | `0ms` |
 | Stopping offset | For the case where the engine is switched OFF while it is still starting up (off → on → off). The stopping sound then begins this many ms INTO the track instead of from the start. It is NOT a delay before the sound. | `0ms` |
-| Start fade-in | Linear volume ramp from silent to full at the start of the engine sound. | `0ms` |
-| Stop fade-out | Linear volume ramp from full to silent at shutdown. | `0ms` |
+| Start fade-in | Linear volume ramp from silent to full at the start of the engine sound — applied on a COLD start only (from fully stopped). A warm re-start during shutdown comes in at full level with no fade. | `0ms` |
+| Stop fade-out | Linear volume ramp from full to silent over the tail of the stopping sound. | `0ms` |
 
 ---
 
