@@ -107,11 +107,8 @@ func (g *GeminiProvider) Generate(ctx context.Context, system string, history []
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("gemini: decode (http %d): %w", resp.StatusCode, err)
 	}
-	if out.Error != nil {
-		return "", &APIError{Provider: "gemini", Status: resp.StatusCode, Body: out.Error.Message}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{Provider: "gemini", Status: resp.StatusCode}
+	if out.Error != nil || resp.StatusCode != http.StatusOK {
+		return "", &APIError{Provider: "gemini", Status: resp.StatusCode, Body: truncateBody(string(raw))}
 	}
 	if out.PromptFeedback != nil && out.PromptFeedback.BlockReason != "" {
 		return "", fmt.Errorf("%w (%s)", ErrBlocked, out.PromptFeedback.BlockReason)

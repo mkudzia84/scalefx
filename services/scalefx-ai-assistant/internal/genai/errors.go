@@ -3,6 +3,7 @@ package genai
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // APIError is a structured upstream-provider failure. Status drives the server's
@@ -20,6 +21,18 @@ func (e *APIError) Error() string {
 		return fmt.Sprintf("%s: http %d: %s", e.Provider, e.Status, e.Body)
 	}
 	return fmt.Sprintf("%s: http %d", e.Provider, e.Status)
+}
+
+// truncateBody trims an upstream response body for verbose server logs — full
+// enough to debug, bounded so a huge error page can't flood the log.
+func truncateBody(s string) string {
+	const max = 2048
+	s = strings.TrimSpace(s)
+	s = strings.Join(strings.Fields(s), " ") // collapse newlines/runs of space
+	if len(s) > max {
+		return s[:max] + "…(truncated)"
+	}
+	return s
 }
 
 // Sentinels for non-HTTP outcomes the server surfaces with a distinct message.

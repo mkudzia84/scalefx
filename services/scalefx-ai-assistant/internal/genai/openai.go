@@ -91,11 +91,8 @@ func (p *OpenAIProvider) Generate(ctx context.Context, system string, history []
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return "", fmt.Errorf("%s: decode (http %d): %w", p.name, resp.StatusCode, err)
 	}
-	if out.Error != nil {
-		return "", &APIError{Provider: p.name, Status: resp.StatusCode, Body: out.Error.Message}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return "", &APIError{Provider: p.name, Status: resp.StatusCode}
+	if out.Error != nil || resp.StatusCode != http.StatusOK {
+		return "", &APIError{Provider: p.name, Status: resp.StatusCode, Body: truncateBody(string(raw))}
 	}
 	if len(out.Choices) == 0 {
 		return "", ErrEmpty

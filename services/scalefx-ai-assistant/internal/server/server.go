@@ -167,11 +167,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	text, err := assistant.New(prov).Ask(r.Context(), req.Context, msgs)
 	if err != nil {
-		// Log the full detail server-side; return only a sanitized, human-
-		// friendly message so backend internals (provider name, token state,
-		// status codes, raw upstream text) never reach the client.
-		log.Printf("[chat] model=%s error: %v", model, err)
+		// Log the full detail server-side (incl. the raw upstream body carried
+		// by genai.APIError); return only a sanitized, human-friendly message so
+		// backend internals (provider, token state, status, upstream text) never
+		// reach the client.
 		code, msg := friendlyChatError(r.Context(), err)
+		log.Printf("[chat] FAIL ip=%s model=%s -> %d: %v", s.clientIP(r), model, code, err)
 		httpError(w, code, msg)
 		return
 	}
