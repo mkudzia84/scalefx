@@ -53,8 +53,8 @@ by intent; the role maps that onto these calibrated limits.
 | Hysteresis | Dead-band around the threshold that prevents stick jitter from re-triggering. | `50µs` |
 | Failsafe | Behaviour on RC signal loss: `Hold` last value, `Force OFF`, or `Force ON`. | `Force OFF` |
 | Starting / Running / Stopping sound | WAV files on the SD card for ignition, the running loop (required), and shutdown. | empty |
-| Starting offset | A SEEK into the starting sound, not a delay. On a warm re-start (engine re-engaged while still spinning down) it begins the starting sound this many ms INTO the file so it skips the full ignition. `0` = play from the beginning. It does NOT delay the sound. | `0ms` |
-| Stopping offset | A SEEK into the stopping sound: begins it this many ms INTO the file (skips its intro). `0` = play from the beginning. It does NOT delay the sound. | `0ms` |
+| Starting offset | For the case where the engine is switched back ON while it is still shutting down (on → off → on). The starting sound then resumes this many ms INTO the track instead of replaying the full ignition from the beginning, so the re-start sounds continuous. A normal cold start (from fully stopped) plays from the start regardless. It is NOT a delay before the sound. | `0ms` |
+| Stopping offset | For the case where the engine is switched OFF while it is still starting up (off → on → off). The stopping sound then begins this many ms INTO the track instead of from the start. It is NOT a delay before the sound. | `0ms` |
 | Start fade-in | Linear volume ramp from silent to full at the start of the engine sound. | `0ms` |
 | Stop fade-out | Linear volume ramp from full to silent at shutdown. | `0ms` |
 

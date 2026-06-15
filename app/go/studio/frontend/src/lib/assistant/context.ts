@@ -119,7 +119,7 @@ export function buildAssistantContext(): string {
     // Effects — read each draft's real enabled state + key settings.
     out.push('')
     out.push('CONFIGURED EFFECTS:')
-    out.push('(Each value is labelled with its exact Studio setting name — the same name used in the Parameter reference. Interpret each ONLY by its Parameter-reference definition, never from the wording of the label. E.g. a sound "offset" is a SEEK into the file (skip the intro), not a delay before it.)')
+    out.push('(Each value is labelled with its exact Studio setting name — the same name used in the Parameter reference. Interpret each ONLY by its Parameter-reference definition, never from the wording of the label. E.g. an engine "offset" controls where a transition sound RESUMES when a transition is interrupted (on→off→on or off→on→off); it is not a delay before the sound.)')
     const fx: string[] = []
 
     // Engine — every set field (intentionally exhaustive so the assistant can
@@ -137,8 +137,8 @@ export function buildAssistantContext(): string {
         if (s.stopping) snd.push(`Stopping \`${s.stopping}\``)
         t.push(`Sounds: ${snd.length ? snd.join(', ') : 'none set'}`)
         const tr = s.transitions || {}
-        // Offsets are a SEEK into the file (skip the intro), NOT a delay — spell it out inline so the model can't misread.
-        t.push(`Starting offset \`${tr.startingOffsetMs}ms\` (seek INTO the start sound, not a delay), Stopping offset \`${tr.stoppingOffsetMs}ms\` (seek INTO the stop sound, not a delay), Start fade-in \`${tr.startFadeInMs}ms\`, Stop fade-out \`${tr.stopFadeOutMs}ms\``)
+        // Offsets handle INTERRUPTED transitions (resume partway in), NOT a delay — spell it out inline so the model can't misread.
+        t.push(`Starting offset \`${tr.startingOffsetMs}ms\` (on a re-start during shutdown, on→off→on, resume the start sound this far in — not a delay), Stopping offset \`${tr.stoppingOffsetMs}ms\` (on a stop during start-up, off→on→off, begin the stop sound this far in — not a delay), Start fade-in \`${tr.startFadeInMs}ms\`, Stop fade-out \`${tr.stopFadeOutMs}ms\``)
         fx.push(`Engine sound: ON — ${t.join('; ')}.`)
     } else fx.push('Engine sound: off.')
 
