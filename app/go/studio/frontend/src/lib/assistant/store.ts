@@ -19,7 +19,7 @@ export interface ChatMsg {
 // Conversation compaction: once the cumulative message text gets large, fold the
 // older turns into one model-written summary and keep only the last few verbatim,
 // so the per-request token cost (history) stops growing without losing context.
-const COMPACT_CHARS = 8000   // total content size that triggers a compaction
+const COMPACT_CHARS = 16000  // total content size (~4k tokens) that triggers a compaction
 const KEEP_RECENT   = 4      // most-recent messages kept verbatim (≈ 2 exchanges)
 
 export interface ModelInfo {
