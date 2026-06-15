@@ -74,6 +74,25 @@ function chanRef(fnId: string, dm: DeviceModelSnapshotT): string {
     return num != null ? `\`${label}\` (\`CH${num}\`)` : `\`${label}\` (not mapped to a channel)`
 }
 
+// Speaker-routing bitmask: 1 = left, 2 = right, 3 = both.
+function maskName(m: number): string { return m === 1 ? 'left' : m === 2 ? 'right' : 'stereo' }
+
+// A threshold + hysteresis gate, compactly.
+function gate(thresholdUs: number, hysteresisUs: number): string {
+    return `above \`${thresholdUs}µs\` (±\`${hysteresisUs}µs\`)`
+}
+
+// One light-program event: its kind + the timing/levels that apply to that kind.
+function evDesc(e: any): string {
+    const bits: string[] = [e.kind]
+    if (e.durationMs) bits.push(`${e.durationMs}ms`)
+    if (e.cycleMs) bits.push(`cycle ${e.cycleMs}ms`)
+    if (e.kind === 'on' || e.kind === 'flash' || e.kind === 'fade_in' || e.kind === 'fade_out') bits.push(`${e.brightnessPct}%`)
+    if (e.kind === 'fading' || e.kind === 'beacon') bits.push(`${e.minPct}-${e.maxPct}%`)
+    if (e.kind === 'beacon' || e.kind === 'flash') bits.push(`flash ${e.flashPct}%`)
+    return bits.join(' ')
+}
+
 export function buildAssistantContext(): string {
     const conn = get(connectionInfo)
     if (!conn || !conn.connected) {
@@ -102,84 +121,114 @@ export function buildAssistantContext(): string {
     out.push('CONFIGURED EFFECTS:')
     const fx: string[] = []
 
-    // Engine
-    const eng = get(engineDraft)
+    // Engine — every set field (intentionally exhaustive so the assistant can
+    // answer about any engine setting, including transitions/fade in-out).
+    const eng: any = get(engineDraft)
     if (eng && eng.enabled) {
-        const t = [`type \`${eng.type}\``, `speakers \`${eng.output}\``, `on/off via ${chanRef(eng.toggle && eng.toggle.input, dm)}`]
-        if (eng.toggle && eng.toggle.failsafe) t.push(`on signal loss: \`${eng.toggle.failsafe}\``)
-        if (eng.sounds) {
-            const s: string[] = []
-            if (eng.sounds.running) s.push(`running \`${eng.sounds.running}\``)
-            if (eng.sounds.starting) s.push(`start \`${eng.sounds.starting}\``)
-            if (eng.sounds.stopping) s.push(`stop \`${eng.sounds.stopping}\``)
-            if (s.length) t.push(`sounds: ${s.join(', ')}`)
-        }
+        const t: string[] = [`type \`${eng.type}\``, `speakers \`${eng.output}\``]
+        const tg = eng.toggle || {}
+        t.push(`on/off via ${chanRef(tg.input, dm)} (on ${gate(tg.thresholdUs, tg.hysteresisUs)})`)
+        if (tg.failsafe) t.push(`on signal loss \`${tg.failsafe}\``)
+        const s = eng.sounds || {}
+        const snd: string[] = []
+        if (s.running) snd.push(`running \`${s.running}\``)
+        if (s.starting) snd.push(`start \`${s.starting}\``)
+        if (s.stopping) snd.push(`stop \`${s.stopping}\``)
+        t.push(`sounds: ${snd.length ? snd.join(', ') : 'none set'}`)
+        const tr = s.transitions || {}
+        t.push(`transitions: start offset \`${tr.startingOffsetMs}ms\`, stop offset \`${tr.stoppingOffsetMs}ms\`, fade-in \`${tr.startFadeInMs}ms\`, fade-out \`${tr.stopFadeOutMs}ms\``)
         fx.push(`Engine sound: ON — ${t.join('; ')}.`)
     } else fx.push('Engine sound: off.')
 
-    // Guns (incl. rate of fire)
-    const gun = get(gunfxDraft)
+    // Guns (incl. rate of fire, recoil, smoke heater/fan, turret axes)
+    const gun: any = get(gunfxDraft)
     if (gun && gun.enabled && gun.guns && gun.guns.length) {
         for (const g of gun.guns) {
-            const parts: string[] = [`fire on ${chanRef(g.trigger && g.trigger.input, dm)}`]
+            const parts: string[] = []
+            const tr = g.trigger || {}
+            parts.push(`fire on ${chanRef(tr.input, dm)} (${gate(tr.thresholdUs, tr.hysteresisUs)})`)
             const items = (g.rof && g.rof.items) || []
-            if (items.length === 1) parts.push(`rate of fire \`${items[0].rpm} rpm\``)
+            const rofItem = (it: any) => `${it.rpm}rpm${it.soundPath ? `, sound \`${it.soundPath}\` [${maskName(it.outputMask)}]` : ''}`
+            if (items.length === 1) parts.push(`rate of fire \`${rofItem(items[0])}\``)
             else if (items.length > 1) {
-                const bands = items.map(it => `\`${it.name || 'band'}\` ${it.rpm} rpm (${it.bandLoUs}-${it.bandHiUs}µs)`)
-                parts.push(`rate of fire selected by ${chanRef(g.rof && (g.rof as any).input, dm)}: ${bands.join(', ')}`)
+                const bands = items.map((it: any) => `\`${it.name || 'band'}\` ${it.bandLoUs}-${it.bandHiUs}µs: ${rofItem(it)}`)
+                parts.push(`rate of fire selected by ${chanRef(g.rof.input, dm)}: ${bands.join(', ')}`)
             }
-            if (g.muzzleFlash) parts.push(`muzzle \`${refName(g.muzzleFlash.port, pidx)}\` ${g.muzzleFlash.durationMs}ms @ ${g.muzzleFlash.brightness}%`)
-            if (g.recoil && g.recoil.enabled) parts.push(`recoil kick \`${g.recoil.jerkUs}µs\``)
+            if (g.muzzleFlash && refAssigned(g.muzzleFlash.port, pidx)) parts.push(`muzzle \`${refName(g.muzzleFlash.port, pidx)}\` ${g.muzzleFlash.durationMs}ms @ ${g.muzzleFlash.brightness}%`)
+            if (g.recoil) parts.push(g.recoil.enabled ? `recoil kick \`${g.recoil.jerkUs}µs\` hold \`${g.recoil.holdMs}ms\`` : 'recoil off')
             if (g.smoke && g.smoke.heater && refAssigned(g.smoke.heater.port, pidx)) {
-                parts.push(`smoke: heater \`${refName(g.smoke.heater.port, pidx)}\` @ ${g.smoke.heater.elementMv}mV, fan \`${refName(g.smoke.fan && g.smoke.fan.port, pidx)}\``)
+                const h = g.smoke.heater, f = g.smoke.fan || {}
+                let hs = `heater \`${refName(h.port, pidx)}\` @ ${h.elementMv}mV, mode \`${h.mode}\``
+                if (h.mode === 'cycle') hs += ` (on \`${h.cycleOnMs}ms\` / off \`${h.cycleOffMs}ms\`)`
+                if (h.activation && h.activation.input) hs += `, gated by ${chanRef(h.activation.input, dm)} (${gate(h.activation.thresholdUs, h.activation.hysteresisUs)})`
+                let fs = `fan \`${refName(f.port, pidx)}\` @ ${f.elementMv}mV, mode \`${f.mode}\``
+                if (f.mode === 'pulse') fs += ` (pulse \`${f.pulseDurationMs}ms\`)`
+                parts.push(`smoke: ${hs}; ${fs}`)
             }
-            if (g.yaw && g.yaw.enabled) parts.push(`yaw servo \`${refName(g.yaw.servoPort, pidx)}\` on ${chanRef(g.yaw.input, dm)}`)
-            if (g.pitch && g.pitch.enabled) parts.push(`pitch servo \`${refName(g.pitch.servoPort, pidx)}\` on ${chanRef(g.pitch.input, dm)}`)
+            if (g.yaw && g.yaw.enabled) parts.push(`yaw servo \`${refName(g.yaw.servoPort, pidx)}\` on ${chanRef(g.yaw.input, dm)} (neutral \`${g.yaw.neutralUs}µs\`)`)
+            if (g.pitch && g.pitch.enabled) parts.push(`pitch servo \`${refName(g.pitch.servoPort, pidx)}\` on ${chanRef(g.pitch.input, dm)} (neutral \`${g.pitch.neutralUs}µs\`)`)
             fx.push(`Gun "\`${g.name || 'gun'}\`": ${parts.join('; ')}.`)
         }
     } else fx.push('Guns: off.')
 
-    // Gear (per leg)
-    const gear = get(gearDraft)
+    // Gear (master + per leg: motor duty, stall guard, doors)
+    const gear: any = get(gearDraft)
     if (gear && gear.enabled && gear.gears && gear.gears.length) {
-        const head = [`coordination \`${gear.coord}\``, `switch ${chanRef(gear.input && gear.input.name, dm)} (ON = down)`]
+        const gi = gear.input || {}
+        const head = [`coordination \`${gear.coord}\``, `switch ${chanRef(gi.name, dm)} (down ${gate(gi.thresholdUs, gi.hysteresisUs)})`]
         if (gear.deployOnConnectionLoss) head.push('deploys on signal loss')
+        const gs = gear.sounds || {}
+        if (gs.deploy || gs.retract) head.push(`sounds: ${[gs.deploy && `deploy \`${gs.deploy}\``, gs.retract && `retract \`${gs.retract}\``].filter(Boolean).join(', ')} [${maskName(gs.outputMask)}]`)
         fx.push(`Retractable gear: ON — ${head.join('; ')}.`)
         for (const g of gear.gears) {
-            const fwd = (g.deployDuty ?? 0) >= 0
-            const lp: string[] = [`motor \`${refName(g.motor, pidx)}\``, `deploy drives \`${fwd ? 'forward' : 'reverse'}\``, `timeout \`${g.timeoutMs}ms\``]
-            if (g.doors && g.doors.length) lp.push(`${g.doors.length} door(s) [\`${g.doorMode}\`, after deploy: \`${g.closePolicy}\`]: ${g.doors.map((d: any) => `\`${refName(d.port, pidx)}\``).join(', ')}`)
+            const lp: string[] = []
+            lp.push(`motor \`${refName(g.motor, pidx)}\` (deploy duty \`${g.deployDuty}\`, retract duty \`${g.retractDuty}\`, timeout \`${g.timeoutMs}ms\`)`)
+            const gd = g.guard || {}
+            lp.push(`stall guard \`${gd.mode}\` (ratio \`${(gd.ratioX100 / 100).toFixed(2)}×\`, threshold \`${gd.thresholdMa}mA\`${gd.ceilingMa ? `, ceiling \`${gd.ceilingMa}mA\`` : ''})`)
+            if (g.doors && g.doors.length) {
+                let ds = `${g.doors.length} door(s) \`${g.doorMode}\``
+                if (g.doorMode === 'delay') ds += ` (delay \`${g.doorDelayMs}ms\`)`
+                ds += `, after deploy \`${g.closePolicy}\`: ${g.doors.map((d: any) => `\`${refName(d.port, pidx)}\``).join(', ')}`
+                lp.push(ds)
+            }
             fx.push(`  • Leg "\`${g.name || 'leg'}\`": ${lp.join('; ')}.`)
         }
     } else fx.push('Retractable gear: off.')
 
-    // Lighting (incl. programs + selector)
-    const light = get(lightfxDraft)
+    // Lighting (master, LED channels, programs + their tracks/events, selector)
+    const light: any = get(lightfxDraft)
     if (light && light.enabled) {
         const lp: string[] = [`master \`${light.masterBrightnessPct}%\``]
-        const ch = (light.channels || []).map((c: any) => `\`${c.name}\` -> \`${refName(c.port, pidx)}\` @ ${c.defaultBrightnessPct ?? 100}%`)
+        const ch = (light.channels || []).map((c: any) => `\`${c.name}\` -> \`${refName(c.port, pidx)}\` @ ${c.defaultBrightnessPct ?? 0}%`)
         lp.push(ch.length ? `${ch.length} LED channel(s): ${ch.join(', ')}` : 'no LED channels yet')
-        const progs = (light.activePrograms || []).map((p: any) => `\`${p.name}\``)
-        lp.push(progs.length ? `programs: ${progs.join(', ')}` : 'no programs yet')
+        const progLines = (light.activePrograms || []).map((ap: any) => {
+            const tracks = (ap.program && ap.program.tracks) || []
+            const tdesc = tracks.map((t: any) => {
+                const evs = (t.events || []).map(evDesc).join(' → ')
+                return `\`${t.channel}\`${t.loop ? ' (loop)' : ''}: ${evs || '(no events)'}`
+            })
+            return `\`${ap.name}\`${tdesc.length ? ` [${tdesc.join(' | ')}]` : ''}`
+        })
+        lp.push(progLines.length ? `programs: ${progLines.join('; ')}` : 'no programs yet')
         const sel = light.programSelector
         if (sel && sel.enabled && sel.input) {
-            const ranges = (sel.ranges || []).map((r: any) => `\`${r.program}\``)
-            lp.push(`program selector on ${chanRef(sel.input, dm)}${ranges.length ? ` -> ${ranges.join(', ')}` : ''}`)
+            const ranges = (sel.ranges || []).map((r: any) => `\`${r.program}\` @ ${r.fromUs}-${r.toUs}µs`)
+            lp.push(`program selector on ${chanRef(sel.input, dm)} (±\`${sel.hysteresisUs}µs\`)${ranges.length ? ` -> ${ranges.join(', ')}` : ''}`)
         }
         fx.push(`Lighting: ON — ${lp.join('; ')}.`)
     } else fx.push('Lighting: off.')
 
-    // Landing lights
-    const land = get(landingDraft)
+    // Landing lights (servo open/close, per-LED brightness, fade-in, activation)
+    const land: any = get(landingDraft)
     if (land && land.lights && land.lights.length) {
         for (const l of land.lights) {
             const servos = (l.servos || []).map((s: any) => `\`${refName(s.port, pidx)}\``)
-            const leds = (l.leds || []).map((d: any) => `\`${refName(d.port, pidx)}\``)
+            const leds = (l.leds || []).map((d: any) => `\`${refName(d.port, pidx)}\` @ ${d.brightnessPct}%`)
             const act = l.activation || {}
             let when = '`manual`'
-            if (act.mode === 'input_channel') when = `on ${chanRef(act.input, dm)}`
-            else if (act.mode === 'program') when = `with program \`${act.program}\``
-            fx.push(`Landing light "\`${l.name || 'light'}\`": servos ${servos.join(', ') || '(none)'}, LEDs ${leds.join(', ') || '(none)'}, fade-in \`${l.fadeInMs}ms\`, activates ${when}.`)
+            if (act.mode === 'input_channel') when = `on ${chanRef(act.input, dm)} (deploy ${gate(act.thresholdUs, act.hysteresisUs)})`
+            else if (act.mode === 'program') when = `with program \`${act.program}\` when \`${act.whenProgram}\``
+            fx.push(`Landing light "\`${l.name || 'light'}\`": servos ${servos.join(', ') || '(none)'} (open \`${l.openUs}µs\` / close \`${l.closeUs}µs\`), LEDs ${leds.join(', ') || '(none)'}, fade-in \`${l.fadeInMs}ms\`, activates ${when}.`)
         }
     } else fx.push('Landing lights: none.')
 

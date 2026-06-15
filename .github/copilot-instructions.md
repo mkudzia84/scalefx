@@ -2638,7 +2638,13 @@ that affects them:
    is sent in the chat request). A new effect / draft field the operator can set
    must be surfaced here, by its human-readable name, so the assistant can see it
    (it builds from the effect drafts + device model, NOT the vestigial claims —
-   that was the "Configured effects = none" bug).
+   that was the "Configured effects = none" bug). **The export must be EXHAUSTIVE
+   — every operator-settable draft field, not a summary** (the 2026-06-15 audit
+   found engine fade-in/out, gun trigger thresholds + recoil hold + smoke
+   heater/fan modes, gear stall-guard + duties, lighting program events, and
+   landing thresholds were all silently omitted). When you add a draft field,
+   add it to the matching effect block in `context.ts`. Defaults belong in the
+   textbook's `15-parameter-reference.md`, current values in the live context.
 
 **Guarded by the pre-merge gate (Rule 52):** `tests/host/go_unit/assistant_docs_test`
 asserts the textbook (now under `services/scalefx-ai-assistant/…/knowledge`) documents
