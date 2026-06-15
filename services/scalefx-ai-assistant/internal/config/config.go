@@ -26,6 +26,7 @@ type Config struct {
 	TrustedProxies []string   `yaml:"trustedProxies"` // proxy IPs whose X-Forwarded-For we trust
 	RateLimit      RateLimit  `yaml:"rateLimit"`
 	Providers      []Provider `yaml:"providers"`
+	Verbose        bool       `yaml:"verbose"` // extra logging: per-request detail + prompt/reply previews
 }
 
 // Load reads + validates the YAML config, applying sane defaults.

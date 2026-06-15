@@ -60,8 +60,22 @@ an embedded secret is extractable from a shipped binary.
 
 ```sh
 go build -o scalefx-ai-assistant .
-./scalefx-ai-assistant -config config.yaml
+./scalefx-ai-assistant -config config.yaml          # add -verbose for full request logging
 ```
+
+Concurrency: the server handles many simultaneous users out of the box —
+`net/http` serves each request on its own goroutine; shared state is read-only
+after startup except the mutex-guarded rate limiter (which also self-evicts idle
+IPs to bound memory).
+
+## Logging
+
+Every request logs one completion line with a correlation id, IP, status,
+latency, and byte count, e.g. `[req #42] POST /v1/chat ip=… -> 200 (1310ms, 980B)`.
+Chat adds `[chat #42] … model=… msgs=… ctx=…B` and an `OK`/`FAIL` line (latency +,
+on failure, the full upstream error). `verbose: true` (or `-verbose`) additionally
+logs request-arrival lines, `/healthz` probes, and the user's question + reply
+preview. Client responses are always sanitized regardless of log verbosity.
 
 ## Deploy (Docker / OVHcloud)
 
