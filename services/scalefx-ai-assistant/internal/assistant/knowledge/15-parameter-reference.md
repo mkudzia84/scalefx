@@ -53,8 +53,8 @@ by intent; the role maps that onto these calibrated limits.
 | Hysteresis | Dead-band around the threshold that prevents stick jitter from re-triggering. | `50µs` |
 | Failsafe | Behaviour on RC signal loss: `Hold` last value, `Force OFF`, or `Force ON`. | `Force OFF` |
 | Starting / Running / Stopping sound | WAV files on the SD card for ignition, the running loop (required), and shutdown. | empty |
-| Starting offset | Delay before the starting sound begins after the engine switches on. | `0ms` |
-| Stopping offset | Delay before the stopping sound begins after the engine switches off. | `0ms` |
+| Starting offset | Starts the starting sound this many ms IN (skips the intro) rather than from the beginning — used for warm re-starts. | `0ms` |
+| Stopping offset | Starts the stopping sound this many ms IN rather than from the beginning. | `0ms` |
 | Start fade-in | Linear volume ramp from silent to full at the start of the engine sound. | `0ms` |
 | Stop fade-out | Linear volume ramp from full to silent at shutdown. | `0ms` |
 
@@ -174,9 +174,9 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Servo port(s) | The servo(s) that deploy/retract the light. | none |
 | LED port(s) + Brightness | The searchlight LED(s) and their brightness % when deployed. | none / per LED |
 | Fade-in | LED soft-start: ramp 0→brightness over this many ms once the servo is fully deployed (0 = hard on). | `400ms` |
-| Activation mode | How the group is triggered: `Manual`, `Input channel` (RC-gated), or `Program` (follows a LightFX program). | `Manual` |
+| Activation mode | How the group is triggered: `Manual` (wire command only), `Input channel` (RC-gated), or `Program` (tied to a LightFX program). | `Manual` |
 | Deploy channel + threshold / hysteresis | The RC gate when mode = Input channel. | unset / `1500µs` / `50µs` |
-| Program + When | The LightFX program that drives it, and whether to deploy when that program is `active` or `inactive` (mode = Program). | empty / `active` |
+| Program (+ When) | Mode = Program binds the group ON while the chosen LightFX program is the active one (it deploys when that program runs). Firmware applies this as a static on/off binding when the program is selected — the `When active/inactive` choice is honored for the `active` case; there is no live "deploy while the program is inactive" gate. | empty / `active` |
 
 ---
 
@@ -186,7 +186,7 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Setting | What it does | Default |
 |---|---|---|
 | Enable | Master on/off for the whole undercarriage (radio + control). | off |
-| Coordination | `Independent` = each strut deploys/retracts on its own, no cross-strut sync. `Full-sync` = all struts move in lockstep: doors open together, then struts run together, then doors close together. | `Independent` |
+| Coordination | `Independent` = each strut deploys/retracts on its own, no cross-strut sync. `Full-sync` = all struts move in lockstep: doors open together, then struts run together, then doors close together. (Studio's toggle offers these two; the firmware also supports `door_sync` and `sequenced`, which only appear if an older config carries them.) | `Independent` |
 | Up/down channel | The RC channel that deploys/retracts the gear (RC-gated). | unset |
 | Threshold / Hysteresis | Deploy when the channel rises past the threshold; hysteresis is the dead-band. | `1500µs` / `50µs` |
 | On signal loss (deploy) | If an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. | off |
