@@ -115,3 +115,26 @@ func (a *App) AssistantAsk(history []AssistantMessage, liveContext, model string
 	}
 	return AssistantReply{Text: text}
 }
+
+// AssistantSummary is the result of compressing a conversation.
+type AssistantSummary struct {
+	Summary string `json:"summary"`
+	Error   string `json:"error"`
+}
+
+// AssistantSummarize compresses a run of turns into a compact summary the
+// frontend keeps as its new history, so long conversations stay cheap.
+func (a *App) AssistantSummarize(history []AssistantMessage, model string) AssistantSummary {
+	msgs := make([]aiclient.Message, 0, len(history))
+	for _, m := range history {
+		msgs = append(msgs, aiclient.Message{Role: m.Role, Content: m.Content})
+	}
+	ctx, cancel := a.reqCtx(65)
+	defer cancel()
+	text, err := aiclient.Summarize(ctx, msgs, model)
+	if err != nil {
+		a.diag.Error("FE.AI", "assistant summarize failed: %v", err)
+		return AssistantSummary{Error: err.Error()}
+	}
+	return AssistantSummary{Summary: text}
+}

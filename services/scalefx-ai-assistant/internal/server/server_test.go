@@ -190,6 +190,37 @@ func TestChatRateLimitUpstreamMapped(t *testing.T) {
 	}
 }
 
+func TestSummarizeRoutesToProvider(t *testing.T) {
+	s := testServer(t)
+	s.providers["gemini-2.5-flash"] = stubProvider{reply: "a compact summary"}
+
+	body, _ := json.Marshal(summarizeReq{Model: "gemini-2.5-flash", Messages: []wireMsg{
+		{Role: "user", Content: "set up my gear"},
+		{Role: "model", Content: "use the gear tab"},
+	}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/summarize", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+devToken())
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("/v1/summarize: got %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	var out map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["summary"] != "a compact summary" {
+		t.Fatalf("summary: got %q, want %q", out["summary"], "a compact summary")
+	}
+}
+
+func TestSummarizeRequiresAuth(t *testing.T) {
+	body, _ := json.Marshal(summarizeReq{Model: "gemini-2.5-flash"})
+	rec := httptest.NewRecorder()
+	testServer(t).Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/v1/summarize", bytes.NewReader(body)))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no-token /v1/summarize: got %d, want 401", rec.Code)
+	}
+}
+
 func TestChatBlockedMapped(t *testing.T) {
 	s := testServer(t)
 	s.providers["gemini-2.5-flash"] = errProvider{err: genai.ErrBlocked}

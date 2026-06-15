@@ -107,3 +107,16 @@ func Chat(ctx context.Context, messages []Message, liveContext, model string) (s
 	}, &out)
 	return out.Text, err
 }
+
+// Summarize folds a run of conversation turns into a compact summary the client
+// keeps as its new history (so long chats stay cheap).
+func Summarize(ctx context.Context, messages []Message, model string) (string, error) {
+	var out struct {
+		Summary string `json:"summary"`
+		Model   string `json:"model"`
+	}
+	err := do(ctx, http.MethodPost, "/v1/summarize", map[string]any{
+		"messages": messages, "model": model,
+	}, &out)
+	return out.Summary, err
+}

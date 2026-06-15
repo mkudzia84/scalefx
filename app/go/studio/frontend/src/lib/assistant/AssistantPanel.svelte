@@ -4,7 +4,7 @@
      provider tokens, textbook, model routing, and rate limiting. -->
 <script lang="ts">
     import { onMount } from 'svelte'
-    import { messages, busy, status, model, ask, refreshStatus, clearChat } from './store'
+    import { messages, busy, compacting, status, model, ask, refreshStatus, clearChat } from './store'
     import { renderMarkdown } from './markdown'
     import FaqView from './FaqView.svelte'
 
@@ -99,16 +99,23 @@
             </div>
         {/if}
         {#each ($messages) as m}
-            <div class="asst-msg {m.role}" class:err={m.error}>
-                {#if m.role === 'model' && !m.error}
-                    <div class="asst-bubble md">{@html renderMarkdown(m.content)}</div>
-                {:else}
-                    <div class="asst-bubble">{m.content}</div>
-                {/if}
-            </div>
+            {#if m.summary}
+                <div class="asst-compacted" title={m.content}>🗜️ Earlier messages summarized to keep the chat fast</div>
+            {:else}
+                <div class="asst-msg {m.role}" class:err={m.error}>
+                    {#if m.role === 'model' && !m.error}
+                        <div class="asst-bubble md">{@html renderMarkdown(m.content)}</div>
+                    {:else}
+                        <div class="asst-bubble">{m.content}</div>
+                    {/if}
+                </div>
+            {/if}
         {/each}
         {#if $busy}
             <div class="asst-msg model"><div class="asst-bubble thinking">● ● ●</div></div>
+        {/if}
+        {#if $compacting}
+            <div class="asst-compacted">🗜️ Summarizing earlier messages…</div>
         {/if}
     </div>
 
@@ -162,6 +169,11 @@
     }
     .asst-chip:hover:not(:disabled) { border-color: var(--accent); color: var(--text-bright); }
 
+    .asst-compacted {
+        align-self: center; max-width: 90%; text-align: center;
+        font-size: 10.5px; color: var(--text-dim); cursor: default;
+        padding: 2px 8px; border: 1px dashed var(--border); border-radius: 10px;
+    }
     .asst-msg { display: flex; }
     .asst-msg.user { justify-content: flex-end; }
     .asst-msg.model { justify-content: flex-start; }

@@ -892,6 +892,20 @@ export namespace main {
 		    return a;
 		}
 	}
+	export class AssistantSummary {
+	    summary: string;
+	    error: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new AssistantSummary(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.summary = source["summary"];
+	        this.error = source["error"];
+	    }
+	}
 	export class AudioPreloadStatus {
 	    residentBytes: number;
 	    budgetBytes: number;

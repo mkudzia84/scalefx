@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("/v1/models", s.protect(false, http.HandlerFunc(s.handleModels)))
 	mux.Handle("/v1/faq", s.protect(false, http.HandlerFunc(s.handleFAQ)))
 	mux.Handle("/v1/chat", s.protect(true, http.HandlerFunc(s.handleChat)))
+	mux.Handle("/v1/summarize", s.protect(true, http.HandlerFunc(s.handleSummarize)))
 	return s.withLogging(mux)
 }
 
@@ -184,13 +185,46 @@ func (s *Server) handleFAQ(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+type wireMsg struct {
+	Role    string `json:"role"` // "user" | "model"
+	Content string `json:"content"`
+}
+
 type chatReq struct {
-	Messages []struct {
-		Role    string `json:"role"`
-		Content string `json:"content"`
-	} `json:"messages"`
-	Context string `json:"context"`
-	Model   string `json:"model"`
+	Messages []wireMsg `json:"messages"`
+	Context  string    `json:"context"`
+	Model    string    `json:"model"`
+}
+
+type summarizeReq struct {
+	Messages []wireMsg `json:"messages"`
+	Model    string    `json:"model"`
+}
+
+func toGenaiMessages(in []wireMsg) []genai.Message {
+	out := make([]genai.Message, 0, len(in))
+	for _, m := range in {
+		role := genai.RoleUser
+		if m.Role == "model" || m.Role == "assistant" {
+			role = genai.RoleModel
+		}
+		out = append(out, genai.Message{Role: role, Content: m.Content})
+	}
+	return out
+}
+
+// pickModel resolves the requested model to a provider, falling back to the first
+// offered model when the request names one we don't serve. Returns ("", nil) when
+// no models are configured at all.
+func (s *Server) pickModel(requested string) (string, genai.Provider) {
+	if p := s.providers[requested]; p != nil {
+		return requested, p
+	}
+	if len(s.models) == 0 {
+		return "", nil
+	}
+	m := s.models[0].ID
+	return m, s.providers[m]
 }
 
 func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
@@ -203,25 +237,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "bad request body")
 		return
 	}
-	model := req.Model
-	prov := s.providers[model]
+	model, prov := s.pickModel(req.Model)
 	if prov == nil {
-		if len(s.models) == 0 {
-			httpError(w, http.StatusServiceUnavailable, "The assistant is not configured yet. Please contact the administrator.")
-			return
-		}
-		model = s.models[0].ID // requested model not offered — fall back to the first
-		prov = s.providers[model]
+		httpError(w, http.StatusServiceUnavailable, "The assistant is not configured yet. Please contact the administrator.")
+		return
 	}
-
-	msgs := make([]genai.Message, 0, len(req.Messages))
-	for _, m := range req.Messages {
-		role := genai.RoleUser
-		if m.Role == "model" || m.Role == "assistant" {
-			role = genai.RoleModel
-		}
-		msgs = append(msgs, genai.Message{Role: role, Content: m.Content})
-	}
+	msgs := toGenaiMessages(req.Messages)
 
 	// Privacy: we log WHO + HOW MUCH + outcome, never WHAT. The question text and
 	// the reply are never written to the log (no content, even in verbose mode).
@@ -246,6 +267,41 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[chat #%d] OK ip=%s model=%s replyBytes=%d in %dms", id, ip, model, len(text), took.Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]string{"text": text, "model": model})
+}
+
+// handleSummarize compresses a conversation into a compact summary the client can
+// use as the new history (keeps long chats cheap). Stateless like chat — the
+// client sends the turns to fold, we return prose; we never store anything.
+func (s *Server) handleSummarize(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		httpError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	var req summarizeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "bad request body")
+		return
+	}
+	model, prov := s.pickModel(req.Model)
+	if prov == nil {
+		httpError(w, http.StatusServiceUnavailable, "The assistant is not configured yet. Please contact the administrator.")
+		return
+	}
+	id := reqIDOf(r.Context())
+	ip := s.clientIP(r)
+	log.Printf("[summarize #%d] ip=%s model=%s msgs=%d", id, ip, model, len(req.Messages))
+
+	start := time.Now()
+	summary, err := assistant.New(prov).Summarize(r.Context(), toGenaiMessages(req.Messages))
+	took := time.Since(start)
+	if err != nil {
+		code, msg := friendlyChatError(r.Context(), err)
+		log.Printf("[summarize #%d] FAIL ip=%s model=%s after %dms -> %d: %v", id, ip, model, took.Milliseconds(), code, err)
+		httpError(w, code, msg)
+		return
+	}
+	log.Printf("[summarize #%d] OK ip=%s model=%s summaryBytes=%d in %dms", id, ip, model, len(summary), took.Milliseconds())
+	writeJSON(w, http.StatusOK, map[string]string{"summary": summary, "model": model})
 }
 
 // friendlyChatError maps an internal chat failure to a (status, user-message)

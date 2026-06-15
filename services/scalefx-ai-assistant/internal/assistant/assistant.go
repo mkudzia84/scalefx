@@ -74,3 +74,14 @@ func (a *Assistant) SystemPrompt(liveContext string) string {
 func (a *Assistant) Ask(ctx context.Context, liveContext string, history []genai.Message) (string, error) {
 	return a.provider.Generate(ctx, a.SystemPrompt(liveContext), history)
 }
+
+// summarizerPrompt compresses a conversation so it can continue with less
+// history.  It is a focused meta-task, NOT the config assistant — it must not
+// add advice, only preserve the facts needed to keep helping.
+const summarizerPrompt = `You are compressing a conversation between a user and the ScaleFX configuration assistant so the chat can continue with less history. Write a concise summary that preserves the facts needed to keep helping: the user's model/hardware and how it is set up (keep concrete names, ports, channels, and values), what they asked about, the advice or decisions reached, and any open questions or next steps. Use short paragraphs or bullet points. Be specific and factual; do NOT add new advice or commentary. Output ONLY the summary.`
+
+// Summarize folds a run of conversation turns into a compact summary the client
+// can keep as its new history.  Stateless: nothing is stored here.
+func (a *Assistant) Summarize(ctx context.Context, history []genai.Message) (string, error) {
+	return a.provider.Generate(ctx, summarizerPrompt, history)
+}

@@ -13,6 +13,7 @@ secrets. Studio talks to it over a small REST API.
 | `GET`  | `/v1/models`  | yes | aggregated `[{id, provider, label}]` across configured providers |
 | `GET`  | `/v1/faq`     | yes | curated FAQ `[{question, answer}]` (from the textbook) |
 | `POST` | `/v1/chat`    | yes + rate-limited | `{messages, context, model}` → `{text, model}` (grounded in textbook + guardrail + the client's live context) |
+| `POST` | `/v1/summarize` | yes + rate-limited | `{messages, model}` → `{summary, model}` — compresses a run of turns into a compact summary the client keeps as its new history (long-chat cost control). Stateless: nothing is stored. |
 
 Auth = `Authorization: Bearer <JWT>` (HS256, see below). `/v1/chat` is rate-limited
 per client IP (default 5/min, configurable).

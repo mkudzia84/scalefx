@@ -18,6 +18,10 @@ export function AssistantStatus() {
   return window['go']['main']['App']['AssistantStatus']();
 }
 
+export function AssistantSummarize(arg1, arg2) {
+  return window['go']['main']['App']['AssistantSummarize'](arg1, arg2);
+}
+
 export function AttachRole(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['AttachRole'](arg1, arg2, arg3, arg4);
 }
