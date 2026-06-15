@@ -828,7 +828,8 @@ export namespace main {
 	}
 	export class AssistantModelDTO {
 	    id: string;
-	    displayName: string;
+	    provider: string;
+	    label: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AssistantModelDTO(source);
@@ -837,7 +838,8 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
-	        this.displayName = source["displayName"];
+	        this.provider = source["provider"];
+	        this.label = source["label"];
 	    }
 	}
 	export class AssistantReply {
@@ -854,30 +856,11 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
-	export class ProviderStatusDTO {
-	    id: string;
-	    label: string;
-	    hasKey: boolean;
-	    keySource: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new ProviderStatusDTO(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.label = source["label"];
-	        this.hasKey = source["hasKey"];
-	        this.keySource = source["keySource"];
-	    }
-	}
 	export class AssistantStatusDTO {
-	    provider: string;
-	    model: string;
 	    available: boolean;
-	    keySource: string;
-	    providers: ProviderStatusDTO[];
+	    endpoint: string;
+	    models: AssistantModelDTO[];
+	    error?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new AssistantStatusDTO(source);
@@ -885,11 +868,10 @@ export namespace main {
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.provider = source["provider"];
-	        this.model = source["model"];
 	        this.available = source["available"];
-	        this.keySource = source["keySource"];
-	        this.providers = this.convertValues(source["providers"], ProviderStatusDTO);
+	        this.endpoint = source["endpoint"];
+	        this.models = this.convertValues(source["models"], AssistantModelDTO);
+	        this.error = source["error"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2580,7 +2562,6 @@ export namespace main {
 	        this.name = source["name"];
 	    }
 	}
-	
 	
 	
 	

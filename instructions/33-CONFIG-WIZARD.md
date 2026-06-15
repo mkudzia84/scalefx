@@ -353,3 +353,41 @@ documents every effect channel-function label from
 `devicemodel.ChannelFunctions()` — add a channel function + forget the glossary
 and the gate fails. The glossary's channel-function list is now the canonical
 reference (verbatim labels).
+
+## 13. Service split — standalone hosted assistant (branch `genai-assistant-split`, 2026-06-15)
+
+For production delivery the assistant was **factored out of Studio into a
+standalone Go service** — every client used to carry provider tokens + the full
+provider surface, which is unsafe to ship. The service is deployable on a
+hosting platform (OVHcloud).
+
+**`services/ai-assistant/`** (module `scalefx/ai-assistant`) now OWNS what used
+to live in Studio: the `genai` providers (**Gemini + Mistral only — Groq
+removed**), the embedded textbook + guardrail (`internal/assistant/`,
+`knowledge/*.md` moved here verbatim), provider tokens (`config.yaml`, gitignored
+— `id/token/models` per provider), model aggregation, chat routing, JWT auth, and
+per-IP rate limiting. REST API (JSON; `/v1/*` need a bearer JWT, `/healthz`
+doesn't): `GET /v1/models` → aggregated `[{id,provider,label}]`; `POST /v1/chat`
+`{messages,context,model}` → `{text,model}` (system = guardrail + textbook +
+the client's live context); `GET /v1/faq` → `[{question,answer}]`. Rate limit is
+per client IP (default 5/min, configurable; honours `X-Forwarded-For` only behind
+a configured `trustedProxies` LB). `tools/gen-token` prints a secret + a
+long-lived HS256 token; build with `-ldflags "-X …/internal/auth.Secret=…"`. A
+committed **dev default** secret/token makes localhost work out of the box —
+rotate for any real deploy (an embedded secret is extractable). `Dockerfile` +
+`README.md` cover deploy.
+
+**Studio is now a thin REST client.** `app/go/studio/genai` + `…/assistant` are
+DELETED. New `app/go/studio/aiclient` package: `var Endpoint` (default
+`http://localhost:8080`) + `var AuthToken` (the committed dev token) — both
+`-ldflags`-overridable — and `Models`/`FAQ`/`Chat` helpers. `app_assistant.go`
+is a proxy: `AssistantStatus` (reachable + models), `ListAssistantModels`,
+`AssistantAsk(history, liveContext, model)`, `AssistantFAQ`. The `SetAssistant*`
+bindings + the settings file are GONE. **Settings has no AI provider/key
+section.** The Assistant dock's model UI is service-driven: a dropdown when the
+service offers >1 model, a static label when exactly 1, a "service unreachable"
+notice (with Retry) when down — no more `ALLOWLISTS` map, no no-key box. The
+**live-context builder (`context.ts`) stays in Studio** and is sent in each chat
+request (unchanged). The textbook drift-guard test was retargeted to
+`services/ai-assistant/internal/assistant/knowledge`; `internal/server` tests add
+model-aggregation / chat-routing / 401 / 429 coverage.

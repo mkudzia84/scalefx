@@ -6,7 +6,7 @@ import {input} from '../models';
 
 export function ApplyDefaults():Promise<main.DeviceModelSnapshot>;
 
-export function AssistantAsk(arg1:Array<main.AssistantMessage>,arg2:string):Promise<main.AssistantReply>;
+export function AssistantAsk(arg1:Array<main.AssistantMessage>,arg2:string,arg3:string):Promise<main.AssistantReply>;
 
 export function AssistantFAQ():Promise<Array<main.FAQItemDTO>>;
 
@@ -235,12 +235,6 @@ export function SelectLightFxProgram(arg1:string):Promise<void>;
 export function SendCommand(arg1:string):Promise<void>;
 
 export function ServoSetTarget(arg1:string,arg2:number,arg3:number):Promise<void>;
-
-export function SetAssistantKey(arg1:string,arg2:string):Promise<void>;
-
-export function SetAssistantModel(arg1:string):Promise<void>;
-
-export function SetAssistantProvider(arg1:string):Promise<void>;
 
 export function SetChannelFunction(arg1:string,arg2:number,arg3:number,arg4:number,arg5:string):Promise<main.DeviceModelSnapshot>;
 

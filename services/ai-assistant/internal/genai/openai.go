@@ -13,10 +13,10 @@ import (
 )
 
 // OpenAIProvider talks to any OpenAI-compatible chat-completions endpoint
-// (Groq, Mistral, local servers, …) — reusable behind Provider.
+// (Mistral, local servers, …) — reusable behind Provider.
 type OpenAIProvider struct {
 	name    string
-	baseURL string // e.g. "https://api.groq.com/openai/v1"
+	baseURL string // e.g. "https://api.mistral.ai/v1"
 	apiKey  string
 	model   string
 	http    *http.Client

@@ -27,7 +27,9 @@ var effectGroups = map[string]bool{
 	"Engine": true, "Lights": true, "Gear": true, "Gun": true, "Audio": true,
 }
 
-const knowledgeDir = "../../../../app/go/studio/assistant/knowledge"
+// The assistant textbook moved into the standalone service (services/ai-assistant)
+// when the assistant was factored out of Studio.
+const knowledgeDir = "../../../../services/ai-assistant/internal/assistant/knowledge"
 
 var nonAlnum = regexp.MustCompile(`[^a-z0-9]+`)
 
@@ -73,7 +75,7 @@ func TestTextbookDocumentsEffectChannelFunctions(t *testing.T) {
 		checked++
 		if !strings.Contains(corpus, normalize(cf.Label)) {
 			t.Errorf("channel function %q (label %q, group %q) is NOT documented in the assistant textbook.\n"+
-				"  Rule 64: add its label to app/go/studio/assistant/knowledge/50-glossary.md (and describe it where relevant).",
+				"  Rule 64: add its label to services/ai-assistant/internal/assistant/knowledge/50-glossary.md (and describe it where relevant).",
 				cf.ID, cf.Label, cf.Group)
 		}
 	}

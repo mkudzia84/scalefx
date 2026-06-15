@@ -9,9 +9,6 @@ const (
 	DefaultMistralModel = "mistral-small-latest"
 )
 
-// BuiltinMistralKey — optional build-time Mistral key (same semantics +
-// caveats as BuiltinKey; inject via -ldflags "-X studio/genai.BuiltinMistralKey=...").
-var BuiltinMistralKey string
 
 // NewMistral builds a Mistral chat provider.  An empty model uses the default.
 func NewMistral(apiKey, model string) *OpenAIProvider {
