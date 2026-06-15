@@ -119,24 +119,26 @@ export function buildAssistantContext(): string {
     // Effects — read each draft's real enabled state + key settings.
     out.push('')
     out.push('CONFIGURED EFFECTS:')
+    out.push('(Each value is labelled with its exact Studio setting name — the same name used in the Parameter reference. Interpret each ONLY by its Parameter-reference definition, never from the wording of the label. E.g. a sound "offset" is a SEEK into the file (skip the intro), not a delay before it.)')
     const fx: string[] = []
 
     // Engine — every set field (intentionally exhaustive so the assistant can
     // answer about any engine setting, including transitions/fade in-out).
     const eng: any = get(engineDraft)
     if (eng && eng.enabled) {
-        const t: string[] = [`type \`${eng.type}\``, `speakers \`${eng.output}\``]
+        const t: string[] = [`Type \`${eng.type}\``, `Speaker output \`${eng.output}\``]
         const tg = eng.toggle || {}
-        t.push(`on/off via ${chanRef(tg.input, dm)} (on ${gate(tg.thresholdUs, tg.hysteresisUs)})`)
-        if (tg.failsafe) t.push(`on signal loss \`${tg.failsafe}\``)
+        t.push(`On/off channel ${chanRef(tg.input, dm)} (Threshold \`${tg.thresholdUs}µs\`, Hysteresis \`${tg.hysteresisUs}µs\`)`)
+        if (tg.failsafe) t.push(`Failsafe \`${tg.failsafe}\``)
         const s = eng.sounds || {}
         const snd: string[] = []
-        if (s.running) snd.push(`running \`${s.running}\``)
-        if (s.starting) snd.push(`start \`${s.starting}\``)
-        if (s.stopping) snd.push(`stop \`${s.stopping}\``)
-        t.push(`sounds: ${snd.length ? snd.join(', ') : 'none set'}`)
+        if (s.running) snd.push(`Running \`${s.running}\``)
+        if (s.starting) snd.push(`Starting \`${s.starting}\``)
+        if (s.stopping) snd.push(`Stopping \`${s.stopping}\``)
+        t.push(`Sounds: ${snd.length ? snd.join(', ') : 'none set'}`)
         const tr = s.transitions || {}
-        t.push(`transitions: start offset \`${tr.startingOffsetMs}ms\`, stop offset \`${tr.stoppingOffsetMs}ms\`, fade-in \`${tr.startFadeInMs}ms\`, fade-out \`${tr.stopFadeOutMs}ms\``)
+        // Offsets are a SEEK into the file (skip the intro), NOT a delay — spell it out inline so the model can't misread.
+        t.push(`Starting offset \`${tr.startingOffsetMs}ms\` (seek INTO the start sound, not a delay), Stopping offset \`${tr.stoppingOffsetMs}ms\` (seek INTO the stop sound, not a delay), Start fade-in \`${tr.startFadeInMs}ms\`, Stop fade-out \`${tr.stopFadeOutMs}ms\``)
         fx.push(`Engine sound: ON — ${t.join('; ')}.`)
     } else fx.push('Engine sound: off.')
 
