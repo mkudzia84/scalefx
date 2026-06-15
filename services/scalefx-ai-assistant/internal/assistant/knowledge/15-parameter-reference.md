@@ -34,10 +34,24 @@ channel empty means manual control only.
 | Channel function | Names a channel so effects can reference it by name (defined in the Input & Ports `inputs[]` block). | unset |
 | Port role | The hardware function attached to an output port: `ServoActuator`, `LedAnimator`, `DcMotor`, `BiDcMotor` (H-bridge), `Heater`, or the input roles. Output pickers only list ports with the role the effect needs. | unset |
 
-**Servo calibration** (the ⚙ Calibrate… popup — live jog, set limits, edit speed /
-accel / jerk): Min/Max endpoint µs, Centre µs, Max speed/accel/jerk, and a
-**Reversed** toggle ("open" maps to min µs instead of max). Effects command a servo
-by intent; the role maps that onto these calibrated limits.
+### Servo calibration window (the ⚙ Calibrate… popup)
+
+Opens for any servo port (gun turret, gear doors, landing, IO tab). It jogs the
+servo live and saves a motion profile to `/hubfx.yaml`. Effects command the servo
+by intent (deploy/retract or 0–100%); the role maps that onto these limits.
+
+| Control | What it does | Default |
+|---|---|---|
+| Live jog (slider / ± buttons / arrow keys) | Moves the servo across the calibration envelope; the big readout shows the current µs (arrows ±1 µs, Shift ×10; PageUp/Down ±50 µs). Jogging past the current min/max auto-expands them. | — |
+| Set as min / center / max | Captures the current jog position as that endpoint (center doubles as the neutral / failsafe position). | — |
+| Min / Center / Max µs | The two travel limits and the neutral, as fine numeric tweaks. | from the dialog |
+| Speed µs/s | Max slew rate; `0` = unlimited (snap straight to target). | from the dialog |
+| Accel µs/s² | Ramp accel/decel (symmetric); `0` = full speed instantly. | from the dialog |
+| Jerk µs/s³ | S-curve smoothing; `0` = a plain trapezoidal profile (most servos don't need jerk). | from the dialog |
+| Reversed | Swaps the role's open/close direction; after Save, "open" maps to the min end instead of the max end. | off |
+| Save / Cancel | Save pushes the profile to `/hubfx.yaml`; Cancel restores the original. | — |
+
+The Travel summary shows max − min µs and the time to cross it at the chosen speed.
 
 ---
 
@@ -200,14 +214,31 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Deploy direction | `Forward` = deploy runs the motor forward (retract reverses). `Reverse` = deploy runs in reverse. | `Forward` |
 | Travel timeout | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
 
-**Motor / stall guard** (set in the ⚙ Calibrate motor… popup — live drive, A→B
-sweep that measures travel + stall current, stall-guard tuning):
-| Setting | What it does | Default |
+### Motor calibration window (the ⚙ Calibrate motor… popup)
+
+Opens for a strut's H-bridge motor (BiDcMotor). A gear motor has no position
+feedback, so this drives it end-to-end and watches the current to measure travel
+and tune the stall guard.
+
+| Control | What it does | Default |
 |---|---|---|
-| Mode | `live` = trip when current spikes to the ratio × the measured running baseline. `fixed` = trip at an absolute current threshold. | `live` |
-| Ratio | (live mode) Stall threshold as a multiple of baseline current — `250` means 2.5×. | `250` (2.5×) |
-| Threshold | (fixed mode) Absolute stall current. | `1000mA` |
-| Ceiling | Hard over-current cutoff regardless of mode; `0` = none. | `0` |
+| Live status (~2 Hz) | Shows duty, voltage, **current (mA)** (the stall-current anchor), position, and stall state while you drive. | — |
+| Duty | The seek/jog drive magnitude (port-native, 0…32767). | from the dialog |
+| Timeout (s) | Per-leg seek timeout; the seek aborts to TIMEOUT after this. | `30s` |
+| Calibrate (A→B sweep) | Drives to end A then end B, measuring each leg's travel-time and peak current; the full-stroke time auto-suggests the strut's travel timeout (≈ stroke × 1.5). | — |
+| To End A / To End B | Drive to one endstop (+duty / −duty) until stall or timeout. | — |
+| Stop / Manual jog | Stop hard-brakes (always available); Manual jog drives raw while held (no stall guard). | — |
+| Save to strut | Applies the working duty + travel timeout to the strut (persisted on the next Apply). | — |
+
+**Stall guard** (tune here; "Apply guard" pushes it live):
+| Control | What it does | Default |
+|---|---|---|
+| Mode | `LiveRatio` = averages running current per stroke and trips on a ratio spike (no per-motor threshold, battery-voltage independent — recommended). `Fixed` = trips when \|current\| exceeds a known mA threshold. | `LiveRatio` |
+| Ratio × | (LiveRatio) Trip at this multiple of the trailing-minimum running current — `2.5` (stored as `250`). | `2.5×` |
+| Sample ms | (LiveRatio) The baseline-sampling window after the start inrush. | `200ms` |
+| Ceiling mA | (LiveRatio) An absolute over-current backstop (≈ 80% of the stall peak); `0` = off. | `0` |
+| Threshold mA | (Fixed) The absolute trip current. | `1000mA` |
+| Confirm ms | (both modes) How long the current must stay over the trip point before a stall is declared (debounce). | `80ms` |
 
 ### Doors (per strut, 0–2 servos)
 | Setting | What it does | Default |
