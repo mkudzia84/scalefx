@@ -48,6 +48,21 @@ func (l *Limiter) Allow(key string) bool {
 	return true
 }
 
+// Count returns how many events for key fall in the current rolling 60s window,
+// without recording a new one — for logging a client's current request rate.
+func (l *Limiter) Count(key string) int {
+	cutoff := time.Now().Add(-time.Minute)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, t := range l.hits[key] {
+		if t.After(cutoff) {
+			n++
+		}
+	}
+	return n
+}
+
 // sweepLocked evicts keys whose hits have all expired, so a long-running service
 // serving many distinct client IPs doesn't accumulate dead entries forever.
 // Runs at most once per minute; caller holds l.mu.

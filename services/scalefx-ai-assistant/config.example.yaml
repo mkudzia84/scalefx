@@ -10,9 +10,10 @@ trustedProxies: []
 rateLimit:
   perMinute: 5          # model (chat) requests allowed per client IP
 
-# Verbose logging: per-request arrival lines + the user's question and the
-# assistant's reply preview in the log. Off by default; the -verbose flag forces
-# it on. (Even off, every request logs one completion line with id/status/latency.)
+# Verbose logging: adds request-arrival lines + health-check probes for tracing.
+# It does NOT log queries or responses — content is never recorded in any mode.
+# Off by default; the -verbose flag forces it on. (Even off, every request logs a
+# completion line with id/IP/status/latency, and chat logs the client's rate.)
 verbose: false
 
 # Each provider exposes an allow-listed set of models.  /v1/models returns the

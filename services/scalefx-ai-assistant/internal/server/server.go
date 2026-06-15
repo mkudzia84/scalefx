@@ -223,12 +223,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, genai.Message{Role: role, Content: m.Content})
 	}
 
+	// Privacy: we log WHO + HOW MUCH + outcome, never WHAT. The question text and
+	// the reply are never written to the log (no content, even in verbose mode).
 	id := reqIDOf(r.Context())
 	ip := s.clientIP(r)
-	log.Printf("[chat #%d] ip=%s model=%s msgs=%d ctx=%dB", id, ip, model, len(msgs), len(req.Context))
-	if s.cfg.Verbose {
-		log.Printf("[chat #%d] question: %q", id, preview(lastUserMessage(msgs), 400))
-	}
+	log.Printf("[chat #%d] ip=%s model=%s rate=%d/%d msgs=%d ctx=%dB",
+		id, ip, model, s.limiter.Count(ip), s.cfg.RateLimit.PerMinute, len(msgs), len(req.Context))
 
 	start := time.Now()
 	text, err := assistant.New(prov).Ask(r.Context(), req.Context, msgs)
@@ -244,29 +244,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		httpError(w, code, msg)
 		return
 	}
-	log.Printf("[chat #%d] OK ip=%s model=%s reply=%dB in %dms", id, ip, model, len(text), took.Milliseconds())
-	if s.cfg.Verbose {
-		log.Printf("[chat #%d] reply: %q", id, preview(text, 400))
-	}
+	log.Printf("[chat #%d] OK ip=%s model=%s replyBytes=%d in %dms", id, ip, model, len(text), took.Milliseconds())
 	writeJSON(w, http.StatusOK, map[string]string{"text": text, "model": model})
-}
-
-func lastUserMessage(msgs []genai.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == genai.RoleUser {
-			return msgs[i].Content
-		}
-	}
-	return ""
-}
-
-// preview trims a string for log readability (collapse whitespace, cap length).
-func preview(s string, max int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	if len(s) > max {
-		return s[:max] + "…"
-	}
-	return s
 }
 
 // friendlyChatError maps an internal chat failure to a (status, user-message)

@@ -70,12 +70,16 @@ IPs to bound memory).
 
 ## Logging
 
-Every request logs one completion line with a correlation id, IP, status,
+The log records **who, how much, and the outcome — never the content**. The
+question text and the assistant's reply are never written to the log, in any mode.
+
+Every request logs one completion line with a correlation id, client IP, status,
 latency, and byte count, e.g. `[req #42] POST /v1/chat ip=… -> 200 (1310ms, 980B)`.
-Chat adds `[chat #42] … model=… msgs=… ctx=…B` and an `OK`/`FAIL` line (latency +,
-on failure, the full upstream error). `verbose: true` (or `-verbose`) additionally
-logs request-arrival lines, `/healthz` probes, and the user's question + reply
-preview. Client responses are always sanitized regardless of log verbosity.
+Chat adds `[chat #42] ip=… model=… rate=3/5 msgs=… ctx=…B` (rate = that IP's
+requests used in the current minute / the limit) and an `OK`/`FAIL` line (latency
++, on failure, the full upstream error). `verbose: true` (or `-verbose`) only adds
+request-arrival lines and `/healthz` probes for tracing — still no content. Client
+responses are always sanitized regardless of log verbosity.
 
 ## Deploy (Docker / OVHcloud)
 
