@@ -2617,6 +2617,18 @@ that affects them:
    firmware/protocol internals). New channel function in
    `devicemodel.ChannelFunctionCatalog()` ⇒ add its **label** to the channel-
    function reference in `50-glossary.md`.
+   - **Parameter reference (`15-parameter-reference.md`) is the authoritative
+     list of every setting/option each tab/feature exposes — and the assistant is
+     instructed to describe ONLY parameters on that page (never invent options,
+     modes, ranges, or defaults).** So when you ADD, REMOVE, or RENAME a
+     user-facing parameter (a draft-store field / panel control in
+     `app/go/studio/frontend/src/lib/{gear,gunfx,effects,lightfx,landing,…}.ts` or
+     a panel), or change its option set / range, **update `15-parameter-reference.md`
+     in the SAME commit**. A new enum mode/option ⇒ add it to that setting's
+     options cell; a new setting ⇒ add a row under the right tab. Keeping this page
+     in lock-step with the draft stores is what stops the assistant fabricating or
+     omitting settings. Ground every entry in the actual store/verifier — do NOT
+     add a parameter to the page that the code doesn't expose.
 2. **FAQ** — `knowledge/40-faq.md` (in the service). When a workflow changes (a
    setting moves, a default changes, a new "why doesn't X work" failure mode
    appears), update or add the Q&A. The FAQ is ALSO the source for the non-LLM
