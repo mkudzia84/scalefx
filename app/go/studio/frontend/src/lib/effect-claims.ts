@@ -1,31 +1,27 @@
 // effect-claims.ts — cross-effect port-claim synthesis.
 //
-// The DeviceModel's `claims` array (mutated by the Domains tab via
-// `ClaimPort` / `UnclaimPort`) is only one source of port-ownership
-// information.  Feature effects (LightFx active programs, GunFx muzzle /
-// smoke / turret, Landing servos + LEDs) ALSO own ports — they just
-// reference them in their YAML configs rather than registering through
-// the domain claim API.
+// Feature effects (LightFx channels, GunFx muzzle / smoke / turret, Landing
+// servos + LEDs, Gear motors + door servos) own ports by referencing them in
+// their config.  There is no separate "hard claim" registry — the old
+// ApplyPreset/Domains hard-claim path was retired (the device model no longer
+// carries a `claims` array).  This file derives the claim list purely from each
+// effect's DRAFT store and exports `effectClaims`: the unified Claim[] every
+// port picker filters against.  Result: if GunFx 1's muzzle flash uses PWM 5,
+// the LightFx LED picker no longer offers PWM 5.
 //
-// This file derives a SECOND claim list from each effect's draft store
-// and exports `effectClaims`: a unified Claim[] that picker callsites
-// use for filtering.  Result: if GunFx 1's muzzle flash uses PWM 5, the
-// LightFx active-program LED picker no longer offers PWM 5.
+// Auto-recomputes when any contributing draft changes, so an edit is visible in
+// sibling pickers on the next render tick.
 //
 // Conventions:
-//   - `domain` = the effect's name (`lightfx`, `gunfx`, `landing`)
-//   - `slot`   = a human-readable description of where in the effect
-//                config the port is referenced (operator sees this in
-//                tooltips when a sibling effect tries to grab the port)
+//   - `domain` = the effect's name (`lightfx`, `gunfx`, `landing`, `gear`)
+//   - `slot`   = a human-readable description of where in the effect config the
+//                port is referenced (shown in tooltips when a sibling effect
+//                tries to grab the port).
 //
-// Hard claims (from $deviceModel.claims) take precedence in the dedup
-// — if the operator hard-claimed a port AND an effect also references
-// it, the hard claim wins.  Effects don't filter against their own
-// synthesized claims (each picker's `isExempt` callback already keeps
-// the current pick visible).
+// A disabled effect contributes no claims (its ports return to the pool).
 
 import { derived, type Readable } from 'svelte/store'
-import { deviceModel, type Claim, type PortRef, PortKind, portRefKey } from './devicemodel'
+import { type Claim, PortKind, portRefKey } from './devicemodel'
 import { lightfxDraft } from './lightfx'
 import { gunfxDraft } from './gunfx'
 import { landingDraft } from './landing'
@@ -71,9 +67,9 @@ function pushIfBound(out: Claim[], domain: string, slot: string, p: EffectPortRe
  *  changes, so the operator's edits are visible in sibling pickers
  *  on the next render tick (no manual refresh). */
 export const effectClaims: Readable<Claim[]> = derived(
-    [deviceModel, lightfxDraft, gunfxDraft, landingDraft, gearDraft],
-    ([$dm, $lfx, $gfx, $lnd, $gear]) => {
-        const out: Claim[] = [...$dm.claims]
+    [lightfxDraft, gunfxDraft, landingDraft, gearDraft],
+    ([$lfx, $gfx, $lnd, $gear]) => {
+        const out: Claim[] = []
         const seen = new Set(out.map(c => `${c.domain}|${c.slot}|${portRefKey(c.port)}`))
         const add = (domain: string, slot: string, p: EffectPortRef) => {
             if (!p || !p.kind) return
