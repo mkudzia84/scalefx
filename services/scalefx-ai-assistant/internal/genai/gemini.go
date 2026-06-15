@@ -108,16 +108,16 @@ func (g *GeminiProvider) Generate(ctx context.Context, system string, history []
 		return "", fmt.Errorf("gemini: decode (http %d): %w", resp.StatusCode, err)
 	}
 	if out.Error != nil {
-		return "", fmt.Errorf("gemini: %s", out.Error.Message)
+		return "", &APIError{Provider: "gemini", Status: resp.StatusCode, Body: out.Error.Message}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini: http %d", resp.StatusCode)
+		return "", &APIError{Provider: "gemini", Status: resp.StatusCode}
 	}
 	if out.PromptFeedback != nil && out.PromptFeedback.BlockReason != "" {
-		return "", fmt.Errorf("gemini: blocked (%s)", out.PromptFeedback.BlockReason)
+		return "", fmt.Errorf("%w (%s)", ErrBlocked, out.PromptFeedback.BlockReason)
 	}
 	if len(out.Candidates) == 0 || len(out.Candidates[0].Content.Parts) == 0 {
-		return "", fmt.Errorf("gemini: empty response")
+		return "", ErrEmpty
 	}
 	var sb strings.Builder
 	for _, p := range out.Candidates[0].Content.Parts {

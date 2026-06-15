@@ -4,7 +4,9 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -147,7 +149,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	prov := s.providers[model]
 	if prov == nil {
 		if len(s.models) == 0 {
-			httpError(w, http.StatusServiceUnavailable, "no models configured")
+			httpError(w, http.StatusServiceUnavailable, "The assistant is not configured yet. Please contact the administrator.")
 			return
 		}
 		model = s.models[0].ID // requested model not offered — fall back to the first
@@ -165,11 +167,51 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 
 	text, err := assistant.New(prov).Ask(r.Context(), req.Context, msgs)
 	if err != nil {
+		// Log the full detail server-side; return only a sanitized, human-
+		// friendly message so backend internals (provider name, token state,
+		// status codes, raw upstream text) never reach the client.
 		log.Printf("[chat] model=%s error: %v", model, err)
-		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		code, msg := friendlyChatError(r.Context(), err)
+		httpError(w, code, msg)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"text": text, "model": model})
+}
+
+// friendlyChatError maps an internal chat failure to a (status, user-message)
+// pair safe to send to the client. It never echoes err.Error().
+func friendlyChatError(ctx context.Context, err error) (int, string) {
+	// We ran out of time, or the client went away mid-request.
+	if errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		return http.StatusGatewayTimeout, "The assistant took too long to respond. Please try again."
+	}
+	if errors.Is(err, context.Canceled) {
+		return http.StatusGatewayTimeout, "The request was cancelled before the assistant could answer."
+	}
+	// Provider safety filter refused, or returned nothing usable.
+	if errors.Is(err, genai.ErrBlocked) {
+		return http.StatusUnprocessableEntity, "The assistant couldn't answer that. Try rephrasing your question."
+	}
+	if errors.Is(err, genai.ErrEmpty) {
+		return http.StatusBadGateway, "The assistant didn't return an answer. Please try again."
+	}
+	// Structured upstream HTTP failure — classify by status.
+	var apiErr *genai.APIError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.Status == http.StatusUnauthorized || apiErr.Status == http.StatusForbidden:
+			// Our credentials are bad — a server config problem, not the user's.
+			return http.StatusBadGateway, "The assistant is unavailable right now due to a server configuration issue. Please try again later or contact the administrator."
+		case apiErr.Status == http.StatusTooManyRequests:
+			return http.StatusServiceUnavailable, "The assistant is busy at the moment. Please wait a few seconds and try again."
+		case apiErr.Status >= 500:
+			return http.StatusBadGateway, "The AI provider is temporarily unavailable. Please try again shortly."
+		default:
+			return http.StatusBadGateway, "The assistant couldn't complete your request. Please try again."
+		}
+	}
+	// Anything else (marshal / transport / decode) — generic, no internals.
+	return http.StatusBadGateway, "The assistant couldn't process your request. Please try again."
 }
 
 // clientIP honors X-Forwarded-For only when the direct peer is a trusted proxy.

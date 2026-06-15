@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"scalefx-ai-assistant/internal/auth"
@@ -20,6 +21,15 @@ func (stubProvider) Name() string  { return "stub" }
 func (stubProvider) Model() string { return "stub-model" }
 func (s stubProvider) Generate(_ context.Context, _ string, _ []genai.Message) (string, error) {
 	return s.reply, nil
+}
+
+// errProvider always fails with a chosen error — for the sanitization tests.
+type errProvider struct{ err error }
+
+func (errProvider) Name() string  { return "stub" }
+func (errProvider) Model() string { return "stub-model" }
+func (p errProvider) Generate(_ context.Context, _ string, _ []genai.Message) (string, error) {
+	return "", p.err
 }
 
 func testServer(t *testing.T) *Server {
@@ -129,5 +139,65 @@ func TestBadTokenRejected(t *testing.T) {
 	testServer(t).Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("bad token: got %d, want 401", rec.Code)
+	}
+}
+
+// chatErr POSTs a chat request and returns the status + the {error} field.
+func chatErr(t *testing.T, s *Server) (int, string) {
+	t.Helper()
+	body, _ := json.Marshal(chatReq{Model: "gemini-2.5-flash"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+devToken())
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	var out map[string]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return rec.Code, out["error"]
+}
+
+func TestChatErrorIsSanitized(t *testing.T) {
+	s := testServer(t)
+	// An upstream 401 carrying a raw provider message + token hint.
+	s.providers["gemini-2.5-flash"] = errProvider{err: &genai.APIError{
+		Provider: "mistral", Status: 401, Body: "Invalid API key sk-secret-123",
+	}}
+
+	code, msg := chatErr(t, s)
+	if code != http.StatusBadGateway {
+		t.Fatalf("upstream-401 status: got %d, want 502", code)
+	}
+	// The client message must NOT leak provider name, status code, token, or
+	// the word "http".
+	for _, leak := range []string{"mistral", "401", "Invalid API key", "sk-secret", "http"} {
+		if strings.Contains(strings.ToLower(msg), strings.ToLower(leak)) {
+			t.Fatalf("sanitized message leaks %q: %q", leak, msg)
+		}
+	}
+	if msg == "" {
+		t.Fatal("expected a friendly error message, got empty")
+	}
+}
+
+func TestChatRateLimitUpstreamMapped(t *testing.T) {
+	s := testServer(t)
+	s.providers["gemini-2.5-flash"] = errProvider{err: &genai.APIError{Provider: "gemini", Status: 429}}
+	code, msg := chatErr(t, s)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("upstream-429 status: got %d, want 503", code)
+	}
+	if strings.Contains(msg, "429") || msg == "" {
+		t.Fatalf("unexpected 429 message: %q", msg)
+	}
+}
+
+func TestChatBlockedMapped(t *testing.T) {
+	s := testServer(t)
+	s.providers["gemini-2.5-flash"] = errProvider{err: genai.ErrBlocked}
+	code, msg := chatErr(t, s)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("blocked status: got %d, want 422", code)
+	}
+	if msg == "" {
+		t.Fatal("expected a friendly blocked message")
 	}
 }

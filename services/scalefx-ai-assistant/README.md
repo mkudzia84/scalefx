@@ -17,6 +17,13 @@ secrets. Studio talks to it over a small REST API.
 Auth = `Authorization: Bearer <JWT>` (HS256, see below). `/v1/chat` is rate-limited
 per client IP (default 5/min, configurable).
 
+**Errors are sanitized.** Upstream/provider failures are logged in full
+server-side (provider, status, raw body) but the client only ever receives a
+generic, human-friendly `{"error": "…"}` — never a provider name, status code,
+token state, or raw upstream text. E.g. a bad provider key → the client sees
+"The assistant is unavailable right now due to a server configuration issue…",
+while the log shows `[chat] model=… error: Mistral: http 401`.
+
 ## Configure
 
 Copy `config.example.yaml` → `config.yaml` (gitignored) and fill in real tokens:

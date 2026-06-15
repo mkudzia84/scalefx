@@ -92,13 +92,13 @@ func (p *OpenAIProvider) Generate(ctx context.Context, system string, history []
 		return "", fmt.Errorf("%s: decode (http %d): %w", p.name, resp.StatusCode, err)
 	}
 	if out.Error != nil {
-		return "", fmt.Errorf("%s: %s", p.name, out.Error.Message)
+		return "", &APIError{Provider: p.name, Status: resp.StatusCode, Body: out.Error.Message}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s: http %d", p.name, resp.StatusCode)
+		return "", &APIError{Provider: p.name, Status: resp.StatusCode}
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("%s: empty response", p.name)
+		return "", ErrEmpty
 	}
 	return out.Choices[0].Message.Content, nil
 }
