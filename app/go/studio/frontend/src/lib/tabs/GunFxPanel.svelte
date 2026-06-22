@@ -477,10 +477,12 @@
         const otherKeys = new Set(otherRefs.map(portRefToKey).filter(k => k))
         return $deviceModel.ports.filter(p => {
             if (p.kindName !== 'pwm' || p.direction !== 'output') return false
-            if (p.roleKind !== roleKind) return false
             const k = refOptValue(p)
-            // Always surface the operator's current pick.
+            // Always surface the operator's current pick — BEFORE the roleKind
+            // filter, so a momentarily re-roled/detached port (after Apply /
+            // refresh) doesn't drop out and blank the <select>.
             if (k === curKey) return true
+            if (p.roleKind !== roleKind) return false
             // Exclude ports already in use by another gun in this draft.
             if (otherKeys.has(k)) return false
             // Exclude ports claimed by ANY other effect — hard claims

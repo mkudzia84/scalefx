@@ -51,6 +51,21 @@ describe('freePortPool', () => {
             .toEqual([0, 1])
     })
 
+    it('keeps an exempt port whose role is momentarily WRONG/NONE (the blank-dropdown bug)', () => {
+        // After an Apply/refresh the device model is rebuilt from a live RoleList;
+        // the picked port's role can briefly be None (0) or another kind. The
+        // exempt (current-pick) check MUST run before the roleKind filter so the
+        // <select> doesn't lose its value and render blank.
+        const detached = servo('', 0, RoleKind.None) // role momentarily gone
+        const exempt = [{ guid: '', kind: 'servo', idx: 0 }]
+        const pool = freePortPool([detached], [], 'servo', RoleKind.ServoActuator, exempt)
+        expect(pool.map(p => p.ref.index)).toEqual([0])
+        // freePortPoolFiltered must behave the same.
+        const pool2 = freePortPoolFiltered([detached], [], 'servo', RoleKind.ServoActuator,
+            p => p.ref.index === 0)
+        expect(pool2.map(p => p.ref.index)).toEqual([0])
+    })
+
     it('exempt keying works for the empty (hub) guid', () => {
         // The exempt key is `${guid}|${kind}|${idx}` → `|servo|0` for a hub port.
         // A non-empty-guid bug here would drop the operator's current pick.

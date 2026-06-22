@@ -145,8 +145,12 @@
     function availPorts(ports: Port[], claims: Claim[], kindName: 'servo'|'pwm',
                         role: number, used: Set<string>, keep: PortRefT | null): Port[] {
         return ports.filter(p => {
-            if (p.kindName !== kindName || p.direction !== 'output' || p.roleKind !== role) return false
+            if (p.kindName !== kindName || p.direction !== 'output') return false
+            // The editing row's own pick ("keep") survives BEFORE the roleKind
+            // filter, so a momentarily re-roled/detached port (after Apply /
+            // refresh) doesn't drop out and blank the <select>.
             if (keep && keep.guid === p.ref.guid && keep.idx === p.ref.index) return true
+            if (p.roleKind !== role) return false
             if (isClaimedByOther(claims, p, [])) return false
             return !used.has(refKey(p.ref.guid, p.ref.index))
         })

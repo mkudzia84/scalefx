@@ -89,6 +89,17 @@ export interface OpenMotorCalT {
 
 export const openMotorCalibration: Writable<OpenMotorCalT | null> = writable(null)
 
+/** Compute the strut's deploy/retract duties for "Save to strut": the MAGNITUDE
+ *  comes from the calibrated seek duty, but the operator's Forward/Reverse
+ *  DIRECTION is preserved from the sign of the strut's existing deployDuty.
+ *  (Hard-coding +abs/-abs here silently reset a Reverse strut to Forward — the
+ *  "calibration resets the gear direction" bug.) */
+export function commitDuties(deploySeed: number, calibratedDuty: number): { deployDuty: number; retractDuty: number } {
+    const mag = Math.abs(calibratedDuty)
+    const forward = (deploySeed ?? 0) >= 0
+    return { deployDuty: forward ? mag : -mag, retractDuty: forward ? -mag : mag }
+}
+
 // ─── Lifecycle ────────────────────────────────────────────────────────
 
 export interface OpenMotorCalArgs {
@@ -268,9 +279,10 @@ export async function saveMotorToStrut(): Promise<void> {
     const s = get(openMotorCalibration)
     if (!s || !s.onCommit) { await closeMotorCalibration(); return }
     const suggested = suggestedTimeoutMs(s)
+    const { deployDuty, retractDuty } = commitDuties(s.deployDuty, s.duty)
     s.onCommit({
-        deployDuty:  Math.abs(s.duty),
-        retractDuty: -Math.abs(s.duty),
+        deployDuty,
+        retractDuty,
         timeoutMs:   suggested > 0 ? suggested : s.timeoutMs,
         // Persist the tuned stall guard so real deploy/retract uses it (the
         // gear effect pushes it before each seek).  ratioX100 = ratio×100.
