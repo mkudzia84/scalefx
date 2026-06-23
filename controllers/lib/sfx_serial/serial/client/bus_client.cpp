@@ -92,6 +92,7 @@ CommandResult BusClient::sendQuery(uint8_t reqType,
     int sent = sendPacket(reqType, payload, len, tag);
     if (sent < 0) {
         _pendingQueryType = 0;
+        _pendingQueryTag  = 0;
         _pendingQueryOut  = nullptr;
         _lastCommandResult = CommandResult::SendFailed();
         return _lastCommandResult;
@@ -106,6 +107,7 @@ CommandResult BusClient::sendQuery(uint8_t reqType,
 
     _lastCommandResult = _resultQueue.waitForTag(tag, [this]() { SerialBus::process(); });
     _pendingQueryType = 0;
+    _pendingQueryTag  = 0;
     _pendingQueryOut  = nullptr;
     return _lastCommandResult;
 }
@@ -124,7 +126,7 @@ CommandResult BusClient::sendQueryAnyBlocking(uint8_t reqType,
     _pendingQueryOut  = &out;
     int sent = sendPacket(reqType, payload, len, tag);
     if (sent < 0) {
-        _pendingQueryType = 0; _pendingQueryOut = nullptr;
+        _pendingQueryType = 0; _pendingQueryTag = 0; _pendingQueryOut = nullptr;
         _lastCommandResult = CommandResult::SendFailed();
         return _lastCommandResult;
     }
@@ -132,6 +134,7 @@ CommandResult BusClient::sendQueryAnyBlocking(uint8_t reqType,
     // main-loop model; a forwarded query must complete synchronously here).
     _lastCommandResult = _resultQueue.waitForTag(tag, [this]() { SerialBus::process(); });
     _pendingQueryType = 0;
+    _pendingQueryTag  = 0;
     _pendingQueryOut  = nullptr;
     return _lastCommandResult;
 }
