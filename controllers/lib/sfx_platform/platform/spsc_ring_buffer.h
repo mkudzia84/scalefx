@@ -173,26 +173,38 @@ public:
     }
 
     // ========================================================================
-    // Status Queries (safe from either core)
+    // Status Queries
+    //
+    // SPSC contract: availableWrite() is meaningful ONLY on the producer side
+    // and availableRead()/fillPercent() ONLY on the consumer side (each derives
+    // free/used space from the index the OTHER core advances).  A third,
+    // non-participant caller can momentarily observe w<r mid-update and read a
+    // wrapped (huge) `w - r`; the SPSC participants never do.  Do NOT treat
+    // these as a generally race-free snapshot from an arbitrary core.
     // ========================================================================
 
-    /// Elements available for reading
+    /// Elements available for reading (call from the CONSUMER side)
     uint32_t availableRead() const {
         uint32_t w = _writeIdx.load(std::memory_order_acquire);
         uint32_t r = _readIdx.load(std::memory_order_acquire);
         return w - r;
     }
 
-    /// Elements available for writing
+    /// Elements available for writing (call from the PRODUCER side)
     uint32_t availableWrite() const {
         uint32_t w = _writeIdx.load(std::memory_order_acquire);
         uint32_t r = _readIdx.load(std::memory_order_acquire);
         return CAPACITY - (w - r);
     }
 
-    /// Fill level as percentage (0–100)
+    /// Fill level as percentage (0–100, consumer side)
     int fillPercent() const {
-        return static_cast<int>((availableRead() * 100u) / CAPACITY);
+        // 64-bit intermediate avoids the (availableRead() * 100u) u32 overflow
+        // for any availableRead() > UINT32_MAX/100; clamp to [0,100] in case a
+        // momentarily-torn read reports used > CAPACITY.
+        uint64_t pct = (static_cast<uint64_t>(availableRead()) * 100u) / CAPACITY;
+        if (pct > 100u) pct = 100u;
+        return static_cast<int>(pct);
     }
 
     /// Buffer is empty (underrun risk)

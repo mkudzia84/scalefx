@@ -81,6 +81,11 @@
 
 #if SFX_PLATFORM_PICO
     #include <pico/time.h>
+    // NOTE: SFX_DELAY_MS on Pico is a HARD SPIN (busy_wait_ms) — it pins the
+    // core for the whole duration, it does NOT yield to interrupts or let the
+    // SDK lower-power-wait.  This is intentional for short, precise delays.  For
+    // a poll-loop / cooperative delay prefer sleep_ms() (interrupt-friendly,
+    // lower power) or tight_loop_contents() instead of SFX_DELAY_MS.
     #define SFX_DELAY_MS(ms)        busy_wait_ms(ms)
     #define SFX_DELAY_US(us)        busy_wait_us_32(us)
     #define SFX_MILLIS()            to_ms_since_boot(get_absolute_time())
@@ -130,8 +135,12 @@
     // Native ESP-IDF CPU frequency (was Arduino getCpuFrequencyMhz()).
     static inline uint32_t sfxCpuMhz() {
         uint32_t hz = 0;
-        esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
-            ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz);
+        // On query failure fall back to the configured default rather than
+        // emitting a bogus 0 MHz into STATUS / diagnostics.
+        if (esp_clk_tree_src_get_freq_hz(SOC_MOD_CLK_CPU,
+                ESP_CLK_TREE_SRC_FREQ_PRECISION_CACHED, &hz) != ESP_OK || hz == 0) {
+            return CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ;
+        }
         return hz / 1000000u;
     }
     #define SFX_CPU_MHZ()           sfxCpuMhz()
@@ -176,9 +185,13 @@
     };
 
     inline void sfxMutexInit(SfxMutex& mtx)          { mtx.handle = xSemaphoreCreateMutex(); }
-    inline void sfxMutexLock(SfxMutex& mtx)           { xSemaphoreTake(mtx.handle, portMAX_DELAY); }
-    inline bool sfxMutexTryLock(SfxMutex& mtx)        { return xSemaphoreTake(mtx.handle, 0) == pdTRUE; }
-    inline void sfxMutexUnlock(SfxMutex& mtx)         { xSemaphoreGive(mtx.handle); }
+    // Each op guards against a NULL handle (xSemaphoreCreateMutex() returns NULL
+    // only on boot-time heap exhaustion): without the guard the FreeRTOS macros
+    // dereference a NULL handle → UB.  A NULL mutex degrades to a no-op lock
+    // (always "acquired") rather than faulting — loud-but-safe under OOM.
+    inline void sfxMutexLock(SfxMutex& mtx)           { if (mtx.handle) xSemaphoreTake(mtx.handle, portMAX_DELAY); }
+    inline bool sfxMutexTryLock(SfxMutex& mtx)        { return mtx.handle ? (xSemaphoreTake(mtx.handle, 0) == pdTRUE) : true; }
+    inline void sfxMutexUnlock(SfxMutex& mtx)         { if (mtx.handle) xSemaphoreGive(mtx.handle); }
 #endif
 
 // ============================================================================
