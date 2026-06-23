@@ -22,26 +22,42 @@ const CdcDeviceInfo* UsbHostState::getCdcDevice(int devIndex) const {
 }
 
 int UsbHostState::findDeviceByAddr(uint8_t devAddr) const {
+    // Only match a still-connected slot — a torn-down (connected=false) slot
+    // retains its last dev_addr until reused, and must never alias a live device.
     for (int i = 0; i < cdcDeviceCount; i++) {
-        if (cdcDevices[i].dev_addr == devAddr) return i;
+        if (cdcDevices[i].connected && cdcDevices[i].dev_addr == devAddr) return i;
     }
     return -1;
 }
 
 int UsbHostState::addCdcDevice(uint8_t devAddr, uint8_t itfNum, uint16_t vid, uint16_t pid) {
-    if (cdcDeviceCount >= USB_HOST_MAX_CDC_DEVICES) {
-        SFX_LOG_WARN("[UsbHost] Max CDC devices (%d) reached", USB_HOST_MAX_CDC_DEVICES);
-        return -1;
+    // Slot-stable allocation (do NOT compact on removal — see removeCdcDevice).
+    // Reuse the first torn-down (connected=false) slot so a cached device index
+    // held by a surviving BusClient never silently re-points at a different
+    // device; only grow cdcDeviceCount when no gap is free. A device index, once
+    // handed out, addresses the SAME slot until that device unmounts.
+    int idx = -1;
+    int count = cdcDeviceCount.load(std::memory_order_relaxed);
+    for (int i = 0; i < count; i++) {
+        if (!cdcDevices[i].connected) { idx = i; break; }
     }
-    int idx = cdcDeviceCount;
+    if (idx < 0) {
+        if (count >= USB_HOST_MAX_CDC_DEVICES) {
+            SFX_LOG_WARN("[UsbHost] Max CDC devices (%d) reached", USB_HOST_MAX_CDC_DEVICES);
+            return -1;
+        }
+        idx = count;
+    }
     CdcDeviceInfo& dev = cdcDevices[idx];
-    dev.connected = true;
     dev.dev_addr = devAddr;
     dev.itf_num = itfNum;
     dev.vid = vid;
     dev.pid = pid;
     dev.state = UsbDeviceState::Connected;
-    cdcDeviceCount++;
+    dev.connected = true;   // publish LAST: cdcRead/cdcWrite gate on this
+    // Bump the high-water count only when appending a fresh slot; never lower it
+    // on removal, so existing indices stay valid (release-publishes the entry).
+    if (idx == count) cdcDeviceCount.store(count + 1, std::memory_order_release);
     stats.devices_mounted++;
     SFX_LOG_INFO("[UsbHost] CDC device added: idx=%d addr=%d VID=%04X PID=%04X",
                  idx, devAddr, vid, pid);
@@ -52,10 +68,12 @@ void UsbHostState::removeCdcDevice(uint8_t devAddr) {
     int idx = findDeviceByAddr(devAddr);
     if (idx < 0) return;
     SFX_LOG_INFO("[UsbHost] CDC device removed: idx=%d addr=%d", idx, devAddr);
-    for (int i = idx; i < cdcDeviceCount - 1; i++) {
-        cdcDevices[i] = cdcDevices[i + 1];
-    }
-    cdcDeviceCount--;
+    // Do NOT compact — compaction would shift every higher index down and silently
+    // re-point a surviving expander's cached device index at the wrong slot (dead
+    // wire). Mark the slot torn-down in place; its index is left free for reuse by
+    // the next addCdcDevice. cdcDeviceCount is a high-water mark and never shrinks.
+    cdcDevices[idx].connected = false;
+    cdcDevices[idx].state = UsbDeviceState::Disconnected;
     stats.devices_unmounted++;
 }
 
