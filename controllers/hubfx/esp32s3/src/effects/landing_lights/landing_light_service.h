@@ -29,6 +29,7 @@
 #include <serial/roles.h>              // RolePacket::SERVO_TARGET_REACHED
 #include <serial/diag_log.h>
 #include <server/board_server.h>
+#include <server/effect_clock.h>       // Rule 40 — travel-timeout backstop ticks off EffectClock
 
 #include "../effect_id.h"
 #include "../../topology/topology_service.h"   // TopologyService concept
@@ -104,7 +105,13 @@ public:
     CommandHandleResult handle(uint8_t type,
                                const uint8_t* payload, size_t len);
 
-    void update() {}   // event-driven
+    void update() {
+        // Mostly event-driven (servo-arrival role events advance each state
+        // machine), but each instance carries a travel-timeout backstop so a
+        // dropped SERVO_TARGET_REACHED can't hang DEPLOYING/RETRACTING.
+        const uint32_t nowMs = sfx_core::EffectClock::instance().nowMs();
+        for (uint8_t i = 0; i < _numDefs; ++i) _instances[i].update(nowMs);
+    }
 
     const char* getErrorMessage(uint8_t code) const {
         return LandingLightError::getMessage(code);

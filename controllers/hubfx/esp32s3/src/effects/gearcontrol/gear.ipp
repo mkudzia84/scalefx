@@ -382,8 +382,19 @@ inline void Gear::reverseDoors() {
 }
 
 inline void Gear::armDoorBackstop() {
-    _doorDeadlineMs = sfx_core::EffectClock::instance().nowMs()
-                    + kDoorTravelTimeoutMs + _def.doorDelayMs;
+    // Mode-aware budget: the doors don't always travel in parallel.
+    //   DUAL_SEQ   — door1 only dispatches on door0's SERVO_MOTION_DONE, so the
+    //                two legs travel SERIALLY → budget 2× the single-door travel.
+    //   DUAL_DELAY — door1 launches doorDelayMs after door0 → that delay PLUS one
+    //                travel window.
+    //   SYNC/SINGLE/NONE — both (or the one) door move together → one window.
+    uint32_t budget = kDoorTravelTimeoutMs;
+    switch (_def.openMode) {
+        case DoorMode::DUAL_SEQ:   budget = 2u * kDoorTravelTimeoutMs;        break;
+        case DoorMode::DUAL_DELAY: budget = kDoorTravelTimeoutMs + _def.doorDelayMs; break;
+        default:                   budget = kDoorTravelTimeoutMs;             break;
+    }
+    _doorDeadlineMs = sfx_core::EffectClock::instance().nowMs() + budget;
 }
 
 inline void Gear::armMotorBackstop() {

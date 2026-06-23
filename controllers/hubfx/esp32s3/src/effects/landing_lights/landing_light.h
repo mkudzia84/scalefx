@@ -131,8 +131,21 @@ public:
     /// only AFTER every servo in the group has reported in.
     void onServoTargetReached(uint8_t servoIdx);
 
+    /// Per-pass tick — travel-timeout backstop.  A dropped
+    /// `SERVO_TARGET_REACHED` would otherwise hang DEPLOYING/RETRACTING
+    /// forever (servos have no position feedback to the hub), so once the
+    /// deploy/retract deadline passes we force-complete the phase
+    /// (LEDs on for deploy, RETRACTED for retract) exactly as if every
+    /// servo had reported in.  `nowMs` is the EffectClock time latched
+    /// once per board pass (Rule 40).
+    void update(uint32_t nowMs);
+
 private:
     void enterPhase(uint8_t newPhase);
+    /// Settle the in-flight deploy/retract — advance the phase (LEDs on
+    /// for deploy, RETRACTED for retract) and disarm the travel backstop.
+    /// Shared by the all-servos-arrived path and the timeout backstop.
+    void completeTravel();
     void commandAllServos(uint16_t posNorm);   ///< normalised pos → role maps to calibrated endpoint
     void commandLedsOn();
     void commandLedsOff();
@@ -149,6 +162,11 @@ private:
     /// servo's own REV flag (orthogonal — set in calibration).
     static constexpr uint16_t kPosOpenEnd  = RolePacket::kPosNormFull;      ///< → role's calibrated MAX-µs end
     static constexpr uint16_t kPosCloseEnd = 0;                              ///< → role's calibrated MIN-µs end
+    /// Travel-timeout backstop for a servo move with no position feedback —
+    /// mirrors the gear door sequencer's kDoorTravelTimeoutMs.  If every
+    /// servo hasn't reported SERVO_TARGET_REACHED within this window the
+    /// phase is force-completed (see update()).
+    static constexpr uint32_t kTravelTimeoutMs = 4000;
     uint16_t deployPosNorm()  const { return _def.openUs >= _def.closeUs ? kPosOpenEnd  : kPosCloseEnd; }
     uint16_t retractPosNorm() const { return _def.openUs >= _def.closeUs ? kPosCloseEnd : kPosOpenEnd;  }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
@@ -165,6 +183,10 @@ private:
     /// LEDs come on (deploy) / phase advances (retract) only when
     /// `_servoArrived == allServosMask()`.
     uint8_t         _servoArrived = 0;
+    /// EffectClock deadline (ms) for the in-flight deploy/retract; 0 =
+    /// no move in flight (no backstop armed).  Armed on deploy()/retract()
+    /// entry, cleared when the phase settles (all servos in OR timeout).
+    uint32_t        _travelDeadlineMs = 0;
     SendRoleCmdFn   _send     = nullptr;
     void*           _sendCtx  = nullptr;
     BatchFn         _begin    = nullptr;

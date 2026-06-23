@@ -166,11 +166,16 @@ void GearControlServicePolicyT<TTopology, TLandingService>::updateTransitSound()
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::driveCoordinator() {
-    // Sequenced: advance the chain when the active strut reaches its target.
+    // Sequenced: advance the chain when the active strut reaches a terminal
+    // state — atTarget OR a faulted/held strut — so one stuck strut can't stall
+    // the whole gear; the rest keeps deploying past the skipped leg.
     if (_coordMode == CoordMode::Sequenced) {
-        if (_seqActive != 0xFF && _seqActive < _numDefs &&
-            _gears[_seqActive].atTarget()) {
-            sequencedKick();
+        if (_seqActive != 0xFF && _seqActive < _numDefs) {
+            const uint8_t ph = _gears[_seqActive].phase();
+            if (_gears[_seqActive].atTarget() ||
+                ph == GearPhase::Error || ph == GearPhase::Held) {
+                sequencedKick();
+            }
         }
         return;
     }

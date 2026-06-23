@@ -101,6 +101,16 @@ void EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::update() {
 
             const bool fellOffEnd = !playing && (now - _stateEnteredMs >= 200);
 
+            // Disarm the in-flight guard only once the NEWLY-launched track has
+            // played PAST the crossfade window (remaining > window).  Holding it
+            // set until then stops a track shorter than the crossfade window from
+            // immediately re-scheduling another crossfade every tick (ping-pong):
+            // such a sub-crossfade track never leaves the window, so the guard
+            // stays set and it falls through to the hard-cut path below instead.
+            if (_transitionScheduled && playing && remainingSec > crossfadeSec) {
+                _transitionScheduled = false;
+            }
+
             if (inCrossfadeWindow && !_transitionScheduled) {
                 // Pick the next track per the state machine.  Pending
                 // stop wins over loop wrap so a forceStop during
@@ -357,8 +367,13 @@ bool EngineFxServicePolicyT<TMixer, TTopology, TInputDispatcher>::transitionTo(
                  (unsigned)next, nextPath);
 
     _activeChannel       = next;
-    _transitionScheduled = false;        // reset for the next cycle
     enterState(nextState);
+    // Keep the in-flight guard ARMED across the swap: enterState() clears it
+    // for fresh (non-crossfade) transitions, but a crossfade must stay armed
+    // until update() confirms the new track has played past the crossfade
+    // window (remaining > window).  Otherwise a track shorter than the window
+    // re-schedules a crossfade on the very next tick (ping-pong).
+    _transitionScheduled = true;
     return true;
 }
 
