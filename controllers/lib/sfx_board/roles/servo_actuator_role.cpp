@@ -42,6 +42,12 @@ void ServoActuatorRole::setLimits(uint16_t minUs, uint16_t maxUs) {
 
 void ServoActuatorRole::setProfile(const ServoMotionProfile& p) {
     _profile = p;
+    // Keep the role's open/close endpoint flag coherent with the profile's
+    // `inverted` bit — both encode "reversed" and come from the same YAML
+    // `reversed` field.  Without this, a caller that sets the profile but not
+    // setReversed() leaves _reversed (used by open/closeEndpoint) stale, so
+    // deploy/retract would drive the wrong calibrated end.
+    _reversed = p.inverted;
     rebuildProfileLimits();
 }
 
