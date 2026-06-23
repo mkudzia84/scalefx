@@ -56,6 +56,11 @@ public:
     /// Allocate one MCPWM generator on `gpio`.  Returns its comparator handle
     /// (used to set pulse width) or nullptr when the pool is exhausted /
     /// hardware setup fails.
+    ///
+    /// THREADING CONTRACT: allocate() mutates pool state (`_count`, the timer/
+    /// operator tables) WITHOUT a lock — it MUST be called only during
+    /// single-threaded setup (servo attach happens at board bringup, before the
+    /// servo-tick task runs).  Do not call it from a running task.
     mcpwm_cmpr_handle_t allocate(int gpio, uint16_t initialUs) {
         if (gpio < 0 || _count >= kMaxServos) return nullptr;
 
@@ -140,6 +145,12 @@ public:
 
     bool attached() const { return _cmp != nullptr; }
 
+    /// THREADING CONTRACT: each EspServo must have exactly ONE writer task.
+    /// The underlying mcpwm_comparator_set_compare_value() is a single atomic
+    /// register write (latched at counter-zero, see allocate()'s
+    /// update_cmp_on_tez) so it cannot tear, but if a calibration handler runs
+    /// on a task OTHER than the servo-tick task, route the write through the
+    /// owning task — do not have two tasks drive the same _cmp.
     void writeMicroseconds(uint16_t us) {
         if (_cmp) mcpwm_comparator_set_compare_value(_cmp, us);
     }

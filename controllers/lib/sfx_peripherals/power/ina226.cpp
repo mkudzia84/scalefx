@@ -38,9 +38,10 @@ bool INA226::begin(sfx_peripherals::SfxI2cBus& wire, uint8_t address, float shun
     // same bus.  Full bisection trail + mechanism hypothesis in
     // instructions/18-HUBFX-INA-CLONE-WEDGE.md.  Cure: do not drive
     // chips that fail the canonical INA226 ID check.
-    _bootMfgId = readRegister16(INA226Reg::MFG_ID);
-    _bootDieId = readRegister16(INA226Reg::DIE_ID);
-    _idMatches = (_bootMfgId == MANUFACTURER_ID) && (_bootDieId == DIE_ID);
+    // Read-only canonical ID check shared with scan() — snapshots
+    // _bootMfgId/_bootDieId/_idMatches via the one helper so the two ID
+    // paths cannot drift.
+    _idMatches = identify();
 
     if (!_idMatches) {
         // Counterfeit / pin-compatible clone.  Caller can surface
@@ -77,11 +78,12 @@ bool INA226::begin(sfx_peripherals::SfxI2cBus& wire, const INA226Config& config)
 }
 
 bool INA226::identify() {
-    uint16_t mfgId = readRegister16(INA226Reg::MFG_ID);
-    if (mfgId != MANUFACTURER_ID) return false;
-    uint16_t dId = readRegister16(INA226Reg::DIE_ID);
-    if (dId != DIE_ID) return false;
-    return true;
+    // Read-only ID snapshot — safe on clones (no destructive writes).  Stores
+    // the boot IDs so callers can surface bootMfgId()/bootDieId() and so begin()
+    // and scan() share ONE canonical comparison (no drift between the paths).
+    _bootMfgId = readRegister16(INA226Reg::MFG_ID);
+    _bootDieId = readRegister16(INA226Reg::DIE_ID);
+    return (_bootMfgId == MANUFACTURER_ID) && (_bootDieId == DIE_ID);
 }
 
 uint8_t INA226::scan(sfx_peripherals::SfxI2cBus& wire, uint8_t* addresses, uint8_t maxDevices) {
@@ -150,15 +152,22 @@ void INA226::updateConfig() {
 }
 
 void INA226::setCalibration(float shuntResistance_ohms, float maxCurrent_A) {
+    // Reject degenerate config — both feed a division below; a zero/negative
+    // value would divide-by-zero (inf/NaN) and corrupt the CAL register.
+    if (maxCurrent_A <= 0.0f || shuntResistance_ohms <= 0.0f) return;
+
     _shuntResistance_ohms = shuntResistance_ohms;
-    
+
     // Current_LSB = MaxCurrent / 2^15 (INA226 datasheet §7.6.3)
     _currentLsb_mA = (maxCurrent_A * 1000.0f) / 32768.0f;  // mA per bit
-    
+
     // CAL = 0.00512 / (Current_LSB_A x R_shunt) (INA226 datasheet §7.6.5)
     float currentLsbA = _currentLsb_mA / 1000.0f;  // Convert to amps for formula
-    uint16_t calibration = (uint16_t)(0.00512f / (currentLsbA * shuntResistance_ohms));
-    
+    float calF = 0.00512f / (currentLsbA * shuntResistance_ohms);
+    if (calF < 1.0f)       calF = 1.0f;        // clamp to a valid 16-bit CAL
+    else if (calF > 65535.0f) calF = 65535.0f;
+    uint16_t calibration = (uint16_t)calF;
+
     // Power_LSB = 25 × Current_LSB (INA226 datasheet §7.6.4)
     _powerLsb_mW = 25.0f * _currentLsb_mA;  // mW per bit
     

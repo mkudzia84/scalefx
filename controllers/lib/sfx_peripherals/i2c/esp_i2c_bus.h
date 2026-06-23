@@ -37,6 +37,9 @@ public:
     bool begin(int sda, int scl, uint32_t hz = 400000,
                i2c_port_t port = I2C_NUM_0) {
         _port = port;
+        // One mutex per bus — public transactions are serialized so a multi-byte
+        // codec/PCA9685/INA226 access can't be interleaved by another task.
+        if (!_mutex.handle) sfxMutexInit(_mutex);
         i2c_config_t cfg = {};
         cfg.mode             = I2C_MODE_MASTER;
         cfg.sda_io_num       = sda;
@@ -59,6 +62,7 @@ public:
 
     /// ACK-probe an address.  True if a device responds.
     bool probe(uint8_t addr) {
+        Guard g(_mutex);
         i2c_cmd_handle_t cmd = i2c_cmd_link_create();
         i2c_master_start(cmd);
         i2c_master_write_byte(cmd, (uint8_t)((addr << 1) | I2C_MASTER_WRITE), true);
@@ -70,34 +74,51 @@ public:
 
     /// Write raw bytes to a device (no register).
     bool write(uint8_t addr, const uint8_t* data, size_t len) {
+        Guard g(_mutex);
         return i2c_master_write_to_device(_port, addr, data, len, kTimeoutTicks) == ESP_OK;
     }
     /// Read raw bytes from a device (no register).
     bool read(uint8_t addr, uint8_t* buf, size_t len) {
+        Guard g(_mutex);
         return i2c_master_read_from_device(_port, addr, buf, len, kTimeoutTicks) == ESP_OK;
     }
 
     /// Write `len` bytes to `reg` (register address prepended).
     bool writeReg(uint8_t addr, uint8_t reg, const uint8_t* data, size_t len) {
-        uint8_t buf[1 + kMaxRegWrite];
         if (len > kMaxRegWrite) return false;
+        Guard g(_mutex);
+        uint8_t buf[1 + kMaxRegWrite];
         buf[0] = reg;
         if (len) std::memcpy(&buf[1], data, len);
         return i2c_master_write_to_device(_port, addr, buf, 1 + len, kTimeoutTicks) == ESP_OK;
     }
     /// Read `len` bytes from `reg` (repeated-start).
     bool readReg(uint8_t addr, uint8_t reg, uint8_t* buf, size_t len) {
+        Guard g(_mutex);
         return i2c_master_write_read_device(_port, addr, &reg, 1, buf, len,
                                             kTimeoutTicks) == ESP_OK;
     }
 
 private:
+    // RAII bus lock — no-op if the mutex was never created (pre-begin() use).
+    struct Guard {
+        SfxMutex& m;
+        bool      held;
+        explicit Guard(SfxMutex& mtx) : m(mtx), held(mtx.handle != nullptr) {
+            if (held) sfxMutexLock(m);
+        }
+        ~Guard() { if (held) sfxMutexUnlock(m); }
+        Guard(const Guard&) = delete;
+        Guard& operator=(const Guard&) = delete;
+    };
+
     static constexpr TickType_t kTimeoutTicks = pdMS_TO_TICKS(50);
     static constexpr size_t     kMaxRegWrite  = 32;   // largest single reg write
     i2c_port_t _port      = I2C_NUM_0;
     uint32_t   _clockHz   = 400000;
     bool       _installed = false;
     bool       _ready     = false;
+    SfxMutex   _mutex{};
 };
 
 }  // namespace sfx_peripherals

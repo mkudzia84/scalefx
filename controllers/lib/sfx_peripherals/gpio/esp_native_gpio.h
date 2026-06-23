@@ -49,7 +49,10 @@ public:
     bool setLedBrightness(uint8_t pin, uint8_t brightness) {
         const int ch = channelForPin(pin);
         if (ch < 0) return false;
-        ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch, brightness);
+        // 8-bit timer: full-scale duty is 2^8 = 256, not 255 — so brightness 255
+        // maps to 256 for a true 100% (always-on) duty, not 255/256.
+        const uint32_t duty = (brightness == 255) ? 256u : (uint32_t)brightness;
+        ledc_set_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch, duty);
         ledc_update_duty(LEDC_LOW_SPEED_MODE, (ledc_channel_t)ch);
         return true;
     }
