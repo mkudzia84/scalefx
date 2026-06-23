@@ -65,6 +65,7 @@ YamlNode* YamlParser<TPool>::allocNode(YamlNode::Type type) {
     node->scalarValue = nullptr;
     node->firstChild = nullptr;
     node->nextSibling = nullptr;
+    node->lastChild = nullptr;
     return node;
 }
 
@@ -92,20 +93,25 @@ void YamlParser<TPool>::addChild(YamlNode* parent, YamlNode* child) {
     if (!parent->firstChild) {
         parent->firstChild = child;
     } else {
-        // Append to end of sibling list
-        YamlNode* last = parent->firstChild;
-        while (last->nextSibling) last = last->nextSibling;
-        last->nextSibling = child;
+        // O(1) append via the cached tail.  `lastChild` is maintained
+        // here as the sole mutation site for the child list, so it always
+        // points at the current end (or is null for an empty list).
+        parent->lastChild->nextSibling = child;
     }
+    parent->lastChild = child;
 }
 
 template<typename TPool>
-void YamlParser<TPool>::pushContext(int indent, YamlNode* node) {
-    if (_contextTop < (int)TPool::MAX_DEPTH) {
-        _contextStack[_contextTop].indent = indent;
-        _contextStack[_contextTop].node = node;
-        _contextTop++;
+bool YamlParser<TPool>::pushContext(int indent, YamlNode* node) {
+    if (_contextTop >= (int)TPool::MAX_DEPTH) {
+        snprintf(_error, sizeof(_error), "Max nesting depth exceeded (%zu)",
+                 TPool::MAX_DEPTH);
+        return false;
     }
+    _contextStack[_contextTop].indent = indent;
+    _contextStack[_contextTop].node = node;
+    _contextTop++;
+    return true;
 }
 
 template<typename TPool>
@@ -228,11 +234,25 @@ bool YamlParser<TPool>::parse(const char* yaml, size_t len) {
 
 template<typename TPool>
 bool YamlParser<TPool>::parseLine(const char* line, size_t lineLen) {
+    // `indent` is the LOGICAL nesting width (tab counts as 2) used for the
+    // pop/push context comparison.  The byte advance to skip past the
+    // leading whitespace is a SEPARATE quantity — a tab is one byte but two
+    // logical columns, so reusing `indent` as a byte offset would overshoot
+    // `content` and underflow `contentLen` on a tab-indented line.
     int indent = countIndent(line, lineLen);
 
+    // Count leading-whitespace BYTES to advance `content` correctly.
+    size_t indentBytes = 0;
+    while (indentBytes < lineLen &&
+           (line[indentBytes] == ' ' || line[indentBytes] == '\t')) {
+        indentBytes++;
+    }
+    // Whitespace-only line (defensive: blank lines are filtered upstream).
+    if (indentBytes >= lineLen) return true;
+
     // Skip to content (past whitespace)
-    const char* content = line + indent;
-    size_t contentLen = lineLen - indent;
+    const char* content = line + indentBytes;
+    size_t contentLen = lineLen - indentBytes;
 
     // Strip inline comment (not inside quotes)
     bool inSingleQuote = false, inDoubleQuote = false;
@@ -450,8 +470,9 @@ bool YamlParser<TPool>::parseContainerEntry(YamlNode* parent, const char* key, s
     // Push onto context at the actual document indent of this key.
     // Children will appear at deeper indent and will be associated with
     // this node.  Siblings at the same or lesser indent will pop this entry.
-    pushContext(lineIndent, node);
-    return true;
+    // Reject (rather than silently drop) an over-deep document so children
+    // never attach to the wrong parent.
+    return pushContext(lineIndent, node);
 }
 
 template<typename TPool>
@@ -545,17 +566,17 @@ bool YamlParser<TPool>::parseSequenceItem(YamlNode* parent, const char* content,
 
         // Push item map onto context FIRST — parseContainerEntry may also
         // push (for nested "- key:\n  child"), so itemMap must be below.
-        pushContext(dashIndent, itemMap);
+        // Propagate an over-deep failure loudly rather than mis-nesting.
+        if (!pushContext(dashIndent, itemMap)) return false;
 
         if (valueLen == 0) {
             // "- key:" → first entry is a container.  The key's effective
             // indent is dashIndent + 2 (past the "- " prefix).
-            parseContainerEntry(itemMap, content, keyLen, dashIndent + 2);
+            return parseContainerEntry(itemMap, content, keyLen, dashIndent + 2);
         } else {
             // "- key: value" → first entry is scalar
-            parseScalarEntry(itemMap, content, keyLen, valueStart, valueLen);
+            return parseScalarEntry(itemMap, content, keyLen, valueStart, valueLen);
         }
-        return true;
     }
 
     // "- value" → scalar sequence item

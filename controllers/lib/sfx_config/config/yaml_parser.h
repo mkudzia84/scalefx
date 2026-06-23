@@ -151,6 +151,7 @@ struct YamlNode {
     const char* scalarValue  = nullptr;   ///< Value string (Scalar nodes only)
     YamlNode*   firstChild   = nullptr;   ///< First child (Map/Sequence only)
     YamlNode*   nextSibling  = nullptr;   ///< Next sibling in same parent
+    YamlNode*   lastChild    = nullptr;   ///< Tail of the child list — O(1) append cache (build-time only)
 
     // ---- Typed scalar access ----
 
@@ -367,7 +368,10 @@ private:
     const char* internString(const char* str, size_t len);
 
     void addChild(YamlNode* parent, YamlNode* child);
-    void pushContext(int indent, YamlNode* node);
+    /// Push a parent context; returns false (and sets _error) when the
+    /// nesting depth would exceed TPool::MAX_DEPTH so an over-deep document
+    /// fails loudly instead of silently attaching children to the wrong parent.
+    bool pushContext(int indent, YamlNode* node);
     void popToIndent(int indent);
     YamlNode* currentParent();
 
