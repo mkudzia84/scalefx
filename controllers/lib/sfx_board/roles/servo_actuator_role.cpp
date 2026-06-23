@@ -128,7 +128,12 @@ void ServoActuatorRole::tick() {
     // Velocity diagnostic from the OUTPUT delta (so a recoil reads as motion).
     if (dtMs > 0) {
         const int32_t deltaUs = (int32_t)finalUs - (int32_t)_lastPosUs;
-        _velocity_us_per_s = (int16_t)((deltaUs * 1000) / (int32_t)dtMs);
+        // A write-through (no-slew) jump can move the full travel in one tick,
+        // overflowing int16 — compute in int32 and clamp before narrowing.
+        int32_t v = (deltaUs * 1000) / (int32_t)dtMs;
+        if      (v > INT16_MAX) v = INT16_MAX;
+        else if (v < INT16_MIN) v = INT16_MIN;
+        _velocity_us_per_s = (int16_t)v;
         _lastPosUs = finalUs;
     }
 

@@ -16,6 +16,7 @@ void BiDcMotorRole::setSigned(int16_t signedDuty) {
     _commandedSigned = signedDuty;
     if (_port) _port->setSigned(signedDuty);
     if (signedDuty == 0) {
+        _overcurrentActive   = false;
         _overcurrentStartMs  = 0;
         _peakDuringWindow_mA = 0;
     }
@@ -38,7 +39,8 @@ void BiDcMotorRole::coast() {
 void BiDcMotorRole::setStallGuard(uint16_t threshold_mA, uint16_t window_ms) {
     _guardMode          = GuardMode::Fixed;
     _stallThreshold_mA  = threshold_mA;
-    if (window_ms != 0) _stallWindow_ms = window_ms;
+    if (window_ms != 0) { _stallWindow_ms = window_ms; _windowSetByUser = true; }
+    _overcurrentActive  = false;
     _overcurrentStartMs = 0;
 }
 
@@ -51,18 +53,22 @@ void BiDcMotorRole::setStallGuardRatio(uint16_t ratio_x100,
     _runSample_ms   = (runSample_ms != 0) ? runSample_ms : 200;
     _inrushBlank_ms = (inrushBlank_ms != 0) ? inrushBlank_ms : 150;
     _maxTravel_ms   = maxTravel_ms;                               // 0 = no failsafe
-    // Reuse Fixed's sustained-window; if caller never touched it, use a
-    // tighter default appropriate for ratio-tripping noise (80 ms).
-    if (_stallWindow_ms == 250 /* Fixed default */) _stallWindow_ms = 80;
+    // Reuse Fixed's sustained-window; if the caller never set it explicitly,
+    // use a tighter default appropriate for ratio-tripping noise (80 ms).
+    // (Tracked by a bool — not a magic compare against the Fixed default, which
+    // would misfire if the user legitimately set the window to 250 ms.)
+    if (!_windowSetByUser) _stallWindow_ms = 80;
+    _overcurrentActive  = false;
     _overcurrentStartMs = 0;
 }
 
 void BiDcMotorRole::setStallWindowMs(uint16_t window_ms) {
-    if (window_ms != 0) _stallWindow_ms = window_ms;
+    if (window_ms != 0) { _stallWindow_ms = window_ms; _windowSetByUser = true; }
 }
 
 void BiDcMotorRole::clearStall() {
     _stalled             = false;
+    _overcurrentActive   = false;
     _overcurrentStartMs  = 0;
     _peakDuringWindow_mA = 0;
     // Clearing the stall also clears a latched seek-timeout fault.
@@ -103,6 +109,7 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
 
     // Per-stroke state.
     _stalled             = false;
+    _overcurrentActive   = false;
     _overcurrentStartMs  = 0;
     _peakDuringWindow_mA = 0;
     _runAccum_mA         = 0;
@@ -139,7 +146,8 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
     if (threshold_mA == 0) return false;
     const uint16_t i_mag = (uint16_t)std::abs((int)_iSense->current_mA());
     if (i_mag >= threshold_mA) {
-        if (_overcurrentStartMs == 0) {
+        if (!_overcurrentActive) {
+            _overcurrentActive   = true;
             _overcurrentStartMs  = now;
             _peakDuringWindow_mA = i_mag;
             SFX_LOG_INFO("[bimotor] over-threshold: I=%umA >= thr=%umA — confirming over %ums",
@@ -163,10 +171,11 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
             }
         }
     } else {
-        if (_overcurrentStartMs != 0) {
+        if (_overcurrentActive) {
             SFX_LOG_INFO("[bimotor] over-threshold cleared (I=%umA < thr=%umA) — not a stall",
                          (unsigned)i_mag, (unsigned)threshold_mA);
         }
+        _overcurrentActive   = false;
         _overcurrentStartMs  = 0;
         _peakDuringWindow_mA = 0;
     }
@@ -296,17 +305,23 @@ void BiDcMotorRole::tick() {
         || _stallThreshold_mA == 0 || _stalled) return;
     const uint16_t i_mag = (uint16_t)std::abs((int)_iSense->current_mA());
     if (i_mag >= _stallThreshold_mA) {
-        if (_overcurrentStartMs == 0) {
+        if (!_overcurrentActive) {
+            _overcurrentActive   = true;
             _overcurrentStartMs  = now;
             _peakDuringWindow_mA = i_mag;
         } else {
             if (i_mag > _peakDuringWindow_mA) _peakDuringWindow_mA = i_mag;
             if (now - _overcurrentStartMs >= _stallWindow_ms) {
                 _stalled = true;
+                // Cut power on stall (mirror the seek-path) BEFORE firing the
+                // callback — the role must not keep driving a stalled motor.
+                if (_port) _port->brake();
+                _commandedSigned = 0;
                 if (_onStall) _onStall(_peakDuringWindow_mA, _stallWindow_ms);
             }
         }
     } else {
+        _overcurrentActive   = false;
         _overcurrentStartMs  = 0;
         _peakDuringWindow_mA = 0;
     }
