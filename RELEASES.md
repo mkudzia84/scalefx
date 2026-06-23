@@ -7,6 +7,69 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.34.1 — 2026-06-23
+
+Post-RC1 maintenance: a new **manual gear setup/maintenance** feature, several
+ScaleFX Studio configuration fixes, and a broad firmware-hardening pass from a
+full audit of the HubFX firmware + shared libraries.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.34.1 | ESP32-S3 | `hubfx-v2.34.1` |
+| ScaleFX Studio + CLI | 1.0.0 | Windows (host) | — |
+
+### New Features
+- **Manual door + strut control (gear setup/maintenance).** Each strut card in
+  Studio gains a *Manual / maintenance* section to open/close the doors and
+  drive the strut up/down independently of the full deploy/retract sequence,
+  plus fleet "all" buttons. Firmware-enforced safety interlocks block the unsafe
+  combinations — you can't close the doors while the strut is out, and you can't
+  move the strut unless the doors are open; the matching button greys out and
+  says why.
+
+### Bug Fixes — ScaleFX Studio
+- Port-role dropdowns no longer blank to empty strings after Apply/Save.
+- A gear motor keeps its Forward/Reverse direction across a calibrate + save.
+- Servo `setProfile()` keeps the role's reversed flag coherent with the
+  profile's inverted bit, so deploy/retract no longer drives the wrong
+  calibrated end after a profile-only update.
+
+### Bug Fixes — firmware hardening (audit pass)
+A full audit of the HubFX firmware + shared libraries surfaced and fixed **47
+issues across 10 subsystems** (7 HIGH severity). Highlights:
+- **audio** — Q15 volume overflow inverted phase at unity gain; the MP3 tail
+  fade-out never armed on a frame-count overshoot; widened the decoder teardown
+  wait to fully close a source use-after-free window.
+- **storage** — status / SD-init commands dispatched mid-upload self-deadlocked
+  on the storage mutex; the upload-active flags are now cross-task atomic;
+  zero-byte BATCH uploads complete instead of hanging.
+- **usb** — CDC device tracking is now slot-stable (compaction silently
+  re-pointed a surviving expander's wire at the wrong device); a close-vs-TX
+  use-after-free handshake; a devAddr-wrap sentinel collision.
+- **config** — a tab-indent byte-offset bug overshot the YAML content pointer;
+  over-deep documents no longer silently mis-parent; store reset/invalidation
+  correctness.
+- **effects** — sequenced gear no longer stalls forever on one strut's fault;
+  a landing-gear travel backstop; an engine cross-fade ping-pong on short
+  tracks; two-edge + reversed-channel selector hysteresis.
+- **roles / board** — a free-running stall now cuts motor power; servo velocity
+  telemetry int16 clamp; motion-profile + effect-clock telemetry correctness.
+- **peripherals / platform / serial** — INA226 divide-by-zero guard; a
+  shared-I2C bus mutex; null-mutex guards; stale pending-query-tag reset;
+  diag-log torn-entry-under-lock.
+
+### Protocol Changes
+- **Additive only (Rule 11).** New packets `GEAR_DOOR` / `GEAR_STRUT` /
+  `GEAR_DOOR_ALL` / `GEAR_STRUT_ALL` (`0x01–0x04`) and a two-byte STATUS tail
+  `[doorsOpen][strutState]`. No breaking changes — an older master ignores the
+  new tail. The audit-hardening fixes change no wire formats.
+
+### Version bump
+- **MINOR** 2.33.2 → 2.34.0 for the additive manual-gear packets, then **PATCH**
+  → 2.34.1 for the audit-hardening logic fixes (no further wire changes).
+
+---
+
 ## RC1 — 2026-06-14 (Release Candidate 1)
 
 The first coordinated release candidate of the full system. This RC lands a
