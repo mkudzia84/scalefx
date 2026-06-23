@@ -301,9 +301,11 @@
         }
         return dm.ports.filter(p => {
             if (p.kindName !== 'pwm' || p.direction !== 'output') return false
-            if (p.roleKind !== RoleKind.LedAnimator) return false
             const k = `${p.ref.guid}|${p.kindName}|${p.ref.index}`
+            // Keep the row's own pick BEFORE the roleKind filter so a momentarily
+            // re-roled/detached port (after Apply / refresh) doesn't blank the select.
             if (mineKey && k === mineKey) return true                 // keep the row's own pick
+            if (p.roleKind !== RoleKind.LedAnimator) return false
             if (sibling.has(k)) return false                          // used by another LightFx channel
             if (claimsForPort(claims, p.ref).filter(c => c.domain !== 'lightfx').length > 0) return false  // another effect
             return true                                               // unclaimed → available

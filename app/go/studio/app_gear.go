@@ -114,6 +114,9 @@ type GearStatusEntry struct {
 	SubPhaseName string `json:"subPhaseName"`
 	ErrReason    byte   `json:"errReason"`
 	ErrReasonTag string `json:"errReasonTag"`
+	DoorsOpen    bool   `json:"doorsOpen"`  // every door at its open end (manual-control gate)
+	StrutState   byte   `json:"strutState"` // GearStrutState (Up/Out/Moving/Unknown)
+	StrutName    string `json:"strutName"`
 }
 
 // GearPhaseDTO mirrors gear.PhaseChange for the `gear:phase` event.
@@ -125,6 +128,9 @@ type GearPhaseDTO struct {
 	SubPhaseName string `json:"subPhaseName"`
 	ErrReason    byte   `json:"errReason"`
 	ErrReasonTag string `json:"errReasonTag"`
+	DoorsOpen    bool   `json:"doorsOpen"`
+	StrutState   byte   `json:"strutState"`
+	StrutName    string `json:"strutName"`
 }
 
 func defaultGearConfig() GearConfig {
@@ -377,6 +383,46 @@ func (a *App) GearStep(id uint8, target uint8) error {
 	return a.logGearErr("GearStep", map[string]any{"id": id, "target": target}, c.Gear.Step(id, target))
 }
 
+// ── Manual / maintenance: doors + strut, per-leg + fleet ──────────────────
+// The firmware enforces the interlock and NACKs a violation (the GUI also gates
+// the buttons to mirror it).  open/down booleans pass straight to the wire.
+
+func (a *App) GearDoors(id uint8, open bool) error {
+	defer a.diag.Around("GearDoors", map[string]any{"id": id, "open": open})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearDoors", map[string]any{"id": id, "open": open}, c.Gear.Doors(id, open))
+}
+
+func (a *App) GearMoveStrut(id uint8, down bool) error {
+	defer a.diag.Around("GearMoveStrut", map[string]any{"id": id, "down": down})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearMoveStrut", map[string]any{"id": id, "down": down}, c.Gear.MoveStrut(id, down))
+}
+
+func (a *App) GearDoorsAll(open bool) error {
+	defer a.diag.Around("GearDoorsAll", map[string]any{"open": open})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearDoorsAll", map[string]any{"open": open}, c.Gear.DoorsAll(open))
+}
+
+func (a *App) GearMoveStrutAll(down bool) error {
+	defer a.diag.Around("GearMoveStrutAll", map[string]any{"down": down})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	return a.logGearErr("GearMoveStrutAll", map[string]any{"down": down}, c.Gear.MoveStrutAll(down))
+}
+
 // GearStatus returns the current phase + sub-phase for every configured
 // channel.  Polled when the panel mounts (live updates flow through the
 // `gear:phase` event stream below) so the pill self-heals after a dropped
@@ -401,6 +447,9 @@ func (a *App) GearStatus() ([]GearStatusEntry, error) {
 			SubPhaseName: gear.SubPhaseName(s.SubPhase),
 			ErrReason:    s.ErrReason,
 			ErrReasonTag: gear.ErrorReasonTag(s.ErrReason),
+			DoorsOpen:    s.DoorsOpen,
+			StrutState:   s.StrutState,
+			StrutName:    gear.StrutStateName(s.StrutState),
 		}
 	}
 	a.diag.Debug("GEAR", "GearStatus: %d channel(s)", len(out))
@@ -428,6 +477,9 @@ func (a *App) installGearStream() {
 			SubPhaseName: gear.SubPhaseName(ev.SubPhase),
 			ErrReason:    ev.ErrReason,
 			ErrReasonTag: gear.ErrorReasonTag(ev.ErrReason),
+			DoorsOpen:    ev.DoorsOpen,
+			StrutState:   ev.StrutState,
+			StrutName:    gear.StrutStateName(ev.StrutState),
 		})
 	})
 }

@@ -83,7 +83,7 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
     // the file, frees buffers, unlocks storage, fires onUploadEnd) and honour the
     // new BEGIN immediately.  cleanupUpload() is self-contained and resets all
     // upload state to idle, so the open/lock below starts from a clean slate.
-    if (_uploadActive) {
+    if (_uploadActive.load(std::memory_order_relaxed)) {
         STORAGE_LOG("UPLOAD_BEGIN while active — recovering stale upload "
                     "%s:%s (rx=%lu/%lu, idle=%lums)",
                     sfx_storage::targetName(_uploadTarget), _uploadPath,
@@ -193,7 +193,7 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
         return;
     }
 
-    _uploadActive       = true;
+    _uploadActive.store(true, std::memory_order_release);
     _uploadExpectedSize = fileSize;
     _uploadBytesWritten = 0;
     _uploadExpectedSeq  = 0;
@@ -202,7 +202,7 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
     _uploadMd5.begin();
 
     // Stream mode state
-    _streamActive          = false;
+    _streamActive.store(false, std::memory_order_release);
     _streamSegmentIndex    = 0;
     _streamSegBytesRemaining = 0;
     _streamSegmentSize     = 0;
@@ -230,12 +230,22 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
     }
 
     if (_uploadMode == StorageWire::UPLOAD_STREAM) {
-        // Pre-allocate file on SD for contiguous cluster allocation
+        // Pre-allocate file on SD for contiguous cluster allocation.  A failed
+        // pre-allocation is a genuine card-I/O fault, not just a lost
+        // optimization — surface it now rather than letting the upload limp on
+        // to a confusing failure at the first real segment flush.
         if (_uploadTarget == StorageWire::TARGET_SD && fileSize > 0) {
-            _svc._shared.uploadFile.seek(fileSize - 1);
             uint8_t zero = 0;
-            _svc._shared.uploadFile.write(&zero, 1);
-            _svc._shared.uploadFile.seek(0);
+            bool preallocOk = _svc._shared.uploadFile.seek(fileSize - 1)
+                           && (_svc._shared.uploadFile.write(&zero, 1) == 1)
+                           && _svc._shared.uploadFile.seek(0);
+            if (!preallocOk) {
+                STORAGE_LOG("UPLOAD_BEGIN: SD pre-allocation failed for %s (size=%lu)",
+                            _uploadPath, (unsigned long)fileSize);
+                cleanupUpload(true);
+                sendNack(StorageError::FILE_IO_ERROR, "Pre-allocation failed");
+                return;
+            }
         }
 
         // Compute segment parameters. LittleFS (flash) writes are ~5-10x
@@ -248,7 +258,13 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
         _streamSegBytesRemaining = (fileSize < _streamSegmentSize) ? fileSize : _streamSegmentSize;
         _streamSegmentIndex = 0;
         _streamSegmentCount = segCount;
-        _streamActive = true;
+        // A zero-byte file has no segments to stream (segCount==0) — never enter
+        // raw-stream mode, or processStream() would spin on `avail<=0` and the
+        // upload would only terminate via the 5 s inactivity self-heal (which
+        // deletes the partial file and fails the client's UPLOAD_END).  Leaving
+        // _streamActive false keeps the wire in COBS mode so the immediately
+        // following UPLOAD_END is processed and completes the empty file.
+        _streamActive.store(fileSize > 0, std::memory_order_release);
 
         // Initialize stream diagnostics
         _streamStartTime_ms    = SFX_MILLIS();
@@ -282,7 +298,7 @@ void UploadEngine<TPolicy>::handleUploadBegin(const uint8_t* payload, size_t len
 template <typename TPolicy>
 void UploadEngine<TPolicy>::handleUploadData(const uint8_t* payload, size_t len) {
     // Wire: [seqNum:u16LE][crc16:u16LE][data:N]
-    if (!_uploadActive) {
+    if (!_uploadActive.load(std::memory_order_relaxed)) {
         sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
@@ -372,7 +388,7 @@ void UploadEngine<TPolicy>::handleUploadData(const uint8_t* payload, size_t len)
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::handleUploadEnd() {
-    if (!_uploadActive) {
+    if (!_uploadActive.load(std::memory_order_relaxed)) {
         sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
@@ -455,8 +471,8 @@ void UploadEngine<TPolicy>::handleUploadEnd() {
                 (unsigned long)ws.maxWriteLatency_ms,
                 (unsigned long)ws.totalStallTime_ms);
 
-    _uploadActive = false;
-    _streamActive = false;
+    _uploadActive.store(false, std::memory_order_release);
+    _streamActive.store(false, std::memory_order_release);
     // Snapshot the healthy-completion stats too, so a DIAG query right after a
     // successful upload still shows the SD write profile (max latency, etc.)
     // — captured before freeUploadBuffers()/the next BEGIN clears them.
@@ -483,7 +499,7 @@ void UploadEngine<TPolicy>::handleUploadEnd() {
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::handleUploadCancel() {
-    if (!_uploadActive) {
+    if (!_uploadActive.load(std::memory_order_relaxed)) {
         sendNack(StorageError::NO_UPLOAD_ACTIVE);
         return;
     }
@@ -505,7 +521,8 @@ void UploadEngine<TPolicy>::handleUploadCancel() {
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::processStream() {
-    if (!_streamActive || !_uploadActive) return;
+    if (!_streamActive.load(std::memory_order_relaxed) ||
+        !_uploadActive.load(std::memory_order_relaxed)) return;
 
     // Track loop gap — detect slow main loop iterations
     uint32_t now = SFX_MILLIS();
@@ -529,7 +546,7 @@ void UploadEngine<TPolicy>::processStream() {
                     _streamSegmentIndex, _streamSegmentCount,
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize);
-        _streamActive = false;
+        _streamActive.store(false, std::memory_order_release);
         captureUploadDiag(StorageWire::REASON_HEALTH);
         // Drain incoming raw bytes so COBS parser doesn't see garbage
         while (serial()->available()) serial()->read();
@@ -573,7 +590,7 @@ void UploadEngine<TPolicy>::processStream() {
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize,
                     _svc._policy.bufferFillPercent());
-        _streamActive = false;
+        _streamActive.store(false, std::memory_order_release);
         captureUploadDiag(StorageWire::REASON_FLUSH_FAIL);
         while (serial()->available()) serial()->read();
         cleanupUpload(true);
@@ -647,7 +664,7 @@ void UploadEngine<TPolicy>::processStream() {
 
         if (_uploadBytesWritten >= _uploadExpectedSize) {
             // All data received - exit stream mode, wait for UPLOAD_END (COBS)
-            _streamActive = false;
+            _streamActive.store(false, std::memory_order_release);
             _streamEndTime_ms = SFX_MILLIS();
             uint32_t totalElapsed_ms = _streamEndTime_ms - _streamStartTime_ms;
             uint32_t totalKBps = (totalElapsed_ms > 0)
@@ -685,9 +702,9 @@ void UploadEngine<TPolicy>::sendStreamSegmentAck() {
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::cleanupUpload(bool deletePartial) {
-    if (!_uploadActive) return;
+    if (!_uploadActive.load(std::memory_order_relaxed)) return;
 
-    _streamActive = false;
+    _streamActive.store(false, std::memory_order_release);
 
     // Drain any raw bytes remaining in the UART buffer (stream mode leftovers)
     if (serial()) {
@@ -714,7 +731,7 @@ void UploadEngine<TPolicy>::cleanupUpload(bool deletePartial) {
     }
 
     unlockStorage(_uploadTarget);
-    _uploadActive = false;
+    _uploadActive.store(false, std::memory_order_release);
 
     // Resume resources suspended for the duration of the upload
     if (_uploadSuspended) {
@@ -749,8 +766,8 @@ void UploadEngine<TPolicy>::captureUploadDiag(uint8_t reason) {
     _diag.sdMaxLat_ms     = ws.maxWriteLatency_ms;
     _diag.sdTotalStall_ms = ws.totalStallTime_ms;
     _diag.maxLoopGap_ms   = _streamMaxGap_ms;
-    _diag.flags           = (_uploadActive ? 0x01 : 0x00)
-                          | (_streamActive ? 0x02 : 0x00);
+    _diag.flags           = (_uploadActive.load(std::memory_order_relaxed) ? 0x01 : 0x00)
+                          | (_streamActive.load(std::memory_order_relaxed) ? 0x02 : 0x00);
     _diag.reason          = reason;
 }
 
@@ -759,7 +776,7 @@ void UploadEngine<TPolicy>::handleUploadDiagReq() {
     // If an upload is in progress (shouldn't normally be — the wire is in raw
     // mode then, so this only reaches us between/around transfers), refresh the
     // live numbers first so the snapshot is current.
-    if (_uploadActive) {
+    if (_uploadActive.load(std::memory_order_relaxed)) {
         captureUploadDiag(StorageWire::REASON_ACTIVE);
     }
 
@@ -782,7 +799,7 @@ void UploadEngine<TPolicy>::handleUploadDiagReq() {
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::cancelActiveUpload() {
-    if (_uploadActive) {
+    if (_uploadActive.load(std::memory_order_relaxed)) {
         STORAGE_LOG("Cancelling active upload on shutdown: %s", _uploadPath);
         cleanupUpload(true);
     }
@@ -795,10 +812,10 @@ void UploadEngine<TPolicy>::cancelActiveUpload() {
 
 template <typename TPolicy>
 void UploadEngine<TPolicy>::checkUploadTimeout() {
-    if (!_uploadActive) return;
+    if (!_uploadActive.load(std::memory_order_relaxed)) return;
 
     uint32_t elapsed = SFX_MILLIS() - _uploadLastActivity_ms;
-    uint32_t timeout = _streamActive ? STREAM_INACTIVITY_MS : UPLOAD_TIMEOUT_MS;
+    uint32_t timeout = _streamActive.load(std::memory_order_relaxed) ? STREAM_INACTIVITY_MS : UPLOAD_TIMEOUT_MS;
     if (elapsed >= timeout) {
         STORAGE_LOG("Upload inactivity timeout (%lums, limit=%lums) "
                     "cancelling %s:%s (rx=%lu/%lu bytes, stream=%s "
@@ -808,7 +825,7 @@ void UploadEngine<TPolicy>::checkUploadTimeout() {
                     sfx_storage::targetName(_uploadTarget), _uploadPath,
                     (unsigned long)_uploadBytesWritten,
                     (unsigned long)_uploadExpectedSize,
-                    _streamActive ? "yes" : "no",
+                    _streamActive.load(std::memory_order_relaxed) ? "yes" : "no",
                     _streamSegmentIndex, _streamSegmentCount,
                     _svc._policy.bufferFillPercent());
         captureUploadDiag(StorageWire::REASON_INACTIVITY);

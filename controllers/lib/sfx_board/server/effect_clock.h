@@ -53,6 +53,15 @@ public:
     /// a tick), so a misordered call doesn't shift the clock mid-tick.
     void latch() {
         const uint32_t t = SFX_MILLIS();
+        if (!_init) {
+            // First latch: there is no prior sample to delta against, so
+            // dtMs() must read 0 (documented contract) — adopt `t` as the
+            // baseline rather than treating the full uptime as elapsed time.
+            _init  = true;
+            _nowMs = t;
+            _dtMs  = 0;
+            return;
+        }
         if (t == _nowMs) return;
         _dtMs   = t - _nowMs;
         _nowMs  = t;
@@ -78,6 +87,7 @@ public:
 
 private:
     EffectClock() = default;
+    bool     _init  = false;  ///< false until the first latch() establishes a baseline.
     uint32_t _nowMs = 0;
     uint32_t _dtMs  = 0;
 };

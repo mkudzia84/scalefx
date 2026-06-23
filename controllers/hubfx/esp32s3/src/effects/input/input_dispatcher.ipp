@@ -356,6 +356,18 @@ void InputDispatcherServicePolicyT<TTopology>::touchLink(
 }
 
 template <hubfx::topology::TopologyService TTopology>
+void InputDispatcherServicePolicyT<TTopology>::forgetLinksForGuid(const char* guid) {
+    if (!guid || !guid[0]) return;                // hub-local links are never reclaimed
+    for (uint8_t i = 0; i < kMaxLinks; ++i) {
+        Link& l = _links[i];
+        if (l.occupied && std::strcmp(l.guid, guid) == 0) {
+            SFX_LOG_INFO("[link] %s port=%u FORGOTTEN (expander unmounted)", l.guid, l.portIdx);
+            l = Link{};                            // release the slot for reuse
+        }
+    }
+}
+
+template <hubfx::topology::TopologyService TTopology>
 void InputDispatcherServicePolicyT<TTopology>::update() {
     const uint32_t now = SFX_MILLIS();
     for (uint8_t i = 0; i < kMaxLinks; ++i) {

@@ -104,6 +104,14 @@ CommandHandleResult StorageServicePolicy<TPolicy>::handle(
 
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleFlashStatus() {
+    // An in-flight upload holds the storage lock for its entire duration
+    // (storage_upload_engine.ipp).  Re-locking it here would self-deadlock
+    // the loop task that dispatched this status query mid-upload.
+    if (_upload.isActive() && _upload.target() == StorageWire::TARGET_FLASH) {
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
+        return;
+    }
+
     FlashModule& flash = FlashModule::instance();
 
     FlashStorageInfo info;
@@ -449,6 +457,14 @@ void StorageServicePolicy<TPolicy>::handleFileDownload(const uint8_t* payload, s
 
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleSdInit(const uint8_t* payload, size_t len) {
+    // An in-flight upload holds the storage lock; a remount mid-upload would
+    // re-lock it and self-deadlock the dispatching loop task.  Reject
+    // unconditionally (a remount of either target is unsafe while uploading).
+    if (_upload.isActive()) {
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
+        return;
+    }
+
     SdCardModule& sd = SdCardModule::instance();
 
     // SD_INIT payload: [speed_mhz:u8] -- ignored for SDIO mode
@@ -489,6 +505,13 @@ void StorageServicePolicy<TPolicy>::handleSdInit(const uint8_t* payload, size_t 
 
 template <typename TPolicy>
 void StorageServicePolicy<TPolicy>::handleSdStatus() {
+    // An in-flight SD upload holds the storage lock for its whole duration;
+    // re-locking here would self-deadlock the dispatching loop task.
+    if (_upload.isActive() && _upload.target() == StorageWire::TARGET_SD) {
+        sendNack(StorageError::UPLOAD_IN_PROGRESS);
+        return;
+    }
+
     SdCardModule& sd = SdCardModule::instance();
 
     // SD_STATUS_RESP extended:

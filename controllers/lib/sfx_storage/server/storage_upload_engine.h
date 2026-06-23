@@ -24,6 +24,7 @@
 #ifndef SFX_STORAGE_UPLOAD_ENGINE_H
 #define SFX_STORAGE_UPLOAD_ENGINE_H
 
+#include <atomic>
 #include <cstdint>
 #include <cstddef>
 #include <functional>
@@ -42,8 +43,11 @@ public:
     explicit UploadEngine(StorageServicePolicy<TPolicy>& svc) : _svc(svc) {}
 
     // ── Queried by the file-ops half + the hub main loop ─────────────────
-    bool isActive() const       { return _uploadActive; }
-    bool isStreamActive() const { return _streamActive; }
+    // _uploadActive / _streamActive are read cross-task (the Jeti telemetry
+    // task gates on isActive() — Rule 15), so they are atomic with acquire
+    // loads here paired with release stores in the handlers.
+    bool isActive() const       { return _uploadActive.load(std::memory_order_acquire); }
+    bool isStreamActive() const { return _streamActive.load(std::memory_order_acquire); }
     StorageWire::StorageTarget target() const { return _uploadTarget; }
 
     // ── Exclusive-upload lifecycle callbacks (resource suspend/resume) ───
@@ -86,7 +90,7 @@ private:
     StorageServicePolicy<TPolicy>& _svc;
 
     // --- Upload state (protocol-only) ---
-    bool     _uploadActive       = false;
+    std::atomic<bool> _uploadActive{false};  // read cross-task (Rule 15)
     StorageWire::StorageTarget _uploadTarget = StorageWire::TARGET_SD;
     StorageWire::UploadMode    _uploadMode   = StorageWire::UPLOAD_SYNC;
     char     _uploadPath[128]    = {};
@@ -96,7 +100,7 @@ private:
     sfx_storage::SfxMd5 _uploadMd5;
 
     // --- Stream upload state ---
-    bool     _streamActive          = false;    // True while raw binary streaming
+    std::atomic<bool> _streamActive{false};     // True while raw binary streaming (read cross-task, Rule 15)
     uint32_t _streamSegmentSize     = 0;        // Bytes per segment (set in handleUploadBegin)
     uint16_t _streamSegmentIndex    = 0;        // Current segment number (0-based)
     uint32_t _streamSegBytesRemaining = 0;      // Bytes left in current segment

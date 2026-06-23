@@ -94,13 +94,17 @@ void RoleEventEmitter::emitPpmFrameBroadcast(uint8_t portIdx, const RcPwmInputRo
     const uint8_t count = role.channelCount();
     uint8_t buf[3 + RcPwmInputRole::kMaxChannels * 2];
     buf[0] = portIdx;
-    buf[1] = count;
     buf[2] = role.valid() ? 1 : 0;
-    size_t off = 3;
+    size_t  off     = 3;
+    uint8_t written = 0;
     for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
+        written++;
     }
+    // The count byte must never out-claim the channels actually serialized
+    // (the loop stops at buffer capacity) — set it to the number written.
+    buf[1] = written;
     // Wire broadcast = host live-view only; gate on a listening host so we
     // don't stream into a dead port.  The LOCAL dispatch ALWAYS fires — it
     // feeds the on-board InputDispatcher that drives effects, which must run
@@ -122,13 +126,15 @@ void RoleEventEmitter::emitSbusFrameBroadcast(uint8_t portIdx, const SbusInputRo
     // SBUS is protocol-fixed at 16 channels; sized to spec.
     uint8_t buf[3 + 16*2];
     buf[0] = portIdx;
-    buf[1] = count;
     buf[2] = flags;
-    size_t off = 3;
+    size_t  off     = 3;
+    uint8_t written = 0;
     for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
+        written++;
     }
+    buf[1] = written;  // never out-claim the serialized channel count
     if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::SBUS_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::SBUS_FRAME_BROADCAST, buf, off);
@@ -139,13 +145,15 @@ void RoleEventEmitter::emitJetiExFrameBroadcast(uint8_t portIdx, const JetiExInp
     // Jeti EX Bus carries up to 24 proportional channels per frame.
     uint8_t buf[3 + 24*2];
     buf[0] = portIdx;
-    buf[1] = count;
     buf[2] = role.valid() ? 1 : 0;
-    size_t off = 3;
+    size_t  off     = 3;
+    uint8_t written = 0;
     for (uint8_t i = 0; i < count && off + 2 <= sizeof buf; i++) {
         SfxWire::putU16LE(&buf[off], role.channel_us((uint8_t)(i + 1)));
         off += 2;
+        written++;
     }
+    buf[1] = written;  // never out-claim the serialized channel count
     if (_ctx && _ctx->hostVerboseActive() && role.wireEnabled())  // wire = host live-view; local always
         _ctx->sendRawPacket(RolePacket::JETIEX_FRAME_BROADCAST, SfxWire::TAG_ASYNC, buf, off);
     fireLocalAsync(RolePacket::JETIEX_FRAME_BROADCAST, buf, off);

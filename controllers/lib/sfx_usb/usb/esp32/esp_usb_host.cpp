@@ -80,15 +80,29 @@ static void recoveryTimerCb(TimerHandle_t timer) {
  */
 static void usbHostDaemonTask(void* arg) {
     SFX_LOG_INFO("[UsbHost] Daemon task started");
+    uint32_t consecutiveErrs = 0;
     while (true) {
         uint32_t event_flags;
         esp_err_t err = usb_host_lib_handle_events(portMAX_DELAY, &event_flags);
 
         if (err != ESP_OK) {
             EspUsbHost::instance()._stats().hcd_errors++;
-            SFX_LOG_ERROR("[UsbHost] usb_host_lib_handle_events error: %s (0x%X)",
-                          esp_err_to_name(err), err);
+            // Defensive: a persistently-failing handle_events (a wedged HCD that
+            // returns immediately instead of blocking) would otherwise pin Core 0
+            // and flood the wire with logs.  Back off + rate-limit: log the first
+            // few, then count silently with a short yield so the loop can't spin.
+            if (consecutiveErrs < 5) {
+                SFX_LOG_ERROR("[UsbHost] usb_host_lib_handle_events error: %s (0x%X)",
+                              esp_err_to_name(err), err);
+                if (consecutiveErrs == 4) {
+                    SFX_LOG_ERROR("[UsbHost] suppressing further handle_events errors (HCD may be wedged)");
+                }
+            }
+            ++consecutiveErrs;
+            SFX_DELAY_MS(10);
+            continue;
         }
+        consecutiveErrs = 0;
 
         if (event_flags & USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS) {
             SFX_LOG_WARN("[UsbHost] All USB Host clients deregistered — driver may have crashed");
@@ -425,7 +439,7 @@ void EspUsbHost::resetBus() {
         xTimerStop((TimerHandle_t)_recoveryTimer, 0);
     }
 
-    _lastResetTimestamp_ms = SFX_MILLIS();
+    _lastResetTimestamp_ms.store(SFX_MILLIS(), std::memory_order_release);
     _state.stats.bus_resets++;
 
 #if ESP_USB_HAS_CDC_ACM
@@ -644,8 +658,12 @@ uint8_t EspUsbHost::_openCdcSession(uint16_t vid, uint16_t pid, uint32_t timeout
         SFX_LOG_DEBUG("[UsbHost] DTR+RTS asserted via EP0 class request (iface=%u)", CDC_COMM_INTERFACE_INDEX);
     }
 
-    // Assign a sequential device address (matches TinyUSB behavior on Pico)
-    uint8_t devAddr = _nextDevAddr++;
+    // Assign a sequential device address (matches TinyUSB behavior on Pico).
+    // Skip 0 on rollover — 0 is the failure sentinel returned by this function,
+    // so a wrapped-to-0 address would make a successful open look like a failure
+    // and leak the slot.
+    uint8_t devAddr;
+    do { devAddr = _nextDevAddr++; } while (devAddr == 0);
 
     // Finalize slot tracking
     _slots[slotIdx].cdcHandle = (void*)cdc_handle;
@@ -731,6 +749,19 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             slot.open.store(false, std::memory_order_release);
             slot.pendingUnmount.store(true, std::memory_order_release);
 
+            // Wait for any in-flight cdcWrite to finish before closing the handle:
+            // cdcWrite sets txBusy (seq_cst) then re-checks `open` (which we just
+            // cleared), so a writer that hasn't yet entered the tx will bail, and a
+            // writer already inside the blocking tx clears txBusy when it returns.
+            // Bounded by the TX timeout (~100 ms) — never an unbounded spin.
+            {
+                int spins = 0;
+                while (slot.txBusy.load(std::memory_order_seq_cst) &&
+                       spins++ < (int)(CDC_TX_TIMEOUT_MS + 50)) {
+                    SFX_DELAY_MS(1);
+                }
+            }
+
             // Close the CDC-ACM driver handle HERE — the driver requires close to
             // run from this disconnect callback (SLIST_FOREACH_SAFE in the
             // DEV_GONE handler, esp_cdc_acm v2.3.0); deferring it would leave the
@@ -756,7 +787,7 @@ void EspUsbHost::_handleCdcEvent(int slotIdx, int eventType) {
             // hub ports. Skip if this disconnect was caused by our own bus reset.
             if (_recoveryTimer) {
                 uint32_t now = SFX_MILLIS();
-                if (now - _lastResetTimestamp_ms > RESET_COOLDOWN_MS) {
+                if (now - _lastResetTimestamp_ms.load(std::memory_order_acquire) > RESET_COOLDOWN_MS) {
                     SFX_LOG_INFO("[UsbHost] Starting recovery timer (%lums) for auto bus reset",
                                  (unsigned long)RECOVERY_TIMEOUT_MS);
                     xTimerReset((TimerHandle_t)_recoveryTimer, 0);
@@ -887,16 +918,29 @@ int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
     if (!data || devIndex < 0 || devIndex >= _state.cdcDeviceCount) return -1;
     uint8_t slotIdx = _state.cdcDevices[devIndex].itf_num;
     if (slotIdx >= USB_HOST_MAX_CDC_DEVICES) return -1;
-    const CdcSlot& slot = _slots[slotIdx];
-    if (!slot.open || !slot.cdcHandle) return -1;
+    CdcSlot& slot = _slots[slotIdx];
 
 #if ESP_USB_HAS_CDC_ACM
+    // Claim the slot for TX FIRST (seq_cst), then re-check `open` and snapshot the
+    // handle.  The disconnect callback clears `open` (release) BEFORE closing and
+    // then waits for txBusy to clear, so this ordering guarantees the handle we
+    // snapshot here stays valid for the duration of the blocking tx — no
+    // use-after-free against an interleaved cdc_acm_host_close() (Rule 15).
+    slot.txBusy.store(true, std::memory_order_seq_cst);
+    if (!slot.open.load(std::memory_order_acquire)) {
+        slot.txBusy.store(false, std::memory_order_seq_cst);
+        return -1;
+    }
+    cdc_acm_dev_hdl_t handle = (cdc_acm_dev_hdl_t)slot.cdcHandle;
+    if (!handle) {
+        slot.txBusy.store(false, std::memory_order_seq_cst);
+        return -1;
+    }
+
     // Blocking write with timeout
-    esp_err_t err = cdc_acm_host_data_tx_blocking(
-        (cdc_acm_dev_hdl_t)slot.cdcHandle,
-        data, len,
-        CDC_TX_TIMEOUT_MS
-    );
+    esp_err_t err = cdc_acm_host_data_tx_blocking(handle, data, len, CDC_TX_TIMEOUT_MS);
+    slot.txBusy.store(false, std::memory_order_seq_cst);
+
     if (err == ESP_OK) {
         _state.stats.bytes_sent += len;
         return (int)len;
@@ -905,6 +949,7 @@ int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
     SFX_LOG_WARN("[UsbHost] TX failed: slot=%d err=%s", slotIdx, esp_err_to_name(err));
     return -1;
 #else
+    if (!slot.open || !slot.cdcHandle) return -1;
     (void)slotIdx;
     return -1;
 #endif

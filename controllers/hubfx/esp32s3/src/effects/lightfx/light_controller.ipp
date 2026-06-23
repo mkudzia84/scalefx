@@ -183,7 +183,8 @@ void LightControllerT<TTopology, TLandingService>::applyChannel(
     // Per-channel apply trace — DEBUG (per-select, would spam INFO).
     SFX_LOG_DEBUG("[lightfx] ch %s:%u applied — events=%u ev0.kind=%u scaled=%u%% start=%u",
                   ch.addr.guid[0] ? ch.addr.guid : "hub", (unsigned)ch.addr.portIdx,
-                  (unsigned)ch.numEvents, (unsigned)ch.events[0].kind,
+                  (unsigned)ch.numEvents,
+                  ch.numEvents ? (unsigned)ch.events[0].kind : 0u,
                   (unsigned)scaledBrightness(ch.perChannelBrightnessPct),
                   (unsigned)(started ? 1 : 0));
 }

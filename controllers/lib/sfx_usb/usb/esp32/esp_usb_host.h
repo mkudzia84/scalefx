@@ -206,9 +206,15 @@ private:
         uint8_t devAddr = 0;
         std::atomic<bool> open{false};
         std::atomic<bool> pendingUnmount{false};
+        // Set (seq_cst) by cdcWrite around the blocking tx; the disconnect
+        // callback waits for it to clear before cdc_acm_host_close(), so a close
+        // can never free the handle out from under an in-flight TX (Rule 15 /
+        // mirrors AudioMixer::destroyChannelSourceSafe's busy-flag handshake).
+        std::atomic<bool> txBusy{false};
         void reset() {
             cdcHandle = nullptr; rxStream = nullptr; devAddr = 0;
             pendingUnmount.store(false, std::memory_order_release);
+            txBusy.store(false, std::memory_order_release);
             open.store(false, std::memory_order_release);
         }
     };
@@ -235,7 +241,10 @@ private:
 
     // Bus recovery state
     void* _recoveryTimer = nullptr;      // TimerHandle_t (null = recovery off)
-    uint32_t _lastResetTimestamp_ms = 0; // SFX_MILLIS() of last bus reset
+    // Written by resetBus() on the worker task, read by _handleCdcEvent on the CDC
+    // driver task (the reset-cooldown guard) — cross-task, so atomic with explicit
+    // ordering (release on write / acquire on read) per Rule 15.
+    std::atomic<uint32_t> _lastResetTimestamp_ms{0}; // SFX_MILLIS() of last bus reset
 
     /// Common CDC session open logic — shared by _processOpenRequest and reopenCdcDevice.
     /// Returns assigned devAddr on success, 0 on failure.

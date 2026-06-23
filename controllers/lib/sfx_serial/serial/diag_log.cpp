@@ -137,12 +137,31 @@ uint16_t DiagLog::sendHistory(uint16_t max) {
     // with, and the Go side's 15 s ceiling has comfortable margin.
     constexpr uint16_t kYieldEvery = 16;
     while (readPos != endPos) {
-        const LogEntry& entry = _ring[readPos];
+        // Copy the entry out under the mutex so a concurrent writer cannot
+        // tear it mid-encode (writers hold _mutex; encoding + the yielding
+        // write below must NOT, or they would stall the log producers).
+        // Re-validate readPos against a fresh _tail first: if the slow drip
+        // (the 1 ms yields) let writers lap this position, skip the lapped
+        // slot rather than emit a half-overwritten entry.
+        sfxMutexLock(_mutex);
+        uint16_t curTail = _tail.load(std::memory_order_relaxed);
+        uint16_t curHead = _head.load(std::memory_order_relaxed);
+        bool lapped = (curTail <= curHead)
+            ? (readPos < curTail || readPos >= curHead)
+            : (readPos < curTail && readPos >= curHead);
+        if (lapped) {
+            sfxMutexUnlock(_mutex);
+            readPos = (readPos + 1) % RING_SIZE;
+            continue;
+        }
+        LogEntry entry = _ring[readPos];
+        sfxMutexUnlock(_mutex);
 
         // Build payload: [level:u8][millis:u32LE][message:str]
         uint8_t payload[1 + 4 + MAX_MSG_LEN];
         payload[0] = entry.level;
         putU32LE(&payload[1], entry.timestamp_ms);
+        if (entry.len > MAX_MSG_LEN) entry.len = MAX_MSG_LEN;  // bound the copy
         memcpy(&payload[5], entry.message, entry.len);
         size_t payloadLen = 5 + entry.len;
 

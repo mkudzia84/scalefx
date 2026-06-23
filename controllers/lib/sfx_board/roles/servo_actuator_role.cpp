@@ -42,6 +42,12 @@ void ServoActuatorRole::setLimits(uint16_t minUs, uint16_t maxUs) {
 
 void ServoActuatorRole::setProfile(const ServoMotionProfile& p) {
     _profile = p;
+    // Keep the role's open/close endpoint flag coherent with the profile's
+    // `inverted` bit — both encode "reversed" and come from the same YAML
+    // `reversed` field.  Without this, a caller that sets the profile but not
+    // setReversed() leaves _reversed (used by open/closeEndpoint) stale, so
+    // deploy/retract would drive the wrong calibrated end.
+    _reversed = p.inverted;
     rebuildProfileLimits();
 }
 
@@ -122,7 +128,12 @@ void ServoActuatorRole::tick() {
     // Velocity diagnostic from the OUTPUT delta (so a recoil reads as motion).
     if (dtMs > 0) {
         const int32_t deltaUs = (int32_t)finalUs - (int32_t)_lastPosUs;
-        _velocity_us_per_s = (int16_t)((deltaUs * 1000) / (int32_t)dtMs);
+        // A write-through (no-slew) jump can move the full travel in one tick,
+        // overflowing int16 — compute in int32 and clamp before narrowing.
+        int32_t v = (deltaUs * 1000) / (int32_t)dtMs;
+        if      (v > INT16_MAX) v = INT16_MAX;
+        else if (v < INT16_MIN) v = INT16_MIN;
+        _velocity_us_per_s = (int16_t)v;
         _lastPosUs = finalUs;
     }
 

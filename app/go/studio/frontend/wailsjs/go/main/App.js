@@ -198,6 +198,14 @@ export function GearDeploy(arg1) {
   return window['go']['main']['App']['GearDeploy'](arg1);
 }
 
+export function GearDoors(arg1, arg2) {
+  return window['go']['main']['App']['GearDoors'](arg1, arg2);
+}
+
+export function GearDoorsAll(arg1) {
+  return window['go']['main']['App']['GearDoorsAll'](arg1);
+}
+
 export function GearEStop(arg1) {
   return window['go']['main']['App']['GearEStop'](arg1);
 }
@@ -232,6 +240,14 @@ export function GearMotorStatus(arg1, arg2) {
 
 export function GearMotorStop(arg1, arg2) {
   return window['go']['main']['App']['GearMotorStop'](arg1, arg2);
+}
+
+export function GearMoveStrut(arg1, arg2) {
+  return window['go']['main']['App']['GearMoveStrut'](arg1, arg2);
+}
+
+export function GearMoveStrutAll(arg1) {
+  return window['go']['main']['App']['GearMoveStrutAll'](arg1);
 }
 
 export function GearReset(arg1) {

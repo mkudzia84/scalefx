@@ -90,7 +90,8 @@ private:
     bool     _stalled             = false;
     uint16_t _stallThreshold_mA   = 2000;
     uint16_t _stallWindow_ms      = 250;
-    uint32_t _overcurrentStartMs  = 0;   ///< 0 = not currently over threshold
+    bool     _overcurrentActive   = false; ///< true while a sustained-window timer is running
+    uint32_t _overcurrentStartMs  = 0;     ///< window start (valid only when _overcurrentActive)
     uint16_t _peakDuringWindow_mA = 0;
 
     // Phase 2 — element-aware duty scaling.

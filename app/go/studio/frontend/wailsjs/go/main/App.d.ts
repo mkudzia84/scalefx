@@ -102,6 +102,10 @@ export function GearAll(arg1:number):Promise<void>;
 
 export function GearDeploy(arg1:number):Promise<void>;
 
+export function GearDoors(arg1:number,arg2:boolean):Promise<void>;
+
+export function GearDoorsAll(arg1:boolean):Promise<void>;
+
 export function GearEStop(arg1:number):Promise<void>;
 
 export function GearEStopAll():Promise<void>;
@@ -119,6 +123,10 @@ export function GearMotorMoveEnd(arg1:string,arg2:number,arg3:string,arg4:number
 export function GearMotorStatus(arg1:string,arg2:number):Promise<main.DiagBiMotorStatus>;
 
 export function GearMotorStop(arg1:string,arg2:number):Promise<void>;
+
+export function GearMoveStrut(arg1:number,arg2:boolean):Promise<void>;
+
+export function GearMoveStrutAll(arg1:boolean):Promise<void>;
 
 export function GearReset(arg1:number):Promise<void>;
 

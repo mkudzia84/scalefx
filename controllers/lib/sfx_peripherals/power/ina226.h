@@ -264,8 +264,13 @@ public:
     static uint8_t scan(sfx_peripherals::SfxI2cBus& wire, uint8_t* addresses, uint8_t maxDevices);
 
     /**
-     * @brief Verify this device is an INA226 (checks MFG_ID and DIE_ID)
-     * Called automatically by I2CDevice::begin()
+     * @brief Read-only check that this device is a canonical INA226.
+     *
+     * Snapshots MFG_ID + DIE_ID into _bootMfgId/_bootDieId (no destructive
+     * writes — safe on pin-compatible clones) and returns true only on the
+     * genuine TI fingerprint.  begin() calls this for its own clone-safe ID
+     * snapshot; scan() uses it on a temporary instance.  (It is NOT auto-called
+     * by any base-class begin().)
      */
     bool identify();
 

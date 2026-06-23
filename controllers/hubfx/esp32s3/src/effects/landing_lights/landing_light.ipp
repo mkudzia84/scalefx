@@ -12,6 +12,7 @@
 #include <serial/roles.h>
 #include <serial/wire.h>      // SfxWire::putU16LE
 #include <serial/diag_log.h>
+#include <server/effect_clock.h>   // Rule 40 — effects use EffectClock, not raw millis()
 #include "../role_command.h"      // rolecmd::u16 / u8 / none — shared payload builders
 
 #include "../lightfx/light_event.h"
@@ -39,10 +40,14 @@ inline void LandingLight::deploy() {
     enterPhase(LandingLightPhase::Deploying);
     commandAllServos(deployPosNorm());
     if (_commit && _sendCtx) _commit(_sendCtx);
+    // Arm the travel-timeout backstop so a dropped SERVO_TARGET_REACHED
+    // can't hang DEPLOYING forever (servos have no position feedback).
+    _travelDeadlineMs = sfx_core::EffectClock::instance().nowMs() + kTravelTimeoutMs;
     // Edge case: zero servos configured (LEDs-only landing light) —
     // the arrival mask is already 0, allServosMask() is 0, so we're
     // immediately "all arrived" and skip straight to LEDs on.
     if (allServosMask() == 0) {
+        _travelDeadlineMs = 0;   // nothing to wait on — no backstop needed
         if (_begin && _sendCtx) _begin(_sendCtx);
         enterPhase(LandingLightPhase::Deployed);
         commandLedsOn();
@@ -70,9 +75,12 @@ inline void LandingLight::retract() {
     enterPhase(LandingLightPhase::Retracting);
     commandAllServos(retractPosNorm());
     if (_commit && _sendCtx) _commit(_sendCtx);
+    // Arm the travel-timeout backstop (same rationale as deploy()).
+    _travelDeadlineMs = sfx_core::EffectClock::instance().nowMs() + kTravelTimeoutMs;
     // LEDs-only edge case mirror — no servos to wait on, go straight
     // to RETRACTED so the operator's UI doesn't show a stuck phase.
     if (allServosMask() == 0) {
+        _travelDeadlineMs = 0;   // nothing to wait on — no backstop needed
         enterPhase(LandingLightPhase::Retracted);
     }
 }
@@ -91,6 +99,11 @@ inline void LandingLight::onServoTargetReached(uint8_t servoIdx) {
         return;
     }
     // All servos in.  Advance the phase + (for deploy) fan the LEDs on.
+    completeTravel();
+}
+
+inline void LandingLight::completeTravel() {
+    _travelDeadlineMs = 0;   // move settled — disarm the backstop
     switch (_state) {
         case LandingLightPhase::Deploying:
             if (_begin && _sendCtx) _begin(_sendCtx);
@@ -104,6 +117,18 @@ inline void LandingLight::onServoTargetReached(uint8_t servoIdx) {
         default:
             return;  // stray event — ignore
     }
+}
+
+inline void LandingLight::update(uint32_t nowMs) {
+    // Travel-timeout backstop: if the deploy/retract deadline passes before
+    // every servo reports SERVO_TARGET_REACHED, force-complete the phase so
+    // a dropped role event can't leave the landing light stuck in
+    // DEPLOYING/RETRACTING forever.
+    if (_travelDeadlineMs == 0) return;                       // no move in flight
+    if ((int32_t)(nowMs - _travelDeadlineMs) < 0) return;     // not yet due
+    SFX_LOG_WARN("[ll] %u: servo travel timed out (mask 0x%02x/0x%02x) — settling",
+                 _def.id, (unsigned)_servoArrived, (unsigned)allServosMask());
+    completeTravel();
 }
 
 inline void LandingLight::enterPhase(uint8_t newPhase) {

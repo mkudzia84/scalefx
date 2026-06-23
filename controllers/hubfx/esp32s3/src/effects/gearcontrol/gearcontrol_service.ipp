@@ -166,11 +166,16 @@ void GearControlServicePolicyT<TTopology, TLandingService>::updateTransitSound()
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::driveCoordinator() {
-    // Sequenced: advance the chain when the active strut reaches its target.
+    // Sequenced: advance the chain when the active strut reaches a terminal
+    // state — atTarget OR a faulted/held strut — so one stuck strut can't stall
+    // the whole gear; the rest keeps deploying past the skipped leg.
     if (_coordMode == CoordMode::Sequenced) {
-        if (_seqActive != 0xFF && _seqActive < _numDefs &&
-            _gears[_seqActive].atTarget()) {
-            sequencedKick();
+        if (_seqActive != 0xFF && _seqActive < _numDefs) {
+            const uint8_t ph = _gears[_seqActive].phase();
+            if (_gears[_seqActive].atTarget() ||
+                ph == GearPhase::Error || ph == GearPhase::Held) {
+                sequencedKick();
+            }
         }
         return;
     }
@@ -243,6 +248,10 @@ CommandHandleResult GearControlServicePolicyT<TTopology, TLandingService>::handl
         case GearPacket::GEAR_RESET:      handleReset(payload, len);     return CommandHandleResult::Handled;
         case GearPacket::GEAR_ESTOP:      handleEstop(payload, len);     return CommandHandleResult::Handled;
         case GearPacket::GEAR_STEP:       handleStep(payload, len);      return CommandHandleResult::Handled;
+        case GearPacket::GEAR_DOOR:       handleDoor(payload, len);      return CommandHandleResult::Handled;
+        case GearPacket::GEAR_STRUT:      handleStrut(payload, len);     return CommandHandleResult::Handled;
+        case GearPacket::GEAR_DOOR_ALL:   handleDoorAll(payload, len);   return CommandHandleResult::Handled;
+        case GearPacket::GEAR_STRUT_ALL:  handleStrutAll(payload, len);  return CommandHandleResult::Handled;
         default:                          return CommandHandleResult::NotMyCommand;
     }
 }
@@ -323,6 +332,75 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleStep(
     _ctx->sendAck();
 }
 
+// ── Manual / maintenance: door-only + strut-only, per-leg + fleet ────────
+//   The Gear FSM is the authoritative interlock; here we just map its
+//   ManualResult onto an ACK or a NACK with the matching GearError.
+
+static inline uint8_t manualNackCode(Gear::ManualResult r) {
+    switch (r) {
+        case Gear::ManualResult::DoorsClosed: return GearError::DOORS_CLOSED;
+        case Gear::ManualResult::StrutNotUp:  return GearError::STRUT_NOT_UP;
+        default:                              return GearError::GEAR_BUSY;
+    }
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleDoor(
+        const uint8_t* p, size_t len) {
+    // `[id][open]` — open(1)/close(0) ONE strut's doors (firmware interlock).
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    const Gear::ManualResult r = g->manualDoors(p[1] == GearDoorAction::Open);
+    if (r == Gear::ManualResult::Ok) _ctx->sendAck();
+    else                             _ctx->sendNack(manualNackCode(r));
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleStrut(
+        const uint8_t* p, size_t len) {
+    // `[id][down]` — deploy(1)/retract(0) ONE strut's motor (firmware interlock).
+    if (len < 2) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    Gear* g = findById(p[0]);
+    if (!g) { _ctx->sendNack(GearError::UNKNOWN_ID); return; }
+    const Gear::ManualResult r = g->manualStrut(p[1] == GearStrutAction::Deploy);
+    if (r == Gear::ManualResult::Ok) _ctx->sendAck();
+    else                             _ctx->sendNack(manualNackCode(r));
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleDoorAll(
+        const uint8_t* p, size_t len) {
+    // `[open]` — every strut's doors, ALL-OR-NOTHING: dry-run the interlock on
+    // all legs first; refuse the whole command if any leg would be unsafe.
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const bool open = (p[0] == GearDoorAction::Open);
+    for (uint8_t i = 0; i < _numDefs; ++i) {
+        const Gear::ManualResult c = _gears[i].checkManualDoors(open);
+        if (c != Gear::ManualResult::Ok) { _ctx->sendNack(manualNackCode(c)); return; }
+    }
+    if (_topo) _topo->beginBatch();
+    for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].manualDoors(open);
+    if (_topo) _topo->commitBatch();
+    _ctx->sendAck();
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::handleStrutAll(
+        const uint8_t* p, size_t len) {
+    // `[down]` — every strut's motor, ALL-OR-NOTHING (see handleDoorAll).
+    if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }
+    const bool down = (p[0] == GearStrutAction::Deploy);
+    for (uint8_t i = 0; i < _numDefs; ++i) {
+        const Gear::ManualResult c = _gears[i].checkManualStrut(down);
+        if (c != Gear::ManualResult::Ok) { _ctx->sendNack(manualNackCode(c)); return; }
+    }
+    if (_topo) _topo->beginBatch();
+    for (uint8_t i = 0; i < _numDefs; ++i) _gears[i].manualStrut(down);
+    if (_topo) _topo->commitBatch();
+    _ctx->sendAck();
+}
+
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::emergencyHoldAll() {
     if (_topo) _topo->beginBatch();
@@ -396,9 +474,10 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleAll(
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::handleStatusReq() {
-    // Rule 11 append: per-entry [id][phase][subPhase][errReason] — old clients
-    // read the first 2; the host derives the stride from count.
-    uint8_t buf[1 + kMaxGears * 4];
+    // Rule 11 append: per-entry [id][phase][subPhase][errReason][doorsOpen]
+    // [strutState] — old clients read the first 2; the host derives the stride
+    // from count.  doorsOpen + strutState drive the manual-control interlock gate.
+    uint8_t buf[1 + kMaxGears * 6];
     buf[0] = _numDefs;
     size_t off = 1;
     for (uint8_t i = 0; i < _numDefs; ++i) {
@@ -406,6 +485,8 @@ void GearControlServicePolicyT<TTopology, TLandingService>::handleStatusReq() {
         buf[off++] = _gears[i].phase();
         buf[off++] = _gears[i].subPhase();
         buf[off++] = _gears[i].errorReason();
+        buf[off++] = _gears[i].doorsOpen() ? 1 : 0;
+        buf[off++] = _gears[i].strutState();
     }
     _ctx->sendRawPacket(GearPacket::GEAR_STATUS_RESP,
                         _ctx->currentTag(), buf, off);
@@ -498,8 +579,12 @@ template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::L
 void GearControlServicePolicyT<TTopology, TLandingService>::emitPhaseEvent(
         uint8_t id, uint8_t phase, uint8_t subPhase, uint8_t errReason) {
     if (!_ctx) return;
-    // Rule 11 append: [id][phase][subPhase][errReason] — old clients read 2.
-    const uint8_t payload[4] = { id, phase, subPhase, errReason };
+    // Rule 11 append: [id][phase][subPhase][errReason][doorsOpen][strutState] —
+    // old clients read 2.  doorsOpen/strutState (looked up by id since the
+    // phase-callback doesn't carry them) drive the manual-control interlock gate.
+    uint8_t doorsOpen = 0, strutState = GearStrutState::Unknown;
+    if (Gear* g = findById(id)) { doorsOpen = g->doorsOpen() ? 1 : 0; strutState = g->strutState(); }
+    const uint8_t payload[6] = { id, phase, subPhase, errReason, doorsOpen, strutState };
     _ctx->sendRawPacket(GearPacket::GEAR_PHASE_EVENT,
                         SfxWire::TAG_ASYNC, payload, sizeof(payload));
     if (phase == GearPhase::Deployed || phase == GearPhase::Retracted) {

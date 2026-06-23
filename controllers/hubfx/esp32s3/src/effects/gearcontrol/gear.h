@@ -105,6 +105,16 @@ public:
     /// The two stable states a strut drives toward.
     enum class Target : uint8_t { Up = 0, Down = 1 };
 
+    /// Outcome of a MANUAL door/strut command — the service maps it to ACK or a
+    /// NACK with the matching GearError (the firmware is the authoritative
+    /// interlock; the GUI gate only mirrors it).
+    enum class ManualResult : uint8_t {
+        Ok = 0,        ///< accepted + driving
+        Busy,          ///< a coordinated cycle / another manual op is in flight
+        DoorsClosed,   ///< strut move refused — doors not open
+        StrutNotUp,    ///< door close refused — strut not retracted
+    };
+
     Gear() = default;
 
     void configure(const GearDef& def,
@@ -129,6 +139,8 @@ public:
         _stepMode = false;
         _stepArmed= false;
         _legDone  = false;
+        _strutState = GearStrutState::Unknown;   // position uncertain until first seek
+        _manualLeg  = ManualLeg::None;
         _movingDeadlineMs = 0;
         _doorDeadlineMs   = 0;
         _doorSeq.configure(_def.doors, _def.numDoors, _def.openMode,
@@ -158,6 +170,27 @@ public:
     /// Clear an ERROR state → UNKNOWN so commands are accepted again.  No-op
     /// when not in ERROR.  (GEAR_RESET.)
     void clearError();
+
+    // ── Manual / maintenance: drive ONE subsystem independently (setup) ───
+    /// Open (`open=true`) or close the doors only, honouring the configured
+    /// door-mode + close-policy.  INTERLOCK: closing requires the strut UP.
+    /// Refuses while a coordinated cycle / another manual op is in flight.
+    ManualResult manualDoors(bool open);
+    /// Deploy (`down=true`) or retract the strut only.  INTERLOCK: either
+    /// direction requires the doors OPEN (the leg passes through the door gap).
+    ManualResult manualStrut(bool down);
+
+    /// Dry-run the same interlock without driving — lets a FLEET command refuse
+    /// all-or-nothing (no partial application) before any leg moves.
+    ManualResult checkManualDoors(bool open) const;
+    ManualResult checkManualStrut(bool down) const;
+
+    /// Interlock read-outs (also surfaced on the wire for the GUI gate):
+    /// `doorsOpen()` = every configured door at its open end (or no doors);
+    /// `strutState()` = GearStrutState (Unknown/Up/Out/Moving).
+    bool    doorsOpen()  const { return _doorSeq.allAtOpen(); }
+    uint8_t strutState() const { return _strutState; }
+    bool    strutUp()    const { return _strutState == GearStrutState::Up; }
 
     // ── Coordinator predicates ────────────────────────────────────────
     /// True while a transit is in flight (raising or lowering).
@@ -194,6 +227,12 @@ private:
     void armDoorBackstop();
     void armMotorBackstop();
     void commandSeek(int16_t signedDuty);
+    /// Manual-op completion: settle the door/strut state + clear the manual leg.
+    void finishManualDoor(bool opened);
+    void finishManualStrut();
+    /// Map _strutState → the overall GearPhase reported on the wire (so a manual
+    /// op shows a consistent phase: strut Up→Up, Out→Down, Moving→MovingX).
+    uint8_t strutPhase() const;
     void commandGuard();                ///< push the persisted stall guard pre-seek
     void commandMotorBrake();
 
@@ -218,6 +257,16 @@ private:
     bool          _stepMode  = false;          ///< true → coordinator drives leg-by-leg
     bool          _stepArmed = false;          ///< step-mode: permission to cross ONE boundary
     bool          _legDone   = false;          ///< current leg's completion event fired
+
+    /// Explicit strut position (independent of the transit `_phase`), so the
+    /// manual close-doors interlock + the wire status have a reliable "strut up
+    /// vs out" answer even after a Held/Unknown/manual op.  Set on every
+    /// confirmed endstop reach; Unknown at boot/error/hold.
+    uint8_t       _strutState = GearStrutState::Unknown;
+    /// Which independent manual op (if any) is in flight — routes the completion
+    /// async to the manual finisher instead of the coordinated `pump()`.
+    enum class ManualLeg : uint8_t { None, DoorOpen, DoorClose, StrutDown, StrutUp };
+    ManualLeg     _manualLeg = ManualLeg::None;
 
     uint32_t      _movingDeadlineMs = 0;       ///< EffectClock deadline for the motor seek backstop
     uint32_t      _doorDeadlineMs   = 0;       ///< EffectClock deadline for a door leg (missed SERVO_MOTION_DONE backstop)

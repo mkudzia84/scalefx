@@ -218,13 +218,15 @@ private:
     GuardMode _guardMode          = GuardMode::Fixed;
     uint16_t  _stallThreshold_mA  = 2000;   // Fixed
     uint16_t  _stallWindow_ms     = 250;    // Fixed AND LiveRatio
+    bool      _windowSetByUser    = false;  // window_ms explicitly set by caller
     uint16_t  _ratio_x100         = 250;    // LiveRatio (= 2.5×)
     uint16_t  _runSample_ms       = 200;    // LiveRatio
     uint16_t  _inrushBlank_ms     = 150;    // LiveRatio
     uint16_t  _maxTravel_ms       = 0;      // LiveRatio failsafe (0 = none)
 
     // Per-tick stall detection state (sustained window).
-    uint32_t _overcurrentStartMs  = 0;
+    bool     _overcurrentActive   = false; ///< true while a sustained-window timer is running
+    uint32_t _overcurrentStartMs  = 0;     ///< window start (valid only when _overcurrentActive)
     uint16_t _peakDuringWindow_mA = 0;
 
     // Endstop-seek state.

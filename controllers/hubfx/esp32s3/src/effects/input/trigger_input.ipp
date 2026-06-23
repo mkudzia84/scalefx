@@ -146,10 +146,23 @@ inline uint8_t TriggerInput::toEnumN(uint16_t us, uint8_t N) const {
     if (_haveLast && _last.kind == TriggerKind::EnumN) {
         const int32_t bandUs = (int32_t)_mapping.hysteresisUs;
         const int32_t step   = span / (int32_t)N;
-        if (step > 0) {
-            const int32_t boundary = ((int32_t)_last.e + 1) * step;
-            const int32_t distance = offset - boundary;
-            if (distance > -bandUs && distance < bandUs) {
+        // `step` is negative for reversed (descending) channels — the band-edge
+        // distance math below is sign-agnostic (offset, lower and upper all live
+        // in the same signed offset-space, and the `±bandUs` comparison is
+        // symmetric), so guard on `step != 0` to engage hysteresis in BOTH
+        // directions rather than only when ascending.
+        if (step != 0) {
+            // Debounce BOTH boundaries adjacent to the previous band, not just
+            // the upper one — hold `_last.e` while `offset` is within `bandUs`
+            // of the lower edge (_last.e*step) OR the upper edge
+            // ((_last.e+1)*step), so a value hovering on either side of a step
+            // can't chatter between adjacent positions.
+            const int32_t lower = (int32_t)_last.e * step;
+            const int32_t upper = ((int32_t)_last.e + 1) * step;
+            const int32_t dLower = offset - lower;
+            const int32_t dUpper = offset - upper;
+            if ((dLower > -bandUs && dLower < bandUs) ||
+                (dUpper > -bandUs && dUpper < bandUs)) {
                 return _last.e;
             }
         }

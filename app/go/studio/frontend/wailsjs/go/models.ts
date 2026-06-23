@@ -1722,6 +1722,9 @@ export namespace main {
 	    subPhaseName: string;
 	    errReason: number;
 	    errReasonTag: string;
+	    doorsOpen: boolean;
+	    strutState: number;
+	    strutName: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new GearStatusEntry(source);
@@ -1736,6 +1739,9 @@ export namespace main {
 	        this.subPhaseName = source["subPhaseName"];
 	        this.errReason = source["errReason"];
 	        this.errReasonTag = source["errReasonTag"];
+	        this.doorsOpen = source["doorsOpen"];
+	        this.strutState = source["strutState"];
+	        this.strutName = source["strutName"];
 	    }
 	}
 	export class GunAxisDTO {

@@ -59,7 +59,7 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.33.2-hubfx"
+#define FIRMWARE_VERSION "2.34.1-hubfx"
 #define BUILD_NUMBER     889
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
@@ -1024,6 +1024,12 @@ void setup() {
         SFX_LOG_INFO("[Expander] unmount %s addr=%u guid=%s",
                      hubfx::expanders::ExpanderKind::getName(e.kind),
                      e.usbAddr, e.spec.guid);
+        // Release any connection-loss Link slots owned by the departing board so
+        // its input ports don't permanently squat the (few) kMaxLinks slots —
+        // the GUID is stable per silicon, so this is the right reclaim trigger.
+        if (e.spec.valid) {
+            board.policy<InputDispatcherService>().forgetLinksForGuid(e.spec.guid);
+        }
     });
 
     // Auto-begun policies — surface their initial state so the boot

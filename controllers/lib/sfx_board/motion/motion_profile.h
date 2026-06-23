@@ -98,8 +98,11 @@ public:
     /// (Re-)set the profile.  Clamps `_currentF` into the new range.
     void setProfile(const ServoMotionProfile& p) {
         _profile = p;
-        if (_currentF < p.minUs) _currentF = p.minUs;
-        if (_currentF > p.maxUs) _currentF = p.maxUs;
+        // If the live position was pulled to a NEW boundary, the integrator's
+        // velocity/accel were aiming past that edge — zero them so the next
+        // tick doesn't carry stale momentum out of (or along) the clamp.
+        if (_currentF < p.minUs) { _currentF = p.minUs; _velocity = 0.0f; _accelLast = 0.0f; }
+        if (_currentF > p.maxUs) { _currentF = p.maxUs; _velocity = 0.0f; _accelLast = 0.0f; }
         // `_targetUs` is already in SERVO space (setTarget() applied any
         // `inverted` reflection when it was stored). Re-clamp it to the new
         // range WITHOUT reflecting — calling clamp() here would reflect a

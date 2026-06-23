@@ -114,3 +114,62 @@ func TestGearPhaseEventSubPhase(t *testing.T) {
 		t.Errorf("legacy event subPhase = %d, want idle", pc.SubPhase)
 	}
 }
+
+// Manual / maintenance: new packet bytes (free 0x01..0x04), command shapes,
+// and the v4 GEAR_STATUS_RESP / GEAR_PHASE_EVENT [doorsOpen][strutState] append
+// (Rule 11 — old vintages still decode).
+func TestGearManualPacketsAndV4Status(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		got  protocol.PacketType
+		want byte
+	}{
+		{"DOOR", gear.Door, 0x01},
+		{"STRUT", gear.Strut, 0x02},
+		{"DOOR_ALL", gear.DoorAll, 0x03},
+		{"STRUT_ALL", gear.StrutAll, 0x04},
+	} {
+		if byte(tc.got) != tc.want {
+			t.Errorf("%s = 0x%02X, want 0x%02X", tc.name, byte(tc.got), tc.want)
+		}
+	}
+
+	// Command shapes: per-leg = [id][action], fleet = [action].
+	if ptype, _, p, ok := protocol.ParsePacket(gear.CmdDoor(2, gear.DoorOpen)); !ok ||
+		ptype != gear.Door || len(p) != 2 || p[0] != 2 || p[1] != gear.DoorOpen {
+		t.Errorf("CmdDoor: ok=%v type=0x%02X payload=%v", ok, byte(ptype), p)
+	}
+	if ptype, _, p, ok := protocol.ParsePacket(gear.CmdStrutAll(gear.StrutDeploy)); !ok ||
+		ptype != gear.StrutAll || len(p) != 1 || p[0] != gear.StrutDeploy {
+		t.Errorf("CmdStrutAll: ok=%v type=0x%02X payload=%v", ok, byte(ptype), p)
+	}
+
+	// v4 status: 6-byte stride [id phase sub err doorsOpen strutState].
+	v4 := []byte{1, 7, gear.PhaseDown, gear.SubPhaseDoorsOpen, 0, 1, gear.StrutOut}
+	st, err := gear.DecodeStatus(v4)
+	if err != nil {
+		t.Fatalf("DecodeStatus v4: %v", err)
+	}
+	if len(st) != 1 || !st[0].DoorsOpen || st[0].StrutState != gear.StrutOut {
+		t.Errorf("v4 decode: %+v want doorsOpen=true strutState=%d", st, gear.StrutOut)
+	}
+
+	// Legacy v3 (4-byte stride) still decodes — the new fields default off.
+	v3 := []byte{1, 7, gear.PhaseDown, gear.SubPhaseDoorsClosed, 0}
+	st, err = gear.DecodeStatus(v3)
+	if err != nil {
+		t.Fatalf("DecodeStatus v3: %v", err)
+	}
+	if st[0].DoorsOpen || st[0].StrutState != gear.StrutUnknown {
+		t.Errorf("v3 back-compat: %+v want doorsOpen=false strutState=0", st[0])
+	}
+
+	// v4 phase event.
+	pc, err := gear.DecodePhaseEvent([]byte{3, gear.PhaseUp, gear.SubPhaseDoorsOpen, 0, 1, gear.StrutUp})
+	if err != nil {
+		t.Fatalf("DecodePhaseEvent v4: %v", err)
+	}
+	if !pc.DoorsOpen || pc.StrutState != gear.StrutUp {
+		t.Errorf("phase event v4: doorsOpen=%v strutState=%d", pc.DoorsOpen, pc.StrutState)
+	}
+}

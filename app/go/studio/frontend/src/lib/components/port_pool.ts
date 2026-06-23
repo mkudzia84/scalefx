@@ -46,10 +46,15 @@ export function freePortPool(
     return ports.filter(p => {
         if (p.kindName !== kindName) return false
         if (p.direction !== 'output') return false
-        if (p.roleKind !== requiredRole) return false
-        // Exempt → keep regardless of claims.
+        // Exempt (the operator's CURRENT pick) → keep REGARDLESS of role/claims.
+        // This MUST run before the roleKind filter: after an Apply / refresh the
+        // device model is rebuilt from a live RoleList, and if the picked port's
+        // role momentarily differs from `requiredRole` (boot before roles attach,
+        // a re-roled port, a reload window) the role filter would drop it and the
+        // <select> — whose value is the picked PortRef — renders BLANK.
         const key = `${p.ref.guid}|${p.kindName}|${p.ref.index}`
         if (exemptKeys.has(key)) return true
+        if (p.roleKind !== requiredRole) return false
         // Unclaimed → keep.  Anything claimed by anyone is hidden.
         return claimsForPort(claims, p.ref).length === 0
     })
@@ -69,8 +74,9 @@ export function freePortPoolFiltered(
     return ports.filter(p => {
         if (p.kindName !== kindName) return false
         if (p.direction !== 'output') return false
-        if (p.roleKind !== requiredRole) return false
+        // Exempt (current pick) before the roleKind filter — see freePortPool.
         if (isExempt(p)) return true
+        if (p.roleKind !== requiredRole) return false
         return claimsForPort(claims, p.ref).length === 0
     })
 }

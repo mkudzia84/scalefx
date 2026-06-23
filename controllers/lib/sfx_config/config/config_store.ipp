@@ -53,6 +53,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
         // the apply).  Flagged notFound so reload-all tolerates it and boot's
         // loadOrFallback skips a redundant second apply.
         resetToDefaults();
+        freeRawYaml();   // drop any stale cached text so saveToFile() NACKs
         _loaded        = false;
         _usingDefaults = true;
         _fileSize      = 0;
@@ -66,6 +67,10 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromString(const char* yaml, size_
     // Phase 1: Parse YAML text into node tree
     YamlParser<TPool> parser;
     if (!parser.parse(yaml, len)) {
+        // Parse failed — fall back to genuine schema defaults rather than
+        // leaving the previous (or partially-populated) config in _data, so
+        // a subsequent apply pushes a known-good layout, not stale content.
+        resetToDefaults();
         snprintf(_lastError, sizeof(_lastError), "YAML parse: %s", parser.error());
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         return result;
@@ -145,6 +150,7 @@ ConfigResult ConfigStore<TSchema, TPool>::loadFromFile(const char* path) {
         // (same contract as the empty-string path in loadFromString).  Without
         // the reset, a reload here would leave stale runtime config behind.
         resetToDefaults();
+        freeRawYaml();   // drop any stale cached text so saveToFile() NACKs
         snprintf(_lastError, sizeof(_lastError), "File read failed: %s", filePath);
         strncpy(result.error, _lastError, sizeof(result.error) - 1);
         result.notFound = true;   // absent / unreadable — reload-all tolerates this

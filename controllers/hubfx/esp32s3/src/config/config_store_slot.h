@@ -80,13 +80,22 @@ public:
     void loadOrFallback() {
         const auto r = _store.loadFromFile(nullptr);
         if (r.ok) return;
-        SFX_LOG_WARN("[config] %s not loaded — applying schema defaults",
-                     TSchema::defaultPath());
         // The store's absent/empty-file path (loadFromFile / loadFromString)
         // now self-fires the loaded callback after resetToDefaults, so skip a
         // redundant second apply for `notFound`.  A parse / validate failure
-        // does NOT self-fire — fall back to defaults explicitly there.
-        if (!r.notFound && _applyFn) _applyFn(_store.data());
+        // does NOT self-fire.  In that case force genuine schema defaults
+        // before applying — otherwise we would push the populated-but-INVALID
+        // (validate-fail) data to the live board while claiming "schema
+        // defaults".
+        if (r.notFound) {
+            SFX_LOG_WARN("[config] %s absent/empty — applied schema defaults",
+                         TSchema::defaultPath());
+            return;
+        }
+        SFX_LOG_WARN("[config] %s invalid (%s) — applying schema defaults",
+                     TSchema::defaultPath(), _store.lastError());
+        _store.resetToDefaults();
+        if (_applyFn) _applyFn(_store.data());
     }
 
 private:
