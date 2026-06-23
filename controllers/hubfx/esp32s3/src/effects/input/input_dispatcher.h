@@ -115,6 +115,12 @@ public:
     void setLinkLossMs(uint16_t ms) { _linkLossMs = ms; }
     uint16_t linkLossMs() const     { return _linkLossMs; }
 
+    /// Release every connection-loss Link slot owned by `guid` (an expander's
+    /// stable board GUID).  Called when that expander unmounts so its input
+    /// links don't permanently squat one of the (few) kMaxLinks slots after
+    /// it disconnects.  No-op for an empty/hub-local guid.
+    void forgetLinksForGuid(const char* guid);
+
     // ── Global RC-routing gate ───────────────────────────────────────
     //
     // When false, onRoleEvent stops feeding subscribed TriggerInputs, so

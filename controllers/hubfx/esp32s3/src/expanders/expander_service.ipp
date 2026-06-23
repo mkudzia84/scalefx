@@ -183,6 +183,18 @@ void ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::_onUsbUnmount(
     // Tear down the CDC client + clear the live slot.
     slot->client.end();
     slot->identifyDeadlineMs = 0;
+    // Fully reinitialise the slot's transient query/handshake/battery-poll
+    // state so a reused slot starts clean — otherwise a stale in-flight battery
+    // STATUS query (or a cached BatteryInfo) leaks across to the next board that
+    // mounts into this slot.
+    slot->handshake            = Handshake::Idle;
+    slot->handshakeDeadlineMs  = 0;
+    slot->pendingResp          = SerialPacket{};
+    slot->batteryResp          = SerialPacket{};
+    slot->batteryQueryInflight = false;
+    slot->batteryQueryDeadlineMs = 0;
+    slot->batteryPollDueMs     = 0;
+    slot->battery              = typename LiveSlot::BatteryInfo{};
     clearEntry(slot->entry);
     ++slot->gen;   // any cached slot-token from before this unmount is now stale
 
