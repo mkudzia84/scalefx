@@ -52,8 +52,12 @@ bool AudioMixer<TI2S, TCodec>::MixKernel::produceFrame(AudioMixer& m) {
         // ≤ 1 op per channel per frame, not worth fixed-point-ifying).
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            // Clamp the subtraction — MP3 framesRead() can exceed the
+            // estimated totalFrames, and an unsigned underflow here would
+            // make framesLeft huge and the fade-out never arm.
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -113,8 +117,9 @@ bool AudioMixer<TI2S, TCodec>::MixKernel::produceFrame(AudioMixer& m) {
         // the hot multiply path.
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
     }
@@ -223,8 +228,11 @@ int AudioMixer<TI2S, TCodec>::MixKernel::produceBlock(AudioMixer& m, int maxFram
         // block cadence.
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            // Clamp the subtraction — see produceFrame; an MP3's framesRead()
+            // can exceed the estimated totalFrames and underflow this.
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -254,11 +262,20 @@ int AudioMixer<TI2S, TCodec>::MixKernel::produceBlock(AudioMixer& m, int maxFram
         // vol fits in Q15 because both are in [0, 1].
         int16_t volLQ15, volRQ15;
         bool muteL = false, muteR = false;
+        // Q15 unit is 32768 but int16 saturates at 32767, so a unity
+        // (vol×pan == 1.0) product must clamp to 32767 before the narrowing
+        // cast — otherwise it wraps to -32768 and inverts the audio phase.
+        auto toVolQ15 = [](float f) -> int16_t {
+            int32_t v = (int32_t)(f * 32768.0f);
+            if (v > 32767) v = 32767;
+            else if (v < -32768) v = -32768;
+            return (int16_t)v;
+        };
         if (ch.outputChannels == AudioChannel::ALL) {
-            volLQ15 = (int16_t)(effectiveVolume * ch.panL * 32768.0f);
-            volRQ15 = (int16_t)(effectiveVolume * ch.panR * 32768.0f);
+            volLQ15 = toVolQ15(effectiveVolume * ch.panL);
+            volRQ15 = toVolQ15(effectiveVolume * ch.panR);
         } else {
-            const int16_t volQ15 = (int16_t)(effectiveVolume * 32768.0f);
+            const int16_t volQ15 = toVolQ15(effectiveVolume);
             volLQ15 = (ch.outputChannels & AudioChannel::CH1) ? volQ15 : (muteL = true, int16_t{0});
             volRQ15 = (ch.outputChannels & AudioChannel::CH2) ? volQ15 : (muteR = true, int16_t{0});
         }
@@ -288,8 +305,9 @@ int AudioMixer<TI2S, TCodec>::MixKernel::produceBlock(AudioMixer& m, int maxFram
         // per-sample hot path.
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
 
@@ -415,8 +433,11 @@ int AudioMixer<TI2S, TCodec>::MixKernel::produceBlockFloat(AudioMixer& m, int ma
         // Arm tail fade-out (same logic as produceBlock).
         if (ch.fadeOutTriggerFrames > 0 && !ch.fading) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            // Clamp the subtraction — an MP3's framesRead() can exceed the
+            // estimated totalFrames and underflow this unsigned difference.
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             if (framesLeft <= ch.fadeOutTriggerFrames) {
                 ch.fading               = true;
                 ch.fadeVolume           = 1.0f;
@@ -462,8 +483,9 @@ int AudioMixer<TI2S, TCodec>::MixKernel::produceBlockFloat(AudioMixer& m, int ma
         // Remaining-sec status.
         if (ws.sampleRate_Hz > 0) {
             const uint32_t srcRead = ws.source ? ws.source->framesRead() : 0;
+            const uint32_t consumed = (srcRead < ws.totalFrames) ? srcRead : ws.totalFrames;
             const uint32_t framesLeft =
-                ws.totalFrames - srcRead + ws.availableRead();
+                ws.totalFrames - consumed + ws.availableRead();
             _channelRemainingSec[i] = (float)framesLeft / (float)ws.sampleRate_Hz;
         }
 

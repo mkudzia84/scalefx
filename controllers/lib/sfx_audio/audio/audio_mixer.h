@@ -637,7 +637,13 @@ private:
 
         // Bounded spin (ms) destroySafe() waits for the decoder to leave an
         // in-flight refill before freeing `source` (seq_cst handshake).
-        static constexpr uint32_t kTeardownWaitMs = 50;
+        // A refill decodes ≤ ~7 ms of audio, so 500 ms is ~70× margin — wide
+        // enough that the decoder reliably observes the cleared `active` and
+        // bails before the cap, closing the residual UAF window, while still
+        // bounding the spin so a genuinely wedged decoder can't hang teardown.
+        // The wait runs on the producer/command task (never the decoder), so
+        // it cannot self-deadlock.
+        static constexpr uint32_t kTeardownWaitMs = 500;
 
         // ── Ring behaviour (own this ring's read + safe teardown) ────────
         // readSample(): producer-side resampled int16 read (advances readIdx

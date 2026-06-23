@@ -90,7 +90,11 @@ bool AudioMixer<TI2S, TCodec>::WavState::readSample(int16_t& outL, int16_t& outR
     // prevents a brief over-read at the drain boundary.
     ws.resampleFrac += ws.resampleRatio;
     uint32_t advance = (uint32_t)ws.resampleFrac;
-    if (advance > avail - 1) advance = avail - 1;
+    // Clamp without unsigned underflow: avail can be 0 or 1 here when the
+    // channel is no longer active (the avail<2 guard above only returns for
+    // an active source), and `avail - 1` would wrap to UINT32_MAX.
+    if (avail < 2)              advance = 0;
+    else if (advance > avail - 1) advance = avail - 1;
     if (advance > 0) ws.commitRead(advance);
     ws.resampleFrac -= (float)advance;
     return true;
