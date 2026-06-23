@@ -39,6 +39,7 @@ inline void Gear::setTarget(Target t) {
         SFX_LOG_WARN("[gear] %u: target rejected — ERROR (GEAR_RESET first)", _def.id);
         return;
     }
+    _manualLeg = ManualLeg::None;   // a coordinated cycle takes over any manual op
     _stepMode = false;
     _target   = t;
     if (_begin && _sendCtx) _begin(_sendCtx);
@@ -50,6 +51,7 @@ inline void Gear::setTarget(Target t) {
 inline void Gear::stepToward(Target t) {
     if (_phase == GearPhase::Unconfigured) return;
     if (_phase == GearPhase::Error) return;
+    _manualLeg = ManualLeg::None;   // a coordinated step takes over any manual op
     _stepMode  = true;
     _stepArmed = true;          // permission to cross ONE boundary
     _target    = t;
@@ -68,6 +70,8 @@ inline void Gear::emergencyHold() {
     _stepArmed = false;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutState = GearStrutState::Unknown;   // frozen mid-travel → position uncertain
+    _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Held, GearSubPhase::idle);
     if (_commit && _sendCtx) _commit(_sendCtx);
     SFX_LOG_INFO("[gear] %u: EMERGENCY HOLD", _def.id);
@@ -83,6 +87,8 @@ inline void Gear::clearError() {
     _errorReason = 0;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutState = GearStrutState::Unknown;
+    _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Unknown, GearSubPhase::idle);   // position uncertain after a fault
     if (_commit && _sendCtx) _commit(_sendCtx);
     SFX_LOG_INFO("[gear] %u: error cleared → unknown", _def.id);
@@ -208,6 +214,15 @@ inline bool Gear::legComplete() const {
 // ── Event ingress (all funnel into pump) ─────────────────────────────
 
 inline void Gear::onServoMotionDone(uint8_t portIdx) {
+    // Manual door op: settle independently — do NOT re-enter the coordinated pump.
+    if (_manualLeg == ManualLeg::DoorOpen || _manualLeg == ManualLeg::DoorClose) {
+        _doorSeq.onServoMotionDone(portIdx);
+        if (!_doorSeq.isComplete()) return;
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        finishManualDoor(_manualLeg == ManualLeg::DoorOpen);
+        if (_commit && _sendCtx) _commit(_sendCtx);
+        return;
+    }
     if (_sub != GearSubPhase::doors_opening && _sub != GearSubPhase::doors_closing) return;
     _doorSeq.onServoMotionDone(portIdx);
     if (!_doorSeq.isComplete()) return;
@@ -219,6 +234,16 @@ inline void Gear::onServoMotionDone(uint8_t portIdx) {
 }
 
 inline void Gear::onEndstopResult(uint8_t outcome) {
+    // Manual strut op: settle independently — do NOT re-enter the coordinated pump.
+    if (_manualLeg == ManualLeg::StrutDown || _manualLeg == ManualLeg::StrutUp) {
+        if (outcome == BiMotorSeekOutcome::Aborted) return;
+        if (outcome == BiMotorSeekOutcome::NoLoad) { enterError(GearError::NO_MOTOR); return; }
+        if (outcome == BiMotorSeekOutcome::Timeout) { enterError(GearError::TIMEOUT); return; }
+        if (_begin && _sendCtx) _begin(_sendCtx);
+        finishManualStrut();
+        if (_commit && _sendCtx) _commit(_sendCtx);
+        return;
+    }
     if (_sub != GearSubPhase::strut_moving) return;       // stray result off the motor leg
     // We reverse a seek by re-issuing it (the role overwrites cleanly), never by
     // braking — so an `Aborted` is not part of normal flow; ignore it.
@@ -233,7 +258,8 @@ inline void Gear::onEndstopResult(uint8_t outcome) {
         enterError(GearError::TIMEOUT);
         return;
     }
-    // Reached — expander already braked locally; advance.
+    // Reached — expander already braked locally; record the strut end + advance.
+    _strutState = (_seekDir == Target::Down) ? GearStrutState::Out : GearStrutState::Up;
     _legDone = true;
     _movingDeadlineMs = 0;
     if (_begin && _sendCtx) _begin(_sendCtx);
@@ -244,6 +270,31 @@ inline void Gear::onEndstopResult(uint8_t outcome) {
 // ── Tick ─────────────────────────────────────────────────────────────
 
 inline void Gear::update(uint32_t nowMs) {
+    // ── Manual ops: same backstops as the coordinated legs, but they settle via
+    //    finishManual* (no pump) so a lost SERVO_MOTION_DONE / ENDSTOP_RESULT
+    //    can't hang an independent door/strut move. ──
+    if (_manualLeg == ManualLeg::DoorOpen || _manualLeg == ManualLeg::DoorClose) {
+        _doorSeq.update();
+        bool done = _doorSeq.isComplete();
+        if (!done && _doorDeadlineMs != 0 && (int32_t)(nowMs - _doorDeadlineMs) >= 0) {
+            SFX_LOG_WARN("[gear] %u: manual door leg timed out — settling", _def.id);
+            done = true;
+        }
+        if (done) {
+            if (_begin && _sendCtx) _begin(_sendCtx);
+            finishManualDoor(_manualLeg == ManualLeg::DoorOpen);
+            if (_commit && _sendCtx) _commit(_sendCtx);
+        }
+        return;
+    }
+    if (_manualLeg == ManualLeg::StrutDown || _manualLeg == ManualLeg::StrutUp) {
+        if (_movingDeadlineMs != 0 && (int32_t)(nowMs - _movingDeadlineMs) >= 0) {
+            SFX_LOG_WARN("[gear] %u: manual strut silent past seek timeout — ERROR", _def.id);
+            enterError(GearError::TIMEOUT);
+        }
+        return;
+    }
+
     if (!isCycling()) return;
 
     // Door legs: drive the DUAL_DELAY timer + completion + the missed-event
@@ -286,6 +337,8 @@ inline void Gear::enterError(uint8_t reason) {
     _errorReason = reason;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutState = GearStrutState::Unknown;
+    _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Error, GearSubPhase::idle);
     if (_commit && _sendCtx) _commit(_sendCtx);
 }
@@ -308,6 +361,7 @@ inline void Gear::startSeek() {
     commandGuard();                 // push the saved stall guard before seeking
     commandSeek(seekDuty());        // toward _target
     _seekDir = _target;
+    _strutState = GearStrutState::Moving;
     armMotorBackstop();
 }
 
@@ -380,6 +434,90 @@ inline void Gear::commandMotorBrake() {
     const uint8_t payload[1] = { _def.motor.portIdx };
     _send(_sendCtx, _def.motor,
           RolePacket::BIMOTOR_BRAKE, payload, sizeof(payload));
+}
+
+// ── Manual / maintenance: drive ONE subsystem independently ──────────────
+//
+//   These bypass pump()'s coordinated walk but reuse the same door/motor
+//   primitives.  The interlock is enforced HERE (the firmware is authoritative;
+//   the GUI gate only mirrors it).  A manual op is refused while a coordinated
+//   cycle or another manual op is in flight; a later coordinated command clears
+//   `_manualLeg` and takes over (setTarget/stepToward), so the emergency
+//   connection-loss deploy is never blocked.
+
+inline uint8_t Gear::strutPhase() const {
+    switch (_strutState) {
+        case GearStrutState::Up:     return GearPhase::Up;
+        case GearStrutState::Out:    return GearPhase::Down;
+        case GearStrutState::Moving: return (_seekDir == Target::Down) ? GearPhase::MovingDown
+                                                                       : GearPhase::MovingUp;
+        default:                     return GearPhase::Unknown;
+    }
+}
+
+inline Gear::ManualResult Gear::checkManualDoors(bool open) const {
+    if (_phase == GearPhase::Unconfigured || _phase == GearPhase::Error) return ManualResult::Busy;
+    if (isCycling() || _manualLeg != ManualLeg::None)                    return ManualResult::Busy;
+    // INTERLOCK: only close the doors when the strut is retracted (UP).
+    if (!open && !strutUp()) return ManualResult::StrutNotUp;
+    return ManualResult::Ok;
+}
+
+inline Gear::ManualResult Gear::checkManualStrut(bool /*down*/) const {
+    if (_phase == GearPhase::Unconfigured || _phase == GearPhase::Error) return ManualResult::Busy;
+    if (isCycling() || _manualLeg != ManualLeg::None)                    return ManualResult::Busy;
+    // INTERLOCK: the leg passes through the door gap either way → doors must be open.
+    if (!doorsOpen()) return ManualResult::DoorsClosed;
+    return ManualResult::Ok;
+}
+
+inline Gear::ManualResult Gear::manualDoors(bool open) {
+    const ManualResult chk = checkManualDoors(open);
+    if (chk != ManualResult::Ok) return chk;
+
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    _manualLeg = open ? ManualLeg::DoorOpen : ManualLeg::DoorClose;
+    if (open) _doorSeq.open();
+    else      _doorSeq.closeFull();          // manual close = re-stow every door
+    armDoorBackstop();
+    setPhaseSub(strutPhase(), open ? GearSubPhase::doors_opening : GearSubPhase::doors_closing);
+    if (_doorSeq.isComplete()) finishManualDoor(open);   // instant (already at that end / no doors)
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: manual doors → %s", _def.id, open ? "open" : "close");
+    return ManualResult::Ok;
+}
+
+inline Gear::ManualResult Gear::manualStrut(bool down) {
+    const ManualResult chk = checkManualStrut(down);
+    if (chk != ManualResult::Ok) return chk;
+
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    _target    = down ? Target::Down : Target::Up;   // drives seekDuty() + reporting
+    _manualLeg = down ? ManualLeg::StrutDown : ManualLeg::StrutUp;
+    startSeek();                                      // guard + seek + _seekDir + _strutState=Moving + backstop
+    setPhaseSub(movingPhase(), GearSubPhase::strut_moving);
+    if (_commit && _sendCtx) _commit(_sendCtx);
+    SFX_LOG_INFO("[gear] %u: manual strut → %s", _def.id, down ? "down" : "up");
+    return ManualResult::Ok;
+}
+
+inline void Gear::finishManualDoor(bool opened) {
+    _manualLeg = ManualLeg::None;
+    _doorDeadlineMs = 0;
+    // Doors settle open (awaiting nothing) or closed (idle); the strut hasn't
+    // moved, so the overall phase still reflects the strut position.
+    setPhaseSub(strutPhase(), opened ? GearSubPhase::doors_open : GearSubPhase::idle);
+    SFX_LOG_INFO("[gear] %u: manual doors %s", _def.id, opened ? "open" : "closed");
+}
+
+inline void Gear::finishManualStrut() {
+    _manualLeg = ManualLeg::None;
+    _movingDeadlineMs = 0;
+    _strutState = (_seekDir == Target::Down) ? GearStrutState::Out : GearStrutState::Up;
+    // The doors were open to permit the move and stay open (manual = independent).
+    setPhaseSub(strutPhase(), GearSubPhase::doors_open);
+    SFX_LOG_INFO("[gear] %u: manual strut %s", _def.id,
+                 _strutState == GearStrutState::Out ? "out" : "up");
 }
 
 }  // namespace hubfx::effects::gearctrl

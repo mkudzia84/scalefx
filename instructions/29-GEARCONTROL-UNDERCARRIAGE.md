@@ -389,3 +389,27 @@ Both blocks are append-only optional — a pre-2026-06 v2 file parses unchanged.
   motion profile).
 - `controllers/archive/sfx_peripherals_legacy/motor/stall_detector.h` — superseded
   by the current BiDcMotor LiveRatio+ceiling guard; use the live one.
+
+## Manual / maintenance control (2026-06-23)
+
+For setup/checkout the operator can drive a strut's **doors** and **strut** motor
+INDEPENDENTLY of the coordinated deploy/retract sequence — per-leg and fleet:
+
+- **Wire.** `GEAR_DOOR` (0x01) `[id][open]`, `GEAR_STRUT` (0x02) `[id][down]`,
+  `GEAR_DOOR_ALL` (0x03) `[open]`, `GEAR_STRUT_ALL` (0x04) `[down]` (free 0x00–0x0F
+  block). `GEAR_STATUS_RESP`/`GEAR_PHASE_EVENT` grew a Rule-11 append
+  `[doorsOpen][strutState]` so the host can gate the controls.
+- **Safety interlocks (firmware-enforced, authoritative — the GUI gate mirrors).**
+  Close-doors requires the strut **Up**; move-strut (either way) requires the doors
+  **Open**. Violations NACK with `GEAR_DOORS_CLOSED` (0x67) / `GEAR_STRUT_NOT_UP`
+  (0x68); a manual op while a cycle is in flight NACKs `GEAR_BUSY` (0x69). Fleet
+  commands are all-or-nothing (dry-run every leg first).
+- **FSM.** The `Gear` gained explicit `_strutState` (Unknown/Up/Out/Moving — set on
+  every confirmed endstop reach) + a `_manualLeg` so completion asyncs settle the
+  manual op instead of re-entering `pump()`; `doorsOpen()` derives from the
+  DoorSequencer's persistent `_doorEnd[]`. A coordinated command (setTarget/
+  stepToward) clears `_manualLeg` and takes over — so the connection-loss emergency
+  deploy is never blocked. Manual doors honour the configured door-mode.
+- **Studio.** A "⚙ Manual / maintenance" section in each strut card (Open/Close
+  doors · Strut down/up) + a fleet "Manual (all)" row, gated to mirror the
+  interlock. Console: `gear-doors` / `gear-strut` (+ `-all`).

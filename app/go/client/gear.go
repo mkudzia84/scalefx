@@ -22,6 +22,12 @@ const (
 
 	GearStepUp   = gear.StepUp
 	GearStepDown = gear.StepDown
+
+	// Manual door/strut actions.
+	GearDoorClose    = gear.DoorClose
+	GearDoorOpen     = gear.DoorOpen
+	GearStrutRetract = gear.StrutRetract
+	GearStrutDeploy  = gear.StrutDeploy
 )
 
 // List returns every configured gear unit on the hub.
@@ -74,3 +80,36 @@ func (g *Gear) EStopAll() error { return g.c.sendExpectACK(gear.CmdEstopAll()) }
 // endstop calibration now lives entirely on the BiDcMotor role's
 // LiveRatio + ceiling guard (tune it via the motor role's BIMOTOR_SET_GUARD).
 func (g *Gear) Reset(id byte) error { return g.c.sendExpectACK(gear.CmdReset(id)) }
+
+// ── Manual / maintenance: drive doors + strut independently ───────────────
+// The firmware enforces the safety interlock and NACKs a violation:
+//   GEAR_STRUT_NOT_UP   — DoorClose refused (strut not retracted)
+//   GEAR_DOORS_CLOSED   — Strut move refused (doors not open)
+//   GEAR_BUSY           — a coordinated cycle / another manual op is in flight
+
+// Doors opens (open=true) or closes one strut's doors only.
+func (g *Gear) Doors(id byte, open bool) error {
+	return g.c.sendExpectACK(gear.CmdDoor(id, boolAction(open, GearDoorOpen, GearDoorClose)))
+}
+
+// MoveStrut deploys (down=true) or retracts one strut's motor only.
+func (g *Gear) MoveStrut(id byte, down bool) error {
+	return g.c.sendExpectACK(gear.CmdStrut(id, boolAction(down, GearStrutDeploy, GearStrutRetract)))
+}
+
+// DoorsAll drives every strut's doors (all-or-nothing — NACK if any leg refuses).
+func (g *Gear) DoorsAll(open bool) error {
+	return g.c.sendExpectACK(gear.CmdDoorAll(boolAction(open, GearDoorOpen, GearDoorClose)))
+}
+
+// MoveStrutAll drives every strut's motor (all-or-nothing).
+func (g *Gear) MoveStrutAll(down bool) error {
+	return g.c.sendExpectACK(gear.CmdStrutAll(boolAction(down, GearStrutDeploy, GearStrutRetract)))
+}
+
+func boolAction(b bool, ifTrue, ifFalse byte) byte {
+	if b {
+		return ifTrue
+	}
+	return ifFalse
+}

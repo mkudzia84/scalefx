@@ -20,6 +20,10 @@ func init() {
 	register(&command{Name: "gear-estop", Usage: "gear-estop <id|all>", Help: "emergency hold — brake + freeze in place", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearEStop})
 	register(&command{Name: "gear-step", Usage: "gear-step <id> <up|down>", Help: "advance a strut ONE leg toward up/down, then park", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearStep})
 	register(&command{Name: "gear-info", Usage: "gear-info [id]", Help: "verbose per-strut state (cycle position + faults)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearInfo})
+	register(&command{Name: "gear-doors", Usage: "gear-doors <id> <open|close>", Help: "manual: open/close ONE strut's doors (close needs strut up)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearDoors})
+	register(&command{Name: "gear-strut", Usage: "gear-strut <id> <down|up>", Help: "manual: deploy/retract ONE strut's motor (needs doors open)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearStrut})
+	register(&command{Name: "gear-doors-all", Usage: "gear-doors-all <open|close>", Help: "manual: every strut's doors (all-or-nothing)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearDoorsAll})
+	register(&command{Name: "gear-strut-all", Usage: "gear-strut-all <down|up>", Help: "manual: every strut's motor (all-or-nothing)", Category: catGear, RequiresConn: true, RequiresCap: core.CapGearCtrl, Run: cmdGearStrutAll})
 }
 
 // gearPhaseColored wraps an already-laid-out cell so ANSI codes don't break
@@ -252,6 +256,97 @@ func cmdGearStep(a *App, args []string) error {
 		return err
 	}
 	Ok("gear[%d] step → %s", id, Phase(args[1]))
+	return nil
+}
+
+// parseTwoWay maps a word to a bool: `yes`/`no` words → true/false.
+func parseTwoWay(s, yes, no string) (bool, error) {
+	switch s {
+	case yes:
+		return true, nil
+	case no:
+		return false, nil
+	}
+	return false, fmt.Errorf("expected %s|%s, got %q", yes, no, s)
+}
+
+func cmdGearDoors(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 2 {
+		return fmt.Errorf("usage: gear-doors <id> <open|close>")
+	}
+	id, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	open, err := parseTwoWay(args[1], "open", "close")
+	if err != nil {
+		return err
+	}
+	if err := a.c.Gear.Doors(id, open); err != nil {
+		return err
+	}
+	Ok("gear[%d] doors %s", id, Phase(map[bool]string{true: "opening", false: "closing"}[open]))
+	return nil
+}
+
+func cmdGearStrut(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 2 {
+		return fmt.Errorf("usage: gear-strut <id> <down|up>")
+	}
+	id, err := parseU8(args[0])
+	if err != nil {
+		return err
+	}
+	down, err := parseTwoWay(args[1], "down", "up")
+	if err != nil {
+		return err
+	}
+	if err := a.c.Gear.MoveStrut(id, down); err != nil {
+		return err
+	}
+	Ok("gear[%d] strut %s", id, Phase(map[bool]string{true: "lowering", false: "raising"}[down]))
+	return nil
+}
+
+func cmdGearDoorsAll(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: gear-doors-all <open|close>")
+	}
+	open, err := parseTwoWay(args[0], "open", "close")
+	if err != nil {
+		return err
+	}
+	if err := a.c.Gear.DoorsAll(open); err != nil {
+		return err
+	}
+	Ok("all doors %s", Phase(map[bool]string{true: "opening", false: "closing"}[open]))
+	return nil
+}
+
+func cmdGearStrutAll(a *App, args []string) error {
+	if err := a.requireClient(); err != nil {
+		return err
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: gear-strut-all <down|up>")
+	}
+	down, err := parseTwoWay(args[0], "down", "up")
+	if err != nil {
+		return err
+	}
+	if err := a.c.Gear.MoveStrutAll(down); err != nil {
+		return err
+	}
+	Ok("all struts %s", Phase(map[bool]string{true: "lowering", false: "raising"}[down]))
 	return nil
 }
 

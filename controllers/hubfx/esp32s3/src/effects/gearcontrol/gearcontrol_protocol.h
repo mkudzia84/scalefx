@@ -44,12 +44,15 @@ namespace GearPacket {
     /// `[]` → GEAR_STATUS_RESP
     constexpr uint8_t GEAR_STATUS_REQ  = 0xC2;
     /// `[count:u8]` per-entry: `[id:u8][phase:u8][subPhase:u8][errReason:u8]`
-    /// (Rule 11: old clients read the first 2 bytes; subPhase is the rich
-    /// door/strut sub-state; errReason is the GearError code when phase==Error,
-    /// else 0 — appended 2026-06-14, host derives stride from count).
+    /// `[doorsOpen:u8][strutState:u8]` (Rule 11: old clients read the first 2
+    /// bytes; subPhase is the rich door/strut sub-state; errReason is the
+    /// GearError code when phase==Error else 0 — appended 2026-06-14; doorsOpen
+    /// (1=all doors open) + strutState (GearStrutState) appended 2026-06-23 for
+    /// the manual-control interlock gate; host derives stride from count).
     constexpr uint8_t GEAR_STATUS_RESP = 0xC3;
     /// async TAG_ASYNC: `[id:u8][phase:u8][subPhase:u8][errReason:u8]`
-    /// (Rule 11 append).  Broadcast whenever the overall phase OR the sub-phase
+    /// `[doorsOpen:u8][strutState:u8]` (Rule 11 append).  Broadcast whenever the
+    /// overall phase, the sub-phase, the door-open flag OR the strut state
     /// changes.  errReason carries the GearError code in the Error phase.
     constexpr uint8_t GEAR_PHASE_EVENT = 0xC4;
     /// `[]` → GEAR_LIST_RESP
@@ -72,6 +75,45 @@ namespace GearPacket {
     /// sequence" command.  Auto-clears an ERROR first (like deploy/retract).
     /// Was GEAR_CALIB_CANCEL (removed).
     constexpr uint8_t GEAR_STEP        = 0xD9;
+
+    // ── Manual / maintenance: drive doors and strut INDEPENDENTLY (setup) ──
+    //   These live in the free 0x01..0x04 block (the gear slice 0xBE..0xC6 +
+    //   0xD7..0xD9 is contiguous-full; 0x00..0x0F is the documented free range).
+    //   Each enforces a HARD safety interlock IN FIRMWARE (the GUI gate only
+    //   mirrors it): close-doors requires the strut UP; move-strut (either way)
+    //   requires the doors OPEN.  Rejected → NACK with the GearError below.
+    //   They refuse while a coordinated cycle (deploy/retract) is in flight.
+    /// `[id:u8][open:u8]` (open=1 open / 0 close) → ACK / NACK.  Drive ONE
+    /// strut's doors only, honouring its configured door-mode + close-policy.
+    constexpr uint8_t GEAR_DOOR        = 0x01;
+    /// `[id:u8][down:u8]` (down=1 deploy / 0 retract) → ACK / NACK.  Drive ONE
+    /// strut's motor only to its endstop.
+    constexpr uint8_t GEAR_STRUT       = 0x02;
+    /// `[open:u8]` → ACK / NACK.  Every configured strut's doors (per-leg
+    /// interlock; NACK if any leg refuses).
+    constexpr uint8_t GEAR_DOOR_ALL    = 0x03;
+    /// `[down:u8]` → ACK / NACK.  Every configured strut's motor.
+    constexpr uint8_t GEAR_STRUT_ALL   = 0x04;
+}
+
+/// Open/close action for GEAR_DOOR / GEAR_DOOR_ALL.
+namespace GearDoorAction { constexpr uint8_t Close = 0; constexpr uint8_t Open = 1; }
+/// Deploy/retract action for GEAR_STRUT / GEAR_STRUT_ALL (mirrors GearStepTarget).
+namespace GearStrutAction { constexpr uint8_t Retract = 0; constexpr uint8_t Deploy = 1; }
+
+/// Strut position, reported as a Rule-11 append on GEAR_STATUS_RESP +
+/// GEAR_PHASE_EVENT so the host can GATE the manual controls (close-doors needs
+/// Up; move-strut needs the doors open).  Independent of GearPhase because a
+/// manual op or a Held/Unknown leaves GearPhase ambiguous about the strut end.
+namespace GearStrutState {
+    constexpr uint8_t Unknown = 0;   ///< position never established
+    constexpr uint8_t Up      = 1;   ///< strut retracted / stowed (interlock: doors may close)
+    constexpr uint8_t Out     = 2;   ///< strut deployed / extended
+    constexpr uint8_t Moving  = 3;   ///< motor seeking an endstop
+    inline const char* getName(uint8_t s) {
+        switch (s) { case Up: return "up"; case Out: return "out";
+                     case Moving: return "moving"; default: return "unknown"; }
+    }
 }
 
 /// Target end for GEAR_STEP (mirrors Gear::Target).
@@ -202,6 +244,10 @@ namespace GearError {
     constexpr uint8_t TIMEOUT          = 0x64;
     // 0x65 was NO_STALL_DETECTED (calibration) — REMOVED with calibration.
     constexpr uint8_t NO_MOTOR         = 0x66;   ///< drove the strut but |I|≈0 → no motor / open circuit
+    // ── Manual-control interlock rejections (firmware-enforced safety) ──
+    constexpr uint8_t DOORS_CLOSED     = 0x67;   ///< manual strut move refused — doors not open
+    constexpr uint8_t STRUT_NOT_UP     = 0x68;   ///< manual door-close refused — strut not retracted
+    constexpr uint8_t GEAR_BUSY        = 0x69;   ///< manual op refused — a coordinated cycle / another manual op is in flight
 
     inline const char* getMessage(uint8_t code) {
         switch (code) {
@@ -211,6 +257,9 @@ namespace GearError {
             case IN_ERROR_STATE:     return "Gear in error state — issue GEAR_RESET to clear";
             case TIMEOUT:            return "Gear motor timed out";
             case NO_MOTOR:           return "No motor detected — drew no current under load (open circuit?)";
+            case DOORS_CLOSED:       return "Open the doors before moving the strut";
+            case STRUT_NOT_UP:       return "Retract the strut before closing the doors";
+            case GEAR_BUSY:          return "Gear busy — wait for the current move to finish";
             default:                 return nullptr;
         }
     }

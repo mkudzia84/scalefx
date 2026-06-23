@@ -248,6 +248,23 @@ and tune the stall guard.
 | Stagger | (Staggered mode) Delay before door 2 starts opening. | `500ms` |
 | After deploy (close policy) | `Both close` = both doors close once the gear is down. `One closes` = door 1 closes, door 2 stays open around the leg. `None close` = both stay open. | `Both close` |
 
+### Manual / maintenance (per strut + fleet, in the Gear tab)
+For setup/checkout, each strut card has a **Manual / maintenance** section that
+drives the **doors** and the **strut** independently of the coordinated
+deploy/retract sequence (there are also fleet "all doors / all struts" buttons):
+| Control | What it does |
+|---|---|
+| Open doors / Close doors | Move just this strut's doors (honours the door-mode). |
+| Strut down / Strut up | Move just this strut's motor to its endstop. |
+
+These respect **safety interlocks enforced in firmware** (the buttons also grey
+out to match): you cannot **close the doors** unless the strut is **up**
+(retracted), and you cannot **move the strut** (either way) unless the doors are
+**open** — the leg passes through the door gap. A manual command is refused while
+a coordinated cycle is running. The interlocks are firmware-enforced, so they
+also apply to the Console (`gear-doors` / `gear-strut`) — the GUI gate just
+mirrors them.
+
 ---
 
 ## Battery (on boards with a sensor)

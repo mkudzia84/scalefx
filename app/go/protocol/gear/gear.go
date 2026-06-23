@@ -33,7 +33,47 @@ const (
 	// then park.  The manual "do one item in sequence" command.  Was
 	// GEAR_CALIB_CANCEL (removed).
 	Step protocol.PacketType = 0xD9
+
+	// Manual / maintenance: drive doors + strut INDEPENDENTLY (setup), in the
+	// free 0x01..0x04 block.  Firmware enforces the safety interlock (close-doors
+	// needs the strut up; move-strut needs the doors open) — NACK on violation.
+	Door     protocol.PacketType = 0x01 // [id][open] one strut's doors
+	Strut    protocol.PacketType = 0x02 // [id][down] one strut's motor
+	DoorAll  protocol.PacketType = 0x03 // [open] every strut's doors
+	StrutAll protocol.PacketType = 0x04 // [down] every strut's motor
 )
+
+// ─── Manual door/strut action codes ──────────────────────────────────
+
+const (
+	DoorClose byte = 0
+	DoorOpen  byte = 1
+	// Strut deploy/retract mirror GearStrutAction (= GearStepTarget).
+	StrutRetract byte = 0
+	StrutDeploy  byte = 1
+)
+
+// ─── Strut position (GEAR_STATUS_RESP / GEAR_PHASE_EVENT Rule-11 append) ──
+
+const (
+	StrutUnknown byte = 0
+	StrutUp      byte = 1 // retracted / stowed — doors may close
+	StrutOut     byte = 2 // deployed / extended
+	StrutMoving  byte = 3
+)
+
+func StrutStateName(s byte) string {
+	switch s {
+	case StrutUp:
+		return "up"
+	case StrutOut:
+		return "out"
+	case StrutMoving:
+		return "moving"
+	default:
+		return "unknown"
+	}
+}
 
 // ─── GEAR_STEP target codes (mirror Gear::Target) ────────────────────
 
@@ -177,6 +217,10 @@ const (
 	ErrTimeout          protocol.ErrorCode = 0x64
 	// 0x65 was ErrNoStallDetected (calibration) — REMOVED with calibration.
 	ErrNoMotor protocol.ErrorCode = 0x66 // drove the strut but |I|≈0 → no motor / open circuit
+	// Manual-control interlock rejections (firmware-enforced safety).
+	ErrDoorsClosed protocol.ErrorCode = 0x67 // manual strut move refused — doors not open
+	ErrStrutNotUp  protocol.ErrorCode = 0x68 // manual door-close refused — strut not retracted
+	ErrGearBusy    protocol.ErrorCode = 0x69 // manual op refused — a cycle / another manual op in flight
 )
 
 // ErrorReasonTag is the short tag the Studio/CLI shows behind an Error
@@ -207,19 +251,24 @@ type Gear struct {
 // Rule 11 trailing bytes (0 for pre-v2 peers that omit them).  ErrReason is
 // the GearError code behind an Error phase.
 type GearStatus struct {
-	ID        byte `json:"id"`
-	Phase     byte `json:"phase"`
-	SubPhase  byte `json:"subPhase"`
-	ErrReason byte `json:"errReason"`
+	ID         byte `json:"id"`
+	Phase      byte `json:"phase"`
+	SubPhase   byte `json:"subPhase"`
+	ErrReason  byte `json:"errReason"`
+	DoorsOpen  bool `json:"doorsOpen"`  // Rule-11 append: every door at its open end
+	StrutState byte `json:"strutState"` // Rule-11 append: GearStrutState (Up/Out/Moving/Unknown)
 }
 
 // PhaseChange is the decoded GEAR_PHASE_EVENT async payload.  SubPhase +
-// ErrReason are Rule 11 trailing bytes (0 when a pre-v2 peer omits them).
+// ErrReason + DoorsOpen + StrutState are Rule 11 trailing bytes (0/false when a
+// pre-vN peer omits them).
 type PhaseChange struct {
-	ID        byte `json:"id"`
-	Phase     byte `json:"phase"`
-	SubPhase  byte `json:"subPhase"`
-	ErrReason byte `json:"errReason"`
+	ID         byte `json:"id"`
+	Phase      byte `json:"phase"`
+	SubPhase   byte `json:"subPhase"`
+	ErrReason  byte `json:"errReason"`
+	DoorsOpen  bool `json:"doorsOpen"`
+	StrutState byte `json:"strutState"`
 }
 
 // ─── Decoders ────────────────────────────────────────────────────────
@@ -267,7 +316,9 @@ func DecodeStatus(p []byte) ([]GearStatus, error) {
 	}
 	body := len(p) - 1
 	stride := 2
-	if body >= 4*count {
+	if body >= 6*count {
+		stride = 6 // v4 — trailing doorsOpen + strutState
+	} else if body >= 4*count {
 		stride = 4 // v3 — trailing subPhase + errReason
 	} else if body >= 3*count {
 		stride = 3 // v2 — trailing subPhase only
@@ -284,6 +335,10 @@ func DecodeStatus(p []byte) ([]GearStatus, error) {
 		}
 		if stride >= 4 {
 			gs.ErrReason = p[off+3]
+		}
+		if stride >= 6 {
+			gs.DoorsOpen = p[off+4] != 0
+			gs.StrutState = p[off+5]
 		}
 		out[i] = gs
 	}
@@ -307,6 +362,10 @@ func DecodePhaseEvent(p []byte) (PhaseChange, error) {
 	if len(p) >= 4 {
 		pc.ErrReason = p[3]
 	}
+	if len(p) >= 6 {
+		pc.DoorsOpen = p[4] != 0
+		pc.StrutState = p[5]
+	}
 	return pc, nil
 }
 
@@ -322,6 +381,12 @@ func CmdReset(id byte) []byte       { return protocol.BuildPacket(Reset, []byte{
 func CmdEstop(id byte) []byte       { return protocol.BuildPacket(Estop, []byte{id}, 0) }
 func CmdEstopAll() []byte           { return protocol.BuildPacket(Estop, nil, 0) }
 func CmdStep(id, target byte) []byte { return protocol.BuildPacket(Step, []byte{id, target}, 0) }
+
+// Manual / maintenance builders.  `open`/`down` use the action codes above.
+func CmdDoor(id, open byte) []byte  { return protocol.BuildPacket(Door, []byte{id, open}, 0) }
+func CmdStrut(id, down byte) []byte { return protocol.BuildPacket(Strut, []byte{id, down}, 0) }
+func CmdDoorAll(open byte) []byte   { return protocol.BuildPacket(DoorAll, []byte{open}, 0) }
+func CmdStrutAll(down byte) []byte  { return protocol.BuildPacket(StrutAll, []byte{down}, 0) }
 
 // ─── Name registration ───────────────────────────────────────────────
 
@@ -339,6 +404,10 @@ func init() {
 		Reset:      "GEAR_RESET",
 		Estop:      "GEAR_ESTOP",
 		Step:       "GEAR_STEP",
+		Door:       "GEAR_DOOR",
+		Strut:      "GEAR_STRUT",
+		DoorAll:    "GEAR_DOOR_ALL",
+		StrutAll:   "GEAR_STRUT_ALL",
 	})
 	protocol.RegisterErrorNames(map[protocol.ErrorCode]string{
 		ErrUnknownID:        "GEAR_UNKNOWN_ID",
@@ -347,5 +416,8 @@ func init() {
 		ErrInErrorState:     "GEAR_IN_ERROR_STATE",
 		ErrTimeout:          "GEAR_TIMEOUT",
 		ErrNoMotor:          "GEAR_NO_MOTOR",
+		ErrDoorsClosed:      "GEAR_DOORS_CLOSED",
+		ErrStrutNotUp:       "GEAR_STRUT_NOT_UP",
+		ErrGearBusy:         "GEAR_BUSY",
 	})
 }

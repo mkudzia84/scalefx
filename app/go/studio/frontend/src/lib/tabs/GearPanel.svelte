@@ -36,7 +36,8 @@
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
         gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll,
-        GearAllDeploy, GearAllRetract,
+        gearDoors, gearMoveStrut, gearDoorsAll, gearMoveStrutAll,
+        GearAllDeploy, GearAllRetract, StrutUp, StrutMoving,
         type GearConfigT, type GearChannelT, type CoordMode,
         type PortRefT, type GearPhaseT,
     } from '../gear'
@@ -126,6 +127,14 @@
     $: allUnknown   = strutCount > 0 && (cfg?.gears ?? []).every(g => {
         const p = $gearPhases[g.id]?.phase ?? 6; return p === 6 || p === 0
     })
+    // Fleet manual aggregates — every strut must satisfy the interlock for the
+    // all-or-nothing fleet command (the firmware also refuses partial fleets).
+    $: fleetDoorsOpen = strutCount > 0 && (cfg?.gears ?? []).every(g => !!$gearPhases[g.id]?.doorsOpen)
+    $: fleetStrutsUp  = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.strutState ?? 0) === StrutUp)
+    $: fleetManMoving = (cfg?.gears ?? []).some(g => { const p = $gearPhases[g.id]; return !!p && ([1, 3, 5].includes(p.subPhase) || p.strutState === StrutMoving) })
+    $: fleetHasDoors  = (cfg?.gears ?? []).some(g => g.doors.length > 0)
+    $: fleetHasMotor  = (cfg?.gears ?? []).some(g => !!(g.motor && g.motor.kind))
+    $: fleetManGate   = busy || dirty || hasErrors || fleetManMoving
     // Master status vocabulary is the gear-up/gear-down language (directional
     // while in transit): error · held · lowering/raising · gear down · gear up
     // · unknown (boot, position unestablished) · mixed (genuinely split).
@@ -387,6 +396,17 @@
                  fn: deploy }]
     }
 
+    // Manual-control gating — derived from the live phase (Rule 254: take phT,
+    // never read the store internally).  doorsOpen/strutUp mirror the FIRMWARE
+    // interlock (close doors only with the strut up; move strut only with the
+    // doors open); `moving` disables everything while a leg is in transit.
+    function manualState(phT: GearPhaseT | undefined): { doorsOpen: boolean; strutUp: boolean; moving: boolean } {
+        const doorsOpen = !!phT?.doorsOpen
+        const strutUp   = (phT?.strutState ?? 0) === StrutUp
+        const moving    = !!phT && ([1, 3, 5].includes(phT.subPhase) || phT.strutState === StrutMoving)
+        return { doorsOpen, strutUp, moving }
+    }
+
     // ─── Field setters ───────────────────────────────────────────────
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
     function inputValue(e: Event): string { return (e.target as HTMLInputElement).value }
@@ -608,6 +628,31 @@
                     {/each}
                 </div>
             </div>
+            <!-- Fleet manual row: all doors / all struts (all-or-nothing; the
+                 firmware refuses the whole set if any leg breaks the interlock). -->
+            {#if fleetHasDoors || fleetHasMotor}
+            <div class="sctl-row man-fleet">
+                <span class="sctl-name">Manual (all)</span>
+                <div class="sctl-acts">
+                    {#if fleetHasDoors}
+                        <button class="small" on:click={() => safe(() => gearDoorsAll(true))}
+                                disabled={fleetManGate}
+                                title="Open every strut's doors.">⤢ Doors open</button>
+                        <button class="small" on:click={() => safe(() => gearDoorsAll(false))}
+                                disabled={fleetManGate || !fleetStrutsUp}
+                                title={!fleetStrutsUp ? 'Blocked — every strut must be up before closing the doors' : 'Close every strut\'s doors.'}>⤡ Doors close</button>
+                    {/if}
+                    {#if fleetHasMotor}
+                        <button class="small" on:click={() => safe(() => gearMoveStrutAll(true))}
+                                disabled={fleetManGate || !fleetDoorsOpen}
+                                title={!fleetDoorsOpen ? 'Blocked — every strut\'s doors must be open' : 'Lower every strut.'}>▼ Struts down</button>
+                        <button class="small" on:click={() => safe(() => gearMoveStrutAll(false))}
+                                disabled={fleetManGate || !fleetDoorsOpen}
+                                title={!fleetDoorsOpen ? 'Blocked — every strut\'s doors must be open' : 'Raise every strut.'}>▲ Struts up</button>
+                    {/if}
+                </div>
+            </div>
+            {/if}
             <!-- Per-strut STATUS rows (read-only): name + phase on the left,
                  the door + lifecycle status right-aligned.  Manual control of a
                  single strut lives in its config-card header below. -->
@@ -708,6 +753,10 @@
         {@const errored      = ph === 5}
         {@const gated        = busy || dirty || chanErrors}
         {@const acts         = strutActions(gch.id, ph)}
+        {@const man          = manualState(phT)}
+        {@const manualGate   = gated || man.moving}
+        {@const hasMotor     = !!(gch.motor && gch.motor.kind)}
+        {@const hasDoors     = gch.doors.length > 0}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
                 <h4>{gch.name || `Landing Strut ${order + 1}`}</h4>
@@ -945,6 +994,42 @@
                 </div>
             </div>
 
+            <!-- Manual / maintenance: drive doors + strut independently (setup).
+                 Firmware enforces the interlock; these buttons mirror it. -->
+            {#if hasMotor || hasDoors}
+                <div class="sub-frame manual-frame">
+                    <div class="frame-head">⚙ Manual / maintenance</div>
+                    <div class="form-row">
+                        <span class="hint">move the doors and strut independently — respects the interlocks: close the doors only with the strut up; move the strut only with the doors open.</span>
+                    </div>
+                    <div class="form-row man-state">
+                        <span class="hint">doors <b class:on={man.doorsOpen}>{man.doorsOpen ? 'open' : 'closed'}</b> · strut <b class:on={man.strutUp}>{phT?.strutName ?? 'unknown'}</b>{man.moving ? ' · moving…' : ''}</span>
+                    </div>
+                    {#if hasDoors}
+                        <div class="form-row man-acts">
+                            <span class="field-label">Doors</span>
+                            <button class="small" on:click={() => safe(() => gearDoors(gch.id, true))}
+                                    disabled={manualGate}
+                                    title={dirty ? 'Apply your edits first — runs the loaded config' : 'Open this strut\'s doors (honours the door-mode).'}>⤢ Open doors</button>
+                            <button class="small" on:click={() => safe(() => gearDoors(gch.id, false))}
+                                    disabled={manualGate || !man.strutUp}
+                                    title={!man.strutUp ? 'Blocked — retract the strut before closing the doors' : (dirty ? 'Apply your edits first' : 'Close this strut\'s doors.')}>⤡ Close doors</button>
+                        </div>
+                    {/if}
+                    {#if hasMotor}
+                        <div class="form-row man-acts">
+                            <span class="field-label">Strut</span>
+                            <button class="small" on:click={() => safe(() => gearMoveStrut(gch.id, true))}
+                                    disabled={manualGate || !man.doorsOpen}
+                                    title={!man.doorsOpen ? 'Blocked — open the doors before lowering the strut' : (dirty ? 'Apply your edits first' : 'Lower (deploy) this strut.')}>▼ Strut down</button>
+                            <button class="small" on:click={() => safe(() => gearMoveStrut(gch.id, false))}
+                                    disabled={manualGate || !man.doorsOpen}
+                                    title={!man.doorsOpen ? 'Blocked — open the doors before raising the strut' : (dirty ? 'Apply your edits first' : 'Raise (retract) this strut.')}>▲ Strut up</button>
+                        </div>
+                    {/if}
+                </div>
+            {/if}
+
             <!-- Per-strut issues (Rule 35 red list) -->
             {#if issues.length > 0}
                 <ul class="grp-issues">
@@ -959,6 +1044,15 @@
 <style>
     .gear-card { margin-bottom: 14px; --ctl-h: 28px; }
     .header-actions { display: flex; align-items: center; gap: 8px; }
+
+    /* Manual / maintenance subsection — a quiet frame inside the strut card. */
+    .manual-frame { margin-top: 8px; }
+    .man-acts { display: flex; align-items: center; gap: 8px; }
+    .man-acts .field-label { min-width: 48px; }
+    .man-state b { color: var(--text-dim); font-weight: 600; }
+    .man-state b.on { color: var(--success, #4ec9b0); }
+    .man-fleet { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .man-fleet .sctl-acts { display: flex; gap: 6px; flex-wrap: wrap; }
 
     /* Rule 63 — uniform row height: every control sharing a horizontal row
        (buttons, inputs/selects, pills, chips, segmented toggles) is the SAME

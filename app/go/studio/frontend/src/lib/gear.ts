@@ -19,6 +19,7 @@ import {
     LoadGearConfig, SaveGearConfig, GearStatus,
     GearDeploy, GearRetract, GearStop, GearAll, GearReset,
     GearEStop, GearEStopAll, GearStep,
+    GearDoors, GearMoveStrut, GearDoorsAll, GearMoveStrutAll,
 } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
 import { deviceModel, RoleKind, type Port } from './devicemodel'
@@ -105,6 +106,9 @@ export interface GearPhaseT {
     subPhaseName: string
     errReason?: number     // GearError code behind an Error phase (0 otherwise)
     errReasonTag?: string  // short tag — "timeout" / "no motor" / "fault"
+    doorsOpen?: boolean    // every door at its open end — the manual-control gate
+    strutState?: number    // 0..3 — unknown/up/out/moving (GearStrutState)
+    strutName?: string     // "up" / "out" / "moving" / "unknown"
 }
 
 export interface GearStatusEntryT {
@@ -115,7 +119,16 @@ export interface GearStatusEntryT {
     subPhaseName: string
     errReason?: number
     errReasonTag?: string
+    doorsOpen?: boolean
+    strutState?: number
+    strutName?: string
 }
+
+// GearStrutState wire values (mirror gearcontrol_protocol.h GearStrutState).
+export const StrutUnknown = 0
+export const StrutUp      = 1
+export const StrutOut     = 2
+export const StrutMoving  = 3
 
 // ─── Defaults ─────────────────────────────────────────────────────────
 
@@ -369,6 +382,7 @@ export async function refreshGearStatus(): Promise<void> {
                 id: s.id, phase: s.phase, phaseName: s.phaseName,
                 subPhase: s.subPhase, subPhaseName: s.subPhaseName,
                 errReason: s.errReason, errReasonTag: s.errReasonTag,
+                doorsOpen: s.doorsOpen, strutState: s.strutState, strutName: s.strutName,
             }
         }
         return next
@@ -388,6 +402,14 @@ export async function gearEStopAll(): Promise<void>          { return GearEStopA
 export async function gearAll(action: number): Promise<void> { return GearAll(action) }
 /** Single-step a strut ONE leg toward target (0=up, 1=down) then park. */
 export async function gearStep(id: number, target: number): Promise<void> { return GearStep(id, target) }
+
+// ── Manual / maintenance: doors + strut independently ─────────────────
+// The firmware enforces the interlock (close-doors needs strut up; move-strut
+// needs doors open) and NACKs a violation — the panel also gates the buttons.
+export async function gearDoors(id: number, open: boolean): Promise<void>  { return GearDoors(id, open) }
+export async function gearMoveStrut(id: number, down: boolean): Promise<void> { return GearMoveStrut(id, down) }
+export async function gearDoorsAll(open: boolean): Promise<void>           { return GearDoorsAll(open) }
+export async function gearMoveStrutAll(down: boolean): Promise<void>       { return GearMoveStrutAll(down) }
 
 export const GearAllStop = 0
 export const GearAllDeploy = 1

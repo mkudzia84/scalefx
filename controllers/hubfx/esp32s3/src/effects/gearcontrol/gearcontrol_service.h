@@ -120,7 +120,11 @@ public:
             || type == GearPacket::GEAR_LIST_REQ
             || type == GearPacket::GEAR_RESET
             || type == GearPacket::GEAR_ESTOP
-            || type == GearPacket::GEAR_STEP;
+            || type == GearPacket::GEAR_STEP
+            || type == GearPacket::GEAR_DOOR
+            || type == GearPacket::GEAR_STRUT
+            || type == GearPacket::GEAR_DOOR_ALL
+            || type == GearPacket::GEAR_STRUT_ALL;
     }
 
     CommandHandleResult handle(uint8_t type,
@@ -155,6 +159,10 @@ private:
     void handleReset      (const uint8_t* p, size_t len);
     void handleEstop      (const uint8_t* p, size_t len);
     void handleStep       (const uint8_t* p, size_t len);
+    void handleDoor       (const uint8_t* p, size_t len);   ///< manual: one strut's doors
+    void handleStrut      (const uint8_t* p, size_t len);   ///< manual: one strut's motor
+    void handleDoorAll    (const uint8_t* p, size_t len);   ///< manual: every strut's doors (all-or-nothing)
+    void handleStrutAll   (const uint8_t* p, size_t len);   ///< manual: every strut's motor (all-or-nothing)
 
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);

@@ -26,6 +26,14 @@ Flip the deploy *direction* in the gear leg settings, and make sure the servo an
 travel are calibrated. If the travel *timeout* is too short, the leg stops before
 it reaches the end.
 
+**Q: Can I open/close the gear doors or move the strut by hand during setup?**
+Yes. Each strut card has a **Manual / maintenance** section with Open/Close doors
+and Strut down/up buttons (plus fleet "all" buttons), so you can move the doors
+and the strut independently of the full deploy/retract sequence. For safety the
+firmware blocks the unsafe combinations: you can't close the doors while the strut
+is out, and you can't move the strut unless the doors are open — the matching
+button greys out and tells you why.
+
 **Q: How do I calibrate a servo?**
 In the effect's panel, use **Calibrate Servo…**. Set the end-points, centre, and
 direction; re-calibrating takes effect on the next move.

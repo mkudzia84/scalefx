@@ -101,6 +101,21 @@ public:
     bool isIdle()     const { return _state == State::Idle; }
     bool isBusy()     const { return _state == State::Opening || _state == State::Closing; }
 
+    /// True when EVERY configured door is at its OPEN end (vacuously true when
+    /// there are no doors).  The manual-control interlock reads this: the strut
+    /// may only move while the doors are clear of its travel.  Uses the
+    /// persistent per-door end (`_doorEnd`, 1=open), so it's valid when settled.
+    bool allAtOpen() const {
+        for (uint8_t i = 0; i < _numDoors; ++i) if (_doorEnd[i] != 1) return false;
+        return true;
+    }
+    /// True when every configured door is at its CLOSED end (false if any is
+    /// open or unknown; vacuously true with no doors).
+    bool allAtClosed() const {
+        for (uint8_t i = 0; i < _numDoors; ++i) if (_doorEnd[i] != 0) return false;
+        return true;
+    }
+
     void reset() { _state = State::Idle; _doorEnd[0] = _doorEnd[1] = -1; }
 
 private:
