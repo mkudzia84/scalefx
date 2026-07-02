@@ -7,6 +7,72 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.35.1 — 2026-07-02
+
+**HubFX PCB rev B support** (branch `pcb-nextver`) + a complete
+fresh-board provisioning chain: a factory-new board now goes from blank
+silicon to a seeded, Studio-accessible config with one `scalefx-flash
+flash hubfx`. (2.35.0 — the rev B pin map — never shipped separately;
+2.35.1 folds it in with the storage self-heal.)
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.35.1 | ESP32-S3 | `hubfx-v2.35.1` |
+| ScaleFX Studio + CLI | 1.0.0 | Windows (host) | — |
+
+### New Features
+- **PCB rev B pin map** behind a compile-time `HUBFX_PCB_REV` switch
+  (rev B default; `-DHUBFX_PCB_REV=1` rebuilds for rev A). Rev B: split
+  TX/RX input headers (INP RX=GPIO2/TX=GPIO1, TELEM RX=GPIO21/TX=GPIO3,
+  2.2 kΩ bridge), servo headers SRV1..10 on the 6 V rail, status LED
+  GPIO46, 2 × INA226 rail monitors (battery @ 0x41 driven; expander-rail
+  U43 @ 0x40 disabled — see the collision note below).
+- **`EspInputPort` split TX/RX** — explicit `(rxPin, uartNum)` single-wire
+  and `(rxPin, txPin, uartNum)` constructors; the dedicated TX pad idles
+  high-Z and drives only its half-duplex reply slot.
+- **Fresh-board provisioning**: `scalefx-flash` now writes the FACTORY
+  image (bootloader + partition table + app — LittleFS region untouched,
+  existing configs survive), LittleFS self-formats/self-heals, and the
+  default `/hubfx.yaml` is seeded after a readiness check.
+- `tests/hw/i2c_probe` — minimal I²C bring-up/scan firmware with INA226
+  canonical-ID identification.
+
+### Bug Fixes — firmware
+- **LittleFS self-heal**: `FlashModule::begin()` retries through an
+  explicit format and records the error code; `FLASH_STATUS_REQ` retries
+  a failed boot-time init (the self-recovery bring_up.h always promised);
+  the boot log states WHY flash init failed.
+- **Uploads into missing directories** no longer fail with
+  `FILE_IO_ERROR`: ESP32 write-opens create the parent chain (mkdir -p)
+  — fixes applying a LightFX preset program to a fresh board; covers
+  flash AND SD.
+
+### Bug Fixes — ScaleFX Studio
+- **Fresh-board connect no longer freezes/blanks the UI**: empty
+  `devicemodel:changed` broadcasts are suppressed (Go) and ignored over a
+  populated model (frontend); a **Svelte flush watchdog** self-heals the
+  swallowed-exception scheduler wedge within 1 s and logs the culprit
+  (`FE.FLUSH`).
+- A **disabled** effect no longer gates the global Apply (fresh boards
+  showed a permanent red "resolve errors: enginefx" from the disabled
+  default draft).
+- `scalefx-flash` seeding reports WHY it skipped (flash unavailable)
+  instead of silently preserving nothing.
+
+### Hardware findings (documented, fix scheduled for PCB rev C)
+- **The rev A "counterfeit INA226 @ 0x40" was never a clone**: the
+  PCA9685's hardware address is 0x40 (all A-pins grounded; the firmware's
+  0x70 is its all-call alias) — an address collision with U43. Full
+  re-interpretation in instructions/18; findings log + rev C checklist in
+  `hardware/pcb-nextver/ISSUES.md` (also covers the C2 MLCC dead-short
+  that smoked the first rev B board, and the unprotected VBAT feed on the
+  USB1/USB4 expander ports).
+
+### Breaking ⚠️
+- None on the wire. Rev A boards must build with `-DHUBFX_PCB_REV=1`.
+
+---
+
 ## 2.34.1 — 2026-06-23
 
 Post-RC1 maintenance: a new **manual gear setup/maintenance** feature, several
