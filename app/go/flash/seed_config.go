@@ -66,6 +66,19 @@ func seedDefaultConfigs(controller, port string) {
 	}
 	defer c.Close()
 
+	// Make sure LittleFS is actually up before touching files.  On a brand-new
+	// board the first boot formats the partition; if that boot-time init failed
+	// (or is still settling), FLASH_STATUS_REQ triggers the firmware's
+	// self-recovery (re-begin + format, firmware ≥ 2.35.1).  Without this, an
+	// initial flash silently skipped seeding with NOT_INITIALIZED.
+	if !ensureFlashReady(c) {
+		printWarning("seed config: flash storage (LittleFS) unavailable — skipping. " +
+			"If this is a board previously flashed with a different/test firmware, " +
+			"its partition table may be stale: reflash (writes the factory image " +
+			"incl. partition table) and run `scalefx-flash seed-config`.")
+		return
+	}
+
 	seeded, preserved := 0, 0
 	for _, f := range hubFxDefaultConfigs {
 		local := filepath.Join(root, filepath.FromSlash(f.preset))
@@ -105,6 +118,31 @@ func seedDefaultConfigs(controller, port string) {
 	} else {
 		printInfo("seed config: nothing to seed (%d preserved)", preserved)
 	}
+}
+
+// ensureFlashReady confirms the LittleFS backend is initialized, giving the
+// firmware a few chances to self-heal.  Each FLASH_STATUS_REQ makes the
+// firmware retry `FlashModule::begin()` (which falls back to an explicit
+// format) when the boot-time init failed — so a fresh chip whose first-boot
+// format was slow/interrupted comes up here instead of failing the seed.
+func ensureFlashReady(c *client.Client) bool {
+	for i := 0; i < 3; i++ {
+		st, err := c.Storage.FlashStatus()
+		if err == nil && st.Initialized {
+			if i > 0 {
+				printOK("  flash storage recovered (%d KB total)", st.TotalBytes/1024)
+			}
+			return true
+		}
+		if err != nil {
+			printWarning("  flash status query failed (attempt %d/3): %v", i+1, err)
+		} else {
+			printWarning("  flash storage not initialized (attempt %d/3) — firmware is retrying", i+1)
+		}
+		// A LittleFS format of the ~4 MB partition takes a moment.
+		time.Sleep(1500 * time.Millisecond)
+	}
+	return false
 }
 
 // fileInfoRetry queries device file metadata, retrying a few times — the first

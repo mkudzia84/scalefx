@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // ─── ESP32 Flash Pipeline ───
@@ -74,6 +75,23 @@ func FlashESP32FromBinary(opts *Options, port, fwPath string) error {
 
 // ─── Standalone esptool (no Python) ───
 
+// flashImage picks WHAT to write: the combined factory image at 0x0 when the
+// build produced one (bootloader + partition table + otadata + app), else the
+// bare app at 0x10000.  An app-only write leaves whatever partition table a
+// PREVIOUS project flashed — bit hard on rev B bring-up (2026-07-02): the
+// i2c-probe test firmware's default table had no `littlefs` partition, so the
+// real firmware's config storage came up NOT_INITIALIZED on every boot.  The
+// factory image spans only bootloader..app; the LittleFS data region is never
+// written, so existing on-device configs survive a reflash unchanged.
+func flashImage(opts *Options, fwPath string) (addr, img string) {
+	fac := strings.TrimSuffix(fwPath, ".bin") + ".factory.bin"
+	if _, err := os.Stat(fac); err == nil {
+		opts.info("Flashing factory image (bootloader + partition table + app)")
+		return "0x0", fac
+	}
+	return "0x10000", fwPath
+}
+
 func flashWithEsptool(opts *Options, info *EsptoolInfo, port, fwPath string) error {
 	args := []string{
 		"--chip", "esp32s3",
@@ -81,7 +99,8 @@ func flashWithEsptool(opts *Options, info *EsptoolInfo, port, fwPath string) err
 	if port != "" {
 		args = append(args, "--port", port)
 	}
-	args = append(args, "write_flash", "0x10000", fwPath)
+	addr, img := flashImage(opts, fwPath)
+	args = append(args, "write_flash", addr, img)
 
 	opts.info("Uploading via standalone esptool to ESP32...")
 	return runTool(opts, info.Path, args)
@@ -97,7 +116,8 @@ func flashWithPythonEsptool(opts *Options, port, fwPath string) error {
 	if port != "" {
 		args = append(args, "--port", port)
 	}
-	args = append(args, "write_flash", "0x10000", fwPath)
+	addr, img := flashImage(opts, fwPath)
+	args = append(args, "write_flash", addr, img)
 
 	opts.info("Uploading via python -m esptool (legacy fallback)...")
 	return runPythonCmd(opts, args, "")
