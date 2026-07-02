@@ -9,6 +9,7 @@
 
 import { writable, derived, get } from 'svelte/store'
 import { connectionInfo } from './stores'
+import { diag } from './diag'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     AttachRole, DetachRole, SetPortName,
@@ -248,6 +249,18 @@ export function installDeviceModelBridge() {
     if (bridged) return
     bridged = true
     EventsOn('devicemodel:changed', (snap: DeviceModelSnapshotT) => {
+        // Guard against the empty-overwrite race: event delivery is not
+        // ordered against RPC returns, so a stale empty snapshot can land
+        // AFTER refresh() populated the store and blank the UI (the
+        // fresh-board "frozen" Studio, 2026-07-02).  A real teardown goes
+        // through resetDeviceModel() on disconnect, never through an
+        // empty broadcast while connected.
+        const incoming = snap?.ports?.length ?? 0
+        const cur = get(deviceModel)
+        if (incoming === 0 && cur.ports.length > 0 && get(connectionInfo).connected) {
+            diag.warn('FE.DM', `ignoring empty devicemodel:changed (store has ${cur.ports.length} ports)`)
+            return
+        }
         deviceModel.set(normalize(snap))
     })
 }
@@ -255,6 +268,7 @@ export function installDeviceModelBridge() {
 /** refresh re-fetches the topology from the hub and rebuilds the model. */
 export async function refresh(): Promise<void> {
     const snap = await RefreshDeviceModel()
+    diag.info('FE.DM', `refresh: ${snap?.ports?.length ?? 0} port(s), ${snap?.domains?.length ?? 0} domain(s) in snapshot`)
     deviceModel.set(normalize(snap))
 }
 

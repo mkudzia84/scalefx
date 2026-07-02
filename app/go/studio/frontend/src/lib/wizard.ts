@@ -10,6 +10,7 @@
 
 import { writable, derived, get } from 'svelte/store'
 import { showConfigWizard, connectionInfo } from './stores'
+import { diag } from './diag'
 import { deviceModel } from './devicemodel'
 import { collectChannelOptions } from './channels'
 import { WIZARD_FEATURES } from './wizard-features'
@@ -49,6 +50,7 @@ export const wizardSteps = derived(
 export const wizardStep = writable(0)
 
 export function openWizard(): void {
+    diag.info('WIZ', 'opening Setup Wizard')
     wizardStep.set(0)
     showConfigWizard.set(true)
 }
@@ -95,7 +97,9 @@ export function installWizardAutoOffer(): void {
             if (!get(connectionInfo).connected) return
             if (isConfigEmpty()) {
                 offeredThisSession = true
+                diag.info('WIZ', 'auto-offer: config empty — opening Setup Wizard')
                 openWizard()
+                diag.info('WIZ', 'auto-offer: wizard open returned')
             }
         }, 2000)
     })

@@ -150,6 +150,15 @@ async function runEngineValidate(): Promise<void> {
     if (!cfg) { engineHasErrors.set(false); return }
     const gen = ++_engineValidateGen
 
+    // A DISABLED effect never gates Apply (Rule 35 scope: validation
+    // guards what will actually run).  Without this, a fresh board's
+    // default draft (enabled=false, no sounds) showed a permanent red
+    // "resolve errors: enginefx" and held the global Apply hostage.
+    if (!cfg.enabled) {
+        if (gen === _engineValidateGen) engineHasErrors.set(false)
+        return
+    }
+
     // Required: `running` must have a path.
     if (!cfg.sounds.running) {
         if (gen === _engineValidateGen) engineHasErrors.set(true)

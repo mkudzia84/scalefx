@@ -101,6 +101,12 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 		a.diag.Warn("DM", "role list failed (continuing without roles): %v", err)
 		boardRoles = nil
 	}
+	nPorts := 0
+	for _, b := range boardPorts {
+		nPorts += len(b.Ports.Servos) + len(b.Ports.Pwms) + len(b.Ports.HBridges) + len(b.Ports.Inputs)
+	}
+	a.diag.Info("DM", "refresh: %d board(s), %d port(s), %d role-board(s) from hub",
+		len(boardPorts), nPorts, len(boardRoles))
 
 	a.dmMu.Lock()
 	prevClaims := []devicemodel.Claim(nil)
@@ -448,6 +454,19 @@ func (a *App) DetachRole(guid string, kind, index byte) (DeviceModelSnapshot, er
 
 func (a *App) emitDeviceModelChanged() {
 	if a.ctx == nil {
+		return
+	}
+	// While CONNECTED with no model built yet, an empty broadcast can only
+	// overwrite a populated frontend store — Wails event delivery is not
+	// ordered against RPC returns, so an early empty emit can land AFTER
+	// the refresh's 20-port snapshot and blank the whole UI (the
+	// fresh-board "frozen/empty Studio" race, 2026-07-02).  The refresh
+	// that builds the model emits again, so skipping here loses nothing.
+	a.dmMu.Lock()
+	noModel := a.dm == nil
+	a.dmMu.Unlock()
+	if noModel && a.snapshotClient() != nil {
+		a.diag.Warn("DM", "suppressing empty devicemodel:changed broadcast (connected, no model built yet)")
 		return
 	}
 	wailsRT.EventsEmit(a.ctx, "devicemodel:changed", a.deviceModelSnapshot())
