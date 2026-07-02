@@ -116,11 +116,21 @@ void StorageServicePolicy<TPolicy>::handleFlashStatus() {
 
     FlashStorageInfo info;
     if (!flash.isInitialized()) {
-        // Send response with initialized=false
-        uint8_t resp[13] = {0};
-        resp[0] = 0;  // not initialized
-        sendRawPacket(StoragePacket::FLASH_STATUS_REQ, currentTag(), resp, 13);
-        return;
+        // Self-recovery (the bring_up.h contract): a boot-time init
+        // failure is retried here so the host can revive flash with a
+        // plain status query instead of a reboot.  begin() is idempotent
+        // and, on ESP32, falls back to an explicit format on failure.
+        if (flash.begin()) {
+            SFX_LOG_WARN("[flash] re-initialized on status query (boot init had failed)");
+        } else {
+            SFX_LOG_WARN("[flash] init retry failed (err=0x%x)",
+                         (unsigned)flash.lastBeginError());
+            // Send response with initialized=false
+            uint8_t resp[13] = {0};
+            resp[0] = 0;  // not initialized
+            sendRawPacket(StoragePacket::FLASH_STATUS_REQ, currentTag(), resp, 13);
+            return;
+        }
     }
 
     flash.getStorageInfo(info);

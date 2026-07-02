@@ -51,7 +51,8 @@ inline BringUpResult bringUpStorage(const SdCardModule::Config& sdCfg) {
                      (unsigned long)info.totalBytes);
         r.flashOk = true;
     } else {
-        SFX_LOG_ERROR("Flash init failed");
+        SFX_LOG_ERROR("Flash init failed (err=0x%x) — a FLASH_STATUS_REQ retries",
+                      (unsigned)flash.lastBeginError());
     }
 
     // ── SD card ──────────────────────────────────────────────────────
