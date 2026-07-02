@@ -1,11 +1,87 @@
 # HubFX Hardware Pin Map
 
-Authoritative pin assignment for the HubFX PCB (8-channel LED rev, with
-TAS5825P codec and PCA9685 LED-channel PWM driver).
+Authoritative pin assignment for the HubFX PCB. The firmware selects the
+map at compile time via `-DHUBFX_PCB_REV` (platformio.ini):
 
-Source of truth: the EasyEDA netlist (`Netlist_Schematic1_2026-05-14.tel`)
-cross-referenced against the Espressif ESP32-S3 chip-level QFN-56 pin
-numbering. Update this file in the same commit as any board re-spin.
+- **Rev B (2026-07, `HUBFX_PCB_REV=2`, DEFAULT)** — summarized in the next
+  section. Netlist: `hardware/pcb-nextver/exports/Netlist_Schematic1_2_2026-07-01.tel`.
+- **Rev A (2025, `HUBFX_PCB_REV=1`)** — the original 8-channel rev; the
+  remainder of this document describes it in full. Netlist:
+  `Netlist_Schematic1_2026-05-14.tel`.
+
+Both are derived from the EasyEDA Telesis netlist cross-referenced against
+the Espressif ESP32-S3 chip-level QFN-56 pin numbering. Update this file in
+the same commit as any board re-spin.
+
+## Rev B (2026-07) — deltas vs rev A
+
+Unchanged: I²C (SDA=GPIO8 / SCL=GPIO9), I²S (DOUT=16 / BCLK=17 / LRCLK=18),
+SD 4-bit SDIO (CMD=38 CLK=39 D0=40 D1=41 D2=42 D3=45), USB-OTG host
+(D-=19 / D+=20 → U41 hub), UART0 console/COBS wire (TX=43 / RX=44 → CH343),
+PCA9685 @ 0x70, TAS5825P @ 0x4C.
+
+| Function | Rev A | Rev B |
+|---|---|---|
+| Status LED | GPIO48 | **GPIO46** (`GREEN_LED`, via R21) |
+| RC input IN_1 | GPIO5, single-wire | **INP header: TX=GPIO1 on the line, RX=GPIO2 via 2.2 kΩ (R8)** |
+| Telemetry IN_2 | GPIO6, single-wire | **TELEM header: TX=GPIO3 on the line, RX=GPIO21 via 2.2 kΩ (R4)** |
+| Servo headers ×10 | IN_3..IN_12 = GPIO {7,10,11,12,13,14,15,4,3,2}, 5 V rail | **SRV1..SRV10 = GPIO {5,6,7,10,11,12,13,14,15,4}, +6 V rail** |
+| INA226 monitors | 8 × per-PWM-channel (0x40–0x45, 0x4A, 0x4F), 0.1 Ω high-side | **2 × rail monitors, 10 mΩ low-side (see below)** |
+| PWM outputs | PCA CH1..8 → connectors CH1..CH8 | PCA CH1..8 → connectors **CH1..CH6, CH9, CH10** (+8 V rail) |
+| Speaker outputs | dedicated amp stage | **connectors CH7/CH8** = TAS5825P OUT_A/OUT_B through the class-D LC filter — NOT PWM channels |
+
+**Split TX/RX input topology.** Each input header's signal pin sits
+DIRECTLY on the TX GPIO and reaches the RX GPIO through a 2.2 kΩ series
+bridge, so RX listens continuously while TX idles high-Z and drives only
+its half-duplex reply slot (`EspInputPort` constructor takes the optional
+`txPin`; `txEnable()`/`txDisable()` gate the slot). The headers' center
+(power) pins are NOT connected — the RC receiver is powered elsewhere.
+
+**Rev B INA226 pair** (strapping from the netlist; bench-confirmed
+2026-07-02 with `tests/hw/i2c_probe`):
+
+| Ref | Addr (A1/A0) | Shunt | Measures | Usable? |
+|---|---|---|---|---|
+| U43 | 0x40 (GND/GND) | R83 10 mΩ, low-side in GND_1 | expander/USB rail return current (USB1+USB4 grounds); VBUS pin reads VBAT | **NO — address collision, see below** |
+| U44 | 0x41 (GND/VS) | R9 10 mΩ, low-side at the BAT− terminal | total battery current; VBUS pin reads VBAT | yes — canonical TI IDs confirmed |
+
+Both read **battery voltage** on the bus-voltage channel and positive
+current under load. Confirmed rev B I²C scan: 0x40 (collision — ACKs,
+garbage IDs), 0x41 (INA226 ✓), 0x4C (TAS5825P), 0x70 (PCA9685 all-call).
+
+### 🔴 Rev B design bug — I²C address collision at 0x40 (fix in REV C)
+
+The PCA9685 (U54) has **all six address pins grounded** (HVQFN pins 26,
+27, 28, 1, 2, 21 = A0..A5, every one on GND), so its **hardware address
+is 0x40** — the same address U43's strapping selects. The firmware's
+`0x70` is only the PCA's default-enabled **all-call alias**, which is why
+the collision went unnoticed. Consequences:
+
+- Reads at 0x40 wire-AND both chips' replies → garbage (this is the real
+  mechanism behind rev A's "counterfeit INA @ 0x40, `mfg=0x0001
+  die=0x0020`" — see the re-interpretation in
+  [instructions/18](../../../instructions/18-HUBFX-INA-CLONE-WEDGE.md)).
+- Writes at 0x40 land in **PCA MODE1** (register 0x00 aliases the INA
+  config register): a byte with bit 6 set flips the sticky EXTCLK bit →
+  PWM dead until SWRST (the historic "wedge"); clearing bit 0 kills the
+  ALLCALL alias → the PCA "vanishes" from 0x70.
+- Harmless as long as nothing writes 0x40 — the `INA226::begin()`
+  canonical-ID gate guarantees that, and rev B firmware drives only U44
+  (`kInaAddrs = {0x41}`, battery telemetry only).
+
+**REV C fixes:** strap the PCA9685 off the INA range (e.g. A2 → 3V3 =
+0x44) and/or U43 A0 → SDA (= 0x42); then re-enable the expander-rail
+monitor in `kInaAddrs`. Board-level rework on a rev B: lift U43 pin 2
+(A0) and jumper to SDA → 0x42.
+
+⚠️ **Rev B USB power hazard:** the `USB1`/`USB4` USB-C connectors carry
+**raw VBAT on their VBUS pins** (expander power). Never plug a PC or any
+5 V USB source into them — battery shorts into the host. Only `USB0`
+(CH343) is a PC-safe port.
+
+---
+
+# Rev A (2025) — full reference
 
 ## Component summary
 

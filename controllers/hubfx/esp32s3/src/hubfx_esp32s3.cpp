@@ -27,11 +27,14 @@
  *     - ConfigServicePolicy       (six config stores side-by-side;
  *                                  CONFIG_RELOAD / CONFIG_SAVE wire surface)
  *
- *   Ports declared on the HubFX PCB:
- *     - 8 × PWM    (PCA9685 channels with per-rail INA226 V/I sense)
+ *   Ports declared on the HubFX PCB (pin map selected by HUBFX_PCB_REV —
+ *   see the Board pin/address map section below + PINOUT.md):
+ *     - 8 × PWM    (PCA9685 channels; rev A adds per-channel INA226 V/I
+ *                   sense — rev B monitors RAILS with 2 INA226 instead)
  *     - 2 × Input  (IN_1 UART1 multi-modal PULSE/SBUS/JETI_EX;
- *                   IN_2 UART2 Jeti EX Bus telemetry monitor → Rx)
- *     - 10 × Servo (IN_3..IN_12, output actuator headers)
+ *                   IN_2 UART2 Jeti EX Bus telemetry monitor → Rx;
+ *                   rev B: split TX/RX headers, 2.2 kΩ bridge)
+ *     - 10 × Servo (SRV1..SRV10 on rev B / IN_3..IN_12 on rev A)
  *
  *   Configuration sources (LittleFS) — /hubfx.yaml is the board master,
  *   every effect's details live in its own canonical sub-file:
@@ -59,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.34.1-hubfx"
-#define BUILD_NUMBER     889
+#define FIRMWARE_VERSION "2.35.1-hubfx"
+#define BUILD_NUMBER     895
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -163,41 +166,67 @@
 #include "config/telemetry_emitter.h"
 
 // ════════════════════════════════════════════════════════════════════════
-//  Board pin / address map (HubFX 8-channel rev — see PINOUT.md)
+//  Board pin / address map — selected by HUBFX_PCB_REV (see PINOUT.md):
+//    1 = 2025 8-channel rev A — single-wire RC inputs on IN_1/IN_2,
+//        servo headers IN_3..IN_12, 8 × per-PWM-channel INA226, LED GPIO48.
+//    2 = 2026-07 rev B (pcb-nextver) — dedicated INP + TELEM headers with
+//        SPLIT TX/RX (header line on the TX pad, bridged to the RX pad by
+//        a 2.2 kΩ resistor), servo headers SRV1..SRV10, 2 × INA226
+//        (expander/USB rail + battery, low-side 10 mΩ), LED GPIO46.
+//  Derived from the EasyEDA Telesis netlist in hardware/pcb-nextver/.
+//  Override with -DHUBFX_PCB_REV=1 (platformio.ini) to flash a rev A board.
 // ════════════════════════════════════════════════════════════════════════
+
+#ifndef HUBFX_PCB_REV
+#define HUBFX_PCB_REV 2
+#endif
 
 namespace Gpio {
     // I²C bus — shared with TAS5825P codec, PCA9685, INA226 monitors.
+    // Same pins on every rev.
     constexpr int I2C_SDA        =  8;
     constexpr int I2C_SCL        =  9;
 
+#if HUBFX_PCB_REV >= 2
+    // On-board status LED (GREEN_LED net).
+    constexpr int LED_CONNECTION = 46;
+    constexpr int LED_ERROR      = -1;
+
+    // Input interfaces (Rule 31: 2 inputs max) — both are split-pin
+    // half-duplex headers: the header signal pin sits DIRECTLY on the TX
+    // GPIO and reaches the RX GPIO through a 2.2 kΩ series bridge (R8 /
+    // R4), so RX listens continuously while TX idles high-Z and drives
+    // only its reply slot (EspInputPort txEnable/txDisable).
+    constexpr int IN1_RX         =  2;   // JETIX_RX0    — INP header (RC / EX Bus)
+    constexpr int IN1_TX         =  1;   // JETIX_TX0    — INP header line
+    constexpr int IN2_RX         = 21;   // TELEMETRI_RX1 — TELEM header (downstream EX telemetry)
+    constexpr int IN2_TX         =  3;   // TELEMETRI_TX1 — TELEM header line
+
+    // Servo output headers SRV1..SRV10 (+6 V rail).
+    constexpr int SERVO_PIN[10]  = { 5, 6, 7, 10, 11, 12, 13, 14, 15, 4 };
+#else
     // On-board status LED.
     constexpr int LED_CONNECTION = 48;
     constexpr int LED_ERROR      = -1;
 
-    // RC header pins — IN_1 is the only input-capable net (Rule 31);
-    // IN_2..IN_12 are output-only servo headers.
-    constexpr int IN_1           =  5;
-    constexpr int IN_2           =  6;
-    constexpr int IN_3           =  7;
-    constexpr int IN_4           = 10;
-    constexpr int IN_5           = 11;
-    constexpr int IN_6           = 12;
-    constexpr int IN_7           = 13;
-    constexpr int IN_8           = 14;
-    constexpr int IN_9           = 15;
-    constexpr int IN_10          =  4;
-    constexpr int IN_11          =  3;
-    constexpr int IN_12          =  2;
+    // Single-wire RC inputs — IN_1 (main) + IN_2 (telemetry); TX is
+    // matrix-routed onto the same pad for the Jeti reply slot.
+    constexpr int IN1_RX         =  5;   // IN_1 header
+    constexpr int IN2_RX         =  6;   // IN_2 header
+
+    // Servo output headers IN_3..IN_12 (5 V rail).
+    constexpr int SERVO_PIN[10]  = { 7, 10, 11, 12, 13, 14, 15, 4, 3, 2 };
+#endif
 
     // I²S to TAS5825P codec (Philips standard mode, 48 kHz / 16-bit).
+    // Same pins on every rev.
     constexpr int I2S_DOUT       = 16;   // TAS_DI  → codec DIN
     constexpr int I2S_BCLK       = 17;   // TAS_BCK → codec BCK
     constexpr int I2S_LRCLK      = 18;   // TAS_FS  → codec FS / LRCLK
 
     // SD card — 4-bit SDIO via SD_MMC slot 1.  GPIO matrix routed; the
     // PCB designer's authoritative map skips GPIO 43/44 because UART0
-    // (CH343 console bridge) is hardwired to those pins.
+    // (CH343 console bridge) is hardwired to those pins.  Same on every rev.
     constexpr int SD_CMD         = 38;
     constexpr int SD_CLK         = 39;
     constexpr int SD_D0          = 40;
@@ -211,30 +240,47 @@ namespace I2cAddr {
     constexpr uint8_t TAS5825P = 0x4C;   // Class-H audio codec (ADDR → GND)
 }
 
+#if HUBFX_PCB_REV >= 2
+// Rev B carries TWO INA226 rail monitors on the PCB, but the firmware
+// drives only ONE (bench-confirmed 2026-07-02, tests/hw/i2c_probe):
+//   [0] U44 @ 0x41 (A1=GND A0=VS)   — battery total: low-side 10 mΩ (R9)
+//       between the BAT- terminal and the ground plane, VBUS pin on VBAT.
+//       Reads BATTERY voltage on the bus channel, POSITIVE current on load.
+//   ✗  U43 @ 0x40 (expander/USB-rail monitor, low-side 10 mΩ R83 in
+//       GND_1) is UNUSABLE on rev B: the PCA9685's HARDWARE address is
+//       ALSO 0x40 (all six A-pins grounded — firmware's 0x70 is only its
+//       all-call alias), so reads at 0x40 wire-AND two chips (garbage
+//       IDs) and writes land in PCA MODE1 (the historic "clone wedge",
+//       now understood).  Fix scheduled for PCB REV C (restrap PCA A2 →
+//       0x44 or U43 A0 → SDA = 0x42); until then U43 stays off this
+//       list.  Full writeup: PINOUT.md §Rev B + instructions/18.
+constexpr uint8_t kInaAddrs[] = { 0x41 };
+constexpr const char* const kInaLabels[] = { "battery" };
+
+namespace Sense {
+    constexpr float    INA226_SHUNT_OHMS = 0.010f;  // R83 / R9 — 10 mΩ
+    constexpr float    INA226_MAX_AMPS   = 8.0f;    // 81.92 mV FS / 10 mΩ
+}
+#else
 // Per-channel current/voltage monitor addresses — index maps directly to
 // PWM port index (CH1 = port 0, CH8 = port 7).  The 0x4A / 0x4F outliers
 // on ch7 / ch8 dodge the codec at 0x4C on the shared I²C bus.
-//
-// FUTURE BOARD REVISION (planned): drop the per-channel array down to just
-// TWO INA226s — one on the BATTERY rail and one on the CODEC (PVDD) supply.
-// The current 8-monitor layout drove the clone-wedge issue (a counterfeit
-// INA at 0x40 corrupting the PCA9685 on the shared bus — see the CLAUDE.md
-// INA gotcha + instructions/18); two purpose-placed monitors remove the
-// per-channel cost and the shared-bus crowding.  Rail monitoring (undervoltage
-// alert + Jeti Voltage/Current telemetry) is DISABLED in loop() for now until
-// that hardware lands — see the note in loop().
-constexpr uint8_t kInaAddrs[8] = {
+constexpr uint8_t kInaAddrs[] = {
     0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x4A, 0x4F,
 };
-
-namespace Uart {
-    constexpr uint8_t IN_1 = 1;            // UART1 — main Jeti EX Bus input (Rx channel data + telemetry to Rx)
-    constexpr uint8_t IN_2 = 2;            // UART2 — Jeti EX Bus telemetry from a downstream slave (e.g. ESC): HubFX polls + collects, forwards over IN_1 to the Rx
-}
+constexpr const char* const* kInaLabels = nullptr;   // plain "ch N" logging
 
 namespace Sense {
     constexpr float    INA226_SHUNT_OHMS = 0.1f;    // 0.1 Ω shunt
     constexpr float    INA226_MAX_AMPS   = 3.2f;    // ±3.2 A range
+}
+#endif
+
+constexpr size_t kInaCount = sizeof(kInaAddrs) / sizeof(kInaAddrs[0]);
+
+namespace Uart {
+    constexpr uint8_t IN_1 = 1;            // UART1 — main Jeti EX Bus input (Rx channel data + telemetry to Rx)
+    constexpr uint8_t IN_2 = 2;            // UART2 — Jeti EX Bus telemetry from a downstream slave (e.g. ESC): HubFX polls + collects, forwards over IN_1 to the Rx
 }
 
 namespace Pwm {
@@ -273,6 +319,8 @@ static constexpr hubfx_hw::HubFxHardwareProbe::PinConfig kHubFxProbeCfg = {
     .inaShuntOhms = Sense::INA226_SHUNT_OHMS,
     .inaMaxAmps   = Sense::INA226_MAX_AMPS,
     .inaAddrs     = kInaAddrs,
+    .inaCount     = kInaCount,
+    .inaLabels    = kInaLabels,
 };
 
 // ── Policy aliases ───────────────────────────────────────────────────
@@ -349,18 +397,23 @@ using GunFxService =
 // The registry covers HUB-LOCAL ports ONLY; expander ports (GearControl,
 // LightFX, …) live on each expander's own registry and are reached by
 // forwarding ROLE_ATTACH over CDC — adding expanders does NOT consume hub
-// slots.  HubFX hub-local hardware is fixed by the PCB: 11 servo headers
-// (IN_2..IN_12) + 8 PCA9685 PWM + 1 RC input (IN_1).  Bump a count here
+// slots.  HubFX hub-local hardware is fixed by the PCB (both revs): 10
+// servo headers + 8 PCA9685 PWM + 2 input interfaces.  Bump a count here
 // (and the matching initializer list) when a board rev adds a header;
 // every dependent size follows automatically.  A count below the
 // initializer list is a compile error (too many initializers); a count
 // the descriptor exceeds would make begin() clamp — so keep them equal.
 namespace hubfx_caps {
-constexpr size_t servo   = 10;   // IN_3..IN_12 microservo headers (IN_2 reassigned to UART2 input)
-constexpr size_t pwm     = 8;    // PCA9685 CH1..8 (+ per-rail INA226 sense)
+constexpr size_t servo   = 10;   // Gpio::SERVO_PIN — SRV1..SRV10 (rev B) / IN_3..IN_12 (rev A)
+constexpr size_t pwm     = 8;    // PCA9685 CH1..8
 constexpr size_t hbridge = 0;    // no hub-local H-bridge on this rev
 constexpr size_t input   = 2;    // IN_1 (UART1) + IN_2 (UART2) — Rule 31: ESP32-S3 max 2 inputs
 }  // namespace hubfx_caps
+
+// Servo header rail — rev B feeds SRV1..SRV10 from the +6 V buck; rev A's
+// IN_3..IN_12 headers sat on the 5 V rail.  Flows to Go/Studio via the
+// port descriptor (Rule 37) and drives sub-rail element duty scaling.
+constexpr uint16_t kServoRail_mV = (HUBFX_PCB_REV >= 2) ? 6000 : 5000;
 
 class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
                                              sfx::NativeUartStream,      // TStream (Rule 33)
@@ -384,12 +437,16 @@ class HubFxBoard : public sfx_core::BoardOf<HubFxBoard,
 public:
     // ── Hardware drivers — declaration order matters (init order) ────
     PCA9685 pca;
-    INA226  ina[hubfx_caps::pwm];
+    INA226  ina[kInaCount];
 
     sfx_peripherals::Pca9685PwmPort pwm[hubfx_caps::pwm] = {
         {pca, 0}, {pca, 1}, {pca, 2}, {pca, 3},
         {pca, 4}, {pca, 5}, {pca, 6}, {pca, 7},
     };
+#if HUBFX_PCB_REV < 2
+    // Rev A only — one INA226 per PWM channel feeds per-port V/I sense.
+    // Rev B's two INAs monitor RAILS (battery + expander), not ports, so
+    // the PWM descriptors carry no sense hookup there.
     sfx_peripherals::Ina226VoltageSensor vSense[hubfx_caps::pwm] = {
         {ina[0]}, {ina[1]}, {ina[2]}, {ina[3]},
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
@@ -398,20 +455,29 @@ public:
         {ina[0]}, {ina[1]}, {ina[2]}, {ina[3]},
         {ina[4]}, {ina[5]}, {ina[6]}, {ina[7]},
     };
+#endif
 
     // ── Input ports — IN_1 (PULSE/SBUS/JETI_EX) + IN_2 (Jeti EX Bus
-    //    telemetry monitor on UART2) ───────────────────────────────────
+    //    telemetry monitor on UART2).  Rev B uses the split TX/RX ctor
+    //    (dedicated header pad); rev A the single-wire one. ────────────
+#if HUBFX_PCB_REV >= 2
     sfx_peripherals::EspInputPort in[hubfx_caps::input] = {
-        {Gpio::IN_1, Uart::IN_1},   // index 0 — main RC channel + telemetry-to-Rx
-        {Gpio::IN_2, Uart::IN_2},   // index 1 — downstream EX Bus telemetry (e.g. ESC)
+        {Gpio::IN1_RX, Gpio::IN1_TX, Uart::IN_1},   // index 0 — main RC channel + telemetry-to-Rx
+        {Gpio::IN2_RX, Gpio::IN2_TX, Uart::IN_2},   // index 1 — downstream EX Bus telemetry (e.g. ESC)
     };
+#else
+    sfx_peripherals::EspInputPort in[hubfx_caps::input] = {
+        {Gpio::IN1_RX, Uart::IN_1},   // index 0 — main RC channel + telemetry-to-Rx
+        {Gpio::IN2_RX, Uart::IN_2},   // index 1 — downstream EX Bus telemetry (e.g. ESC)
+    };
+#endif
 
-    // ── Servo OUTPUT ports — IN_3..IN_12 as actuator headers ─────────
+    // ── Servo OUTPUT ports — Gpio::SERVO_PIN actuator headers ────────
     sfx_peripherals::MicroservoPort servoOut[hubfx_caps::servo] = {
-        {Gpio::IN_3},  {Gpio::IN_4},  {Gpio::IN_5},
-        {Gpio::IN_6},  {Gpio::IN_7},  {Gpio::IN_8},
-        {Gpio::IN_9},  {Gpio::IN_10}, {Gpio::IN_11},
-        {Gpio::IN_12},
+        {Gpio::SERVO_PIN[0]}, {Gpio::SERVO_PIN[1]}, {Gpio::SERVO_PIN[2]},
+        {Gpio::SERVO_PIN[3]}, {Gpio::SERVO_PIN[4]}, {Gpio::SERVO_PIN[5]},
+        {Gpio::SERVO_PIN[6]}, {Gpio::SERVO_PIN[7]}, {Gpio::SERVO_PIN[8]},
+        {Gpio::SERVO_PIN[9]},
     };
 
     // ── Hardware probe ───────────────────────────────────────────────
@@ -432,17 +498,24 @@ public:
     // ── Port declarations (compile-time, consumed by BoardOf<>) ──────
     //
     // Rail voltages (Phase 0 of GunFX rollout, instructions/22):
-    //   CH1..8       — 8 V buck output (drives heaters / fans / LED rings)
-    //   IN_1, IN_2   — 3.3 V GPIO logic (IN_1 RC PWM/SBUS/Jeti EX; IN_2 Jeti EX Bus telemetry)
-    //   IN_3..IN_12  — 5 V servo rail (microservo headers)
+    //   CH1..8   — 8 V buck output (drives heaters / fans / LED rings)
+    //   inputs   — 3.3 V GPIO logic (IN_1 RC PWM/SBUS/Jeti EX; IN_2 Jeti EX Bus telemetry)
+    //   servos   — kServoRail_mV (6 V buck on rev B; 5 V rail on rev A)
     // Effects use these to compute voltage-scaled PWM duty for sub-rail
     // elements (a 5 V smoke heater on the 8 V rail wants ~63 % duty).
 
+#if HUBFX_PCB_REV < 2
     static constexpr auto kPwmPorts = sfx_core::ports::list(
         sfx_core::ports::pwm_array<&HubFxBoard::pwm, hubfx_caps::pwm>()
             .with_vSense_array<&HubFxBoard::vSense>()
             .with_iSense_array<&HubFxBoard::iSense>()
             .with_voltage_mV<8000>());
+#else
+    // Rev B: no per-channel INA — the PWM descriptors carry rail voltage only.
+    static constexpr auto kPwmPorts = sfx_core::ports::list(
+        sfx_core::ports::pwm_array<&HubFxBoard::pwm, hubfx_caps::pwm>()
+            .with_voltage_mV<8000>());
+#endif
 
     static constexpr auto kInputPorts = sfx_core::ports::list(
         sfx_core::ports::input_array<&HubFxBoard::in, hubfx_caps::input>()
@@ -450,7 +523,7 @@ public:
 
     static constexpr auto kServoPorts = sfx_core::ports::list(
         sfx_core::ports::servo_array<&HubFxBoard::servoOut, hubfx_caps::servo>()
-            .with_voltage_mV<5000>());
+            .with_voltage_mV<kServoRail_mV>());
 
     static constexpr const char* kName = "HubFx";
 };
@@ -911,9 +984,15 @@ void setup() {
     board.enableI2CScan(hubI2cBus());
     board.addExpectedI2CDevice(I2cAddr::TAS5825P);
     board.addExpectedI2CDevice(I2cAddr::PCA9685);
-    for (uint8_t k = 0; k < 8; ++k) {
+    for (uint8_t k = 0; k < kInaCount; ++k) {
         board.addExpectedI2CDevice(kInaAddrs[k]);
     }
+#if HUBFX_PCB_REV >= 2
+    // 0x40 ACKs on rev B: it's the PCA9685's HARDWARE address (0x70 is the
+    // all-call alias) colliding with the unused U43 INA226.  Expected so
+    // scans don't flag it as a stranger — but NEVER driven (see kInaAddrs).
+    board.addExpectedI2CDevice(0x40);
+#endif
 
     // Audio bring-up: Phase 1 (Core 0 codec probe + mixer alloc) →
     // Phase 1B Core 1 task launch (I²S init + producer spawn + consumer
@@ -1085,8 +1164,8 @@ void setup() {
         }
     }
 
-    SFX_LOG_INFO("HubFX v%s build %u — 8 PWM / 1 input / 11 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
-                 FIRMWARE_VERSION, (unsigned)BUILD_NUMBER);
+    SFX_LOG_INFO("HubFX v%s build %u (PCB rev %d) — 8 PWM / 2 input / 10 servo-out + storage + audio + alerts + USB host + topology + input + landing + lightfx + gear + engine + gun",
+                 FIRMWARE_VERSION, (unsigned)BUILD_NUMBER, (int)HUBFX_PCB_REV);
 
     // Boot baseline (Phase 4 polish 2026-05-27).  Capture free SRAM /
     // PSRAM / DMA-cap pools AFTER every policy + service has done its
@@ -1155,13 +1234,16 @@ void loop() {
     storage.checkUploadTimeout();
     board.pollSense();
 
-    // INA226 rail monitoring REMOVED for now (2026-05-30) — the readings aren't
-    // trustworthy on this board rev (clone @ 0x40 + the crowded per-channel
-    // layout; a future rev drops to 2 INAs, battery + codec).  This also takes
-    // out the board-wide undervoltage AlertSound::BatteryLow detector and the
-    // Jeti rail Voltage/Current telemetry.  Restore from git history once the
-    // INA hardware is sorted (the canonical-only `isCanonical()` filter was the
-    // right pattern — see the AlertService::tickVoltage + Jeti push it fed).
+    // INA226 rail monitoring still DISABLED (2026-05-30; layout landed
+    // 2026-07-01) — rev A readings weren't trustworthy (clone @ 0x40 + the
+    // crowded per-channel layout).  Rev B now carries the intended pair
+    // (kInaAddrs: expander rail @ 0x40 + battery @ 0x41, both wired into the
+    // probe + pollSense so cached V/I is live) but the undervoltage
+    // AlertSound::BatteryLow detector + Jeti rail Voltage/Current telemetry
+    // stay out until the addresses/orientation are bench-confirmed on a
+    // healthy rev B board (tests/hw/i2c_probe).  Restore from git history —
+    // the canonical-only `isCanonical()` filter was the right pattern (see
+    // the AlertService::tickVoltage + Jeti push it fed).
 
     // Jeti EX expander telemetry — register HubFX-own Version when the expander
     // is running (IN_1 = Jeti EX).  Joins the HubFx device (with the expander's

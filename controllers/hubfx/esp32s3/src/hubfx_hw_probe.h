@@ -1,8 +1,9 @@
 /*
  * hubfx_hw_probe.h — PCA9685 + INA226 I²C bring-up + boot diagnostics.
  *
- *   The HubFX rev pairs one PCA9685 8-channel PWM driver with eight
- *   per-rail INA226 V/I monitors on a shared 400 kHz I²C bus.  Boot
+ *   The HubFX pairs one PCA9685 8-channel PWM driver with a rev-dependent
+ *   set of INA226 V/I monitors (rev A: 8 per-channel; rev B: 2 rail
+ *   monitors — expander + battery) on a shared 400 kHz I²C bus.  Boot
  *   bring-up has to:
  *
  *     1. Reset the I²C bus + the PCA via gen-call SWRST (clears any
@@ -35,6 +36,7 @@
 #include "hubfx_i2c.h"             // hubI2cBus() (native I2C)
 #include <platform/sfx_platform.h> // SFX_MILLIS / SFX_DELAY_MS
 #include <cstdint>
+#include <cstdio>                  // snprintf (inaName)
 
 #include <serial/diag_log.h>
 #include <ports/pwm_port.h>          // sfx_peripherals::Pca9685PwmPort
@@ -71,20 +73,24 @@ struct HwInitState {
 };
 
 /// Probe driver — owns refs to the board's PCA/INA/PWM arrays and the
-/// `PinConfig` constants.  Eight PWM channels + eight INA monitors is
-/// hard-coded since that's the HubFX PCB rev; a future kit-board with
-/// different channel counts would specialise this.
+/// `PinConfig` constants.  Eight PWM channels is hard-coded (every HubFX
+/// rev fills the PCA9685); the INA monitor set is rev-dependent and comes
+/// in via `inaAddrs`/`inaCount` (+ optional per-monitor labels).
 class HubFxHardwareProbe {
 public:
+    static constexpr size_t kMaxInas = 8;   ///< snapshot capacity (rev A count)
+
     struct PinConfig {
         int      sda;
         int      scl;
-        uint32_t i2cFreq;            ///< Hz (400 kHz on rev A)
+        uint32_t i2cFreq;            ///< Hz (400 kHz)
         uint8_t  pcaAddr;            ///< PCA9685 I²C address
         uint16_t pwmFreqHz;          ///< PCA PWM frequency
         float    inaShuntOhms;
         float    inaMaxAmps;
-        const uint8_t* inaAddrs;     ///< pointer to 8-element address array
+        const uint8_t* inaAddrs;     ///< monitor address array (inaCount entries)
+        size_t   inaCount;           ///< how many INA226s this rev carries (≤ kMaxInas)
+        const char* const* inaLabels;///< optional per-monitor names (nullptr → "ch N")
     };
 
     HubFxHardwareProbe(PCA9685& pca, INA226* inas,
@@ -125,7 +131,7 @@ public:
         // Per-INA probe + driver begin + mfg/die ID read.  begin()
         // bails on non-canonical IDs without touching the chip; we
         // still capture the boot IDs so the log can identify clones.
-        for (uint8_t k = 0; k < 8; ++k) {
+        for (uint8_t k = 0; k < inaCount(); ++k) {
             _state.ina[k].addr = _cfg.inaAddrs[k];
             _state.ina[k].wireAck = hubI2cBus().probe(_cfg.inaAddrs[k]) ? 0 : 2;
             if (_state.ina[k].wireAck != 0) continue;
@@ -211,51 +217,69 @@ public:
 
         uint8_t inaOk     = 0;
         uint8_t inaClones = 0;
-        for (uint8_t k = 0; k < 8; ++k) {
+        char    who[24];
+        for (uint8_t k = 0; k < inaCount(); ++k) {
             const auto& p = _state.ina[k];
+            inaName(k, who, sizeof(who));
             if (p.wireAck != 0) {
-                SFX_LOG_WARN("[INA] ch%u @ 0x%02X: NO ACK (Wire status=%u)",
-                             (unsigned)(k + 1), p.addr, (unsigned)p.wireAck);
+                SFX_LOG_WARN("[INA] %s @ 0x%02X: NO ACK (Wire status=%u)",
+                             who, p.addr, (unsigned)p.wireAck);
                 continue;
             }
             if (!p.begun) {
                 inaClones++;
-                SFX_LOG_WARN("[INA] ch%u @ 0x%02X: NOT DRIVEN — non-canonical IDs "
+                SFX_LOG_WARN("[INA] %s @ 0x%02X: NOT DRIVEN — non-canonical IDs "
                              "mfg=0x%04X die=0x%04X (expected 0x5449/0x2260, "
                              "TI INA226).  Clone detected — refusing to drive "
                              "to protect other chips on the shared I²C bus.",
-                             (unsigned)(k + 1), p.addr, p.mfgId, p.dieId);
+                             who, p.addr, p.mfgId, p.dieId);
                 continue;
             }
-            SFX_LOG_INFO("[INA] ch%u @ 0x%02X: OK  mfg=0x%04X die=0x%04X (TI INA226)",
-                         (unsigned)(k + 1), p.addr, p.mfgId, p.dieId);
+            SFX_LOG_INFO("[INA] %s @ 0x%02X: OK  mfg=0x%04X die=0x%04X (TI INA226)",
+                         who, p.addr, p.mfgId, p.dieId);
             inaOk++;
         }
         if (inaClones > 0) {
-            SFX_LOG_WARN("[INA] %u/8 monitors up (%u clone%s skipped — replace "
+            SFX_LOG_WARN("[INA] %u/%u monitors up (%u clone%s skipped — replace "
                          "to restore full V/I sense)",
-                         inaOk, inaClones, inaClones == 1 ? "" : "s");
+                         inaOk, (unsigned)inaCount(), inaClones,
+                         inaClones == 1 ? "" : "s");
         } else {
-            SFX_LOG_INFO("[INA] %u/8 monitors up (all genuine TI INA226)", inaOk);
+            SFX_LOG_INFO("[INA] %u/%u monitors up (all genuine TI INA226)",
+                         inaOk, (unsigned)inaCount());
         }
     }
 
     /// Periodic maintenance — refresh INA cached readings.  THROTTLED to
-    /// `kSenseIntervalMs`: refreshing all 8 INA226 every main-loop pass is
-    /// 8 sequential I²C reads (~10-16 ms) that dominated and jittered the
-    /// loop period — which in turn jittered the LED animation tick.  V/I
-    /// telemetry only needs ~10 Hz freshness, so polling at 100 ms lets the
-    /// loop run fast + steady (LED ticks every ~1 ms) while a one-off
-    /// ~12 ms read every 100 ms is invisible.  The PWM chip is event-driven;
-    /// nothing to poll there.
+    /// `kSenseIntervalMs`: refreshing all the INA226s every main-loop pass
+    /// is sequential I²C reads (~10-16 ms for the rev A eight) that
+    /// dominated and jittered the loop period — which in turn jittered the
+    /// LED animation tick.  V/I telemetry only needs ~10 Hz freshness, so
+    /// polling at 100 ms lets the loop run fast + steady (LED ticks every
+    /// ~1 ms) while the one-off read burst is invisible.  The PWM chip is
+    /// event-driven; nothing to poll there.
     void pollSense() {
         const uint32_t now = SFX_MILLIS();
         if (now - _lastSenseMs < kSenseIntervalMs) return;
         _lastSenseMs = now;
-        for (uint8_t k = 0; k < 8; ++k) _inas[k].update();
+        for (uint8_t k = 0; k < inaCount(); ++k) _inas[k].update();
     }
 
 private:
+    size_t inaCount() const {
+        return (_cfg.inaCount <= kMaxInas) ? _cfg.inaCount : kMaxInas;
+    }
+
+    /// Human name for monitor k — the config label when provided (rev B
+    /// "expander-rail"/"battery"), else the rev A per-channel "ch N".
+    void inaName(uint8_t k, char* out, size_t outLen) const {
+        if (_cfg.inaLabels && _cfg.inaLabels[k]) {
+            snprintf(out, outLen, "%s", _cfg.inaLabels[k]);
+        } else {
+            snprintf(out, outLen, "ch%u", (unsigned)(k + 1));
+        }
+    }
+
     static bool pcaBusProbe(uint8_t addr) {
         return hubI2cBus().probe(addr);
     }
