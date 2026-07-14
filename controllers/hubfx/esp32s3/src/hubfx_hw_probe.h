@@ -258,12 +258,26 @@ public:
     /// polling at 100 ms lets the loop run fast + steady (LED ticks every
     /// ~1 ms) while the one-off read burst is invisible.  The PWM chip is
     /// event-driven; nothing to poll there.
+    ///
+    /// Each INA226::update() also self-integrates the chip's COULOMB
+    /// COUNTER (a generic driver capability — see INA226::consumed_mAh()),
+    /// so this cadence doubles as the mAh sampling rate.
     void pollSense() {
         const uint32_t now = SFX_MILLIS();
         if (now - _lastSenseMs < kSenseIntervalMs) return;
         _lastSenseMs = now;
-        for (uint8_t k = 0; k < inaCount(); ++k) _inas[k].update();
+        for (uint8_t k = 0; k < inaCount(); ++k) {
+            if (!_state.ina[k].begun) continue;   // absent/clone — never read
+            _inas[k].update();
+        }
     }
+
+    // ── Rail telemetry accessors (cached — no I²C on the caller) ─────
+    bool  inaUp(uint8_t k)          const { return k < inaCount() && _state.ina[k].begun; }
+    float railVoltage_mV(uint8_t k) const { return k < inaCount() ? _inas[k].busVoltage_mV() : 0.0f; }
+    float railCurrent_mA(uint8_t k) const { return k < inaCount() ? _inas[k].current_mA()   : 0.0f; }
+    /// Consumed charge since boot — the driver's coulomb counter.
+    float railUsed_mAh(uint8_t k)   const { return k < inaCount() ? _inas[k].consumed_mAh() : 0.0f; }
 
 private:
     size_t inaCount() const {

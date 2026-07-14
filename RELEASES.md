@@ -7,6 +7,35 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.36.0 — 2026-07-14
+
+Battery + expander-rail telemetry on rev B, enabled by the U43 address
+rework (0x40 → 0x44) that clears the historic PCA9685 collision.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.36.0 | ESP32-S3 | `hubfx-v2.36.0` |
+
+### New Features
+- **INA226 coulomb counter (generic driver capability):** `update()`
+  self-integrates consumed charge; `consumed_mAh()` / `resetConsumed_mAh()`
+  available to every board that polls an INA226.
+- **Rail telemetry on Jeti EX + Studio:** five HubFx-local sensors —
+  Batt U (V), Batt I (A), Batt used (mAh), Exp I (A), Exp used (mAh) —
+  fed at 2 Hz from the 10 Hz sense cadence; auto-discovered by the
+  transmitter and mirrored in Studio's Telemetry panel. Sensors register
+  only for monitors that came up (stock un-reworked boards show no Exp
+  rows). Undervoltage alert remains parked.
+- **U43 re-enabled @ 0x44** (`kInaAddrs = {0x41, 0x44}`) after the bench
+  restrap (lift A0) — bench-verified clash-free; PCB rev C bakes it in.
+- `tests/hw/i2c_probe` gains a clash detector (repeat-read stability of
+  the ID registers — the wire-AND signature of two chips at one address).
+
+### Breaking ⚠️
+- None.
+
+---
+
 ## 2.35.1 — 2026-07-02
 
 **HubFX PCB rev B support** (branch `pcb-nextver`) + a complete

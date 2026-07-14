@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.35.1-hubfx"
-#define BUILD_NUMBER     895
+#define FIRMWARE_VERSION "2.36.0-hubfx"
+#define BUILD_NUMBER     897
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -241,21 +241,23 @@ namespace I2cAddr {
 }
 
 #if HUBFX_PCB_REV >= 2
-// Rev B carries TWO INA226 rail monitors on the PCB, but the firmware
-// drives only ONE (bench-confirmed 2026-07-02, tests/hw/i2c_probe):
+// Rev B carries TWO INA226 rail monitors:
 //   [0] U44 @ 0x41 (A1=GND A0=VS)   — battery total: low-side 10 mΩ (R9)
 //       between the BAT- terminal and the ground plane, VBUS pin on VBAT.
 //       Reads BATTERY voltage on the bus channel, POSITIVE current on load.
-//   ✗  U43 @ 0x40 (expander/USB-rail monitor, low-side 10 mΩ R83 in
-//       GND_1) is UNUSABLE on rev B: the PCA9685's HARDWARE address is
-//       ALSO 0x40 (all six A-pins grounded — firmware's 0x70 is only its
-//       all-call alias), so reads at 0x40 wire-AND two chips (garbage
-//       IDs) and writes land in PCA MODE1 (the historic "clone wedge",
-//       now understood).  Fix scheduled for PCB REV C (restrap PCA A2 →
-//       0x44 or U43 A0 → SDA = 0x42); until then U43 stays off this
-//       list.  Full writeup: PINOUT.md §Rev B + instructions/18.
-constexpr uint8_t kInaAddrs[] = { 0x41 };
-constexpr const char* const kInaLabels[] = { "battery" };
+//   [1] U43 @ 0x44 — expander/USB-rail current: low-side 10 mΩ (R83) in the
+//       USB1/USB4 ground return (GND_1).
+// U43 originally strapped to 0x40, which COLLIDES with the PCA9685's HARDWARE
+// address (all six A-pins grounded — firmware's 0x70 is only its all-call
+// alias): reads at 0x40 wire-AND two chips (garbage IDs) and writes land in
+// PCA MODE1 (the historic "clone wedge").  Relocated to 0x44 — bench rework
+// (lift U43 A0, re-strap) 2026-07-14, confirmed clash-free via tests/hw/
+// i2c_probe (2 canonical INA226, 0 clashes); PCB REV C bakes the restrap in.
+// On a STOCK un-reworked rev B board 0x44 simply won't ACK — the canonical-ID
+// gate logs "1/2 monitors up" and never drives 0x40.  Full writeup:
+// PINOUT.md §Rev B + instructions/18.
+constexpr uint8_t kInaAddrs[] = { 0x41, 0x44 };
+constexpr const char* const kInaLabels[] = { "battery", "expander-rail" };
 
 namespace Sense {
     constexpr float    INA226_SHUNT_OHMS = 0.010f;  // R83 / R9 — 10 mΩ
@@ -1234,20 +1236,15 @@ void loop() {
     storage.checkUploadTimeout();
     board.pollSense();
 
-    // INA226 rail monitoring still DISABLED (2026-05-30; layout landed
-    // 2026-07-01) — rev A readings weren't trustworthy (clone @ 0x40 + the
-    // crowded per-channel layout).  Rev B now carries the intended pair
-    // (kInaAddrs: expander rail @ 0x40 + battery @ 0x41, both wired into the
-    // probe + pollSense so cached V/I is live) but the undervoltage
-    // AlertSound::BatteryLow detector + Jeti rail Voltage/Current telemetry
-    // stay out until the addresses/orientation are bench-confirmed on a
-    // healthy rev B board (tests/hw/i2c_probe).  Restore from git history —
-    // the canonical-only `isCanonical()` filter was the right pattern (see
-    // the AlertService::tickVoltage + Jeti push it fed).
-
-    // Jeti EX expander telemetry — register HubFX-own Version when the expander
-    // is running (IN_1 = Jeti EX).  Joins the HubFx device (with the expander's
-    // built-in Uptime) served to the radio.
+    // Jeti EX expander telemetry — HubFX-own sensors on the local device
+    // (joins the expander's built-in Uptime).  Version registers once; the
+    // rev B rail monitors (probe pollSense: cached V/I @10 Hz + coulomb-
+    // counted mAh) feed Batt/Exp sensors at kRailTelemetryMs.  Sensors
+    // register ONLY for monitors that came up (canonical-ID gate) — a stock
+    // un-reworked board simply shows no Exp rows.  Values reach both the
+    // radio and Studio's Telemetry panel via the JetiTelemetryHub.
+    // (The undervoltage AlertSound::BatteryLow detector is still parked —
+    // telemetry-only for now.)
     {
         auto& jexp = JetiEx::JetiExpander::instance();
         if (jexp.running()) {
@@ -1259,6 +1256,43 @@ void loop() {
                 jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
                                     (int32_t)(maj * 100 + mnr), SFX_MILLIS());   // 216 → "2.16"
             }
+#if HUBFX_PCB_REV >= 2
+            // Rail telemetry — sensor ids 4..8 on the HubFx local device
+            // (1 = Uptime, 3 = Version).  kInaAddrs[0] = battery,
+            // kInaAddrs[1] = expander rail (see the pin/address map).
+            static constexpr uint32_t kRailTelemetryMs = 500;
+            static bool     railSensorsReg = false;
+            static uint32_t railLastMs     = 0;
+            const uint32_t  nowMs          = SFX_MILLIS();
+            if (nowMs - railLastMs >= kRailTelemetryMs) {
+                railLastMs = nowMs;
+                const bool battUp = board.probe.inaUp(0);
+                const bool expUp  = board.probe.inaUp(1);
+                if (!railSensorsReg && (battUp || expUp)) {
+                    railSensorsReg = true;
+                    if (battUp) {
+                        jexp.setLocalSensor(4, "Batt U",   "V",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
+                        jexp.setLocalSensor(5, "Batt I",   "A",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
+                        jexp.setLocalSensor(6, "Batt used","mAh", JetiEx::ExDataType::Int22, 0, 0, nowMs);
+                    }
+                    if (expUp) {
+                        jexp.setLocalSensor(7, "Exp I",    "A",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
+                        jexp.setLocalSensor(8, "Exp used", "mAh", JetiEx::ExDataType::Int22, 0, 0, nowMs);
+                    }
+                }
+                if (battUp) {
+                    // V·100 (12.60 V → 1260) and A·100 (3.45 A → 345) at 2
+                    // decimals fit Int14 (±81.91); mAh integer in Int22.
+                    jexp.setLocalValue(4, (int32_t)(board.probe.railVoltage_mV(0) / 10.0f), nowMs);
+                    jexp.setLocalValue(5, (int32_t)(board.probe.railCurrent_mA(0) / 10.0f), nowMs);
+                    jexp.setLocalValue(6, (int32_t)board.probe.railUsed_mAh(0), nowMs);
+                }
+                if (expUp) {
+                    jexp.setLocalValue(7, (int32_t)(board.probe.railCurrent_mA(1) / 10.0f), nowMs);
+                    jexp.setLocalValue(8, (int32_t)board.probe.railUsed_mAh(1), nowMs);
+                }
+            }
+#endif
         }
     }
 
