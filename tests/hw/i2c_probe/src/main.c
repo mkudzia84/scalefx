@@ -31,16 +31,64 @@ static esp_err_t rd16(uint8_t addr, uint8_t reg, uint16_t *out)
     return e;
 }
 
-static const char *identify(uint8_t a)
+/* Read a register N times; returns true if EVERY read succeeded AND all
+ * returned the SAME value (out = that value).  Two chips answering at one
+ * address drive SDA simultaneously -> the wire-AND is often UNSTABLE across
+ * reads, which is our only real signal of an address CLASH on I2C (you can't
+ * address the two chips separately, but you can catch them fighting). */
+static bool rd16_stable(uint8_t addr, uint8_t reg, uint16_t *out)
+{
+    uint16_t first = 0;
+    if (rd16(addr, reg, &first) != ESP_OK) return false;
+    for (int i = 0; i < 3; i++) {
+        uint16_t v = 0;
+        if (rd16(addr, reg, &v) != ESP_OK) return false;
+        if (v != first) return false;   /* contention -> unstable */
+    }
+    if (out) *out = first;
+    return true;
+}
+
+static bool is_canonical_ina(uint8_t a)
 {
     uint16_t mfg = 0, die = 0;
-    if (rd16(a, 0xFE, &mfg) == ESP_OK && mfg == 0x5449 &&
-        rd16(a, 0xFF, &die) == ESP_OK && (die & 0xFFF0) == 0x2260)
-        return "INA226   (canonical: mfg=0x5449 die=0x2260)";
-    if (a == 0x70) return "PCA9685  (8-ch PWM / all-call)";
-    if (a == 0x4C) return "TAS5825P (audio codec)";
-    if (a >= 0x40 && a <= 0x4F) return "?? in INA/codec range — NOT a canonical INA226";
-    return "??";
+    return rd16_stable(a, 0xFE, &mfg) && mfg == 0x5449 &&
+           rd16_stable(a, 0xFF, &die) && (die & 0xFFF0) == 0x2260;
+}
+
+/* Fills `out` with a human label; sets *clash if the address shows the
+ * unstable-read signature of two chips fighting. */
+static void identify(uint8_t a, char *out, size_t outLen, bool *clash)
+{
+    *clash = false;
+    uint16_t mfg = 0, die = 0;
+    bool mfgStable = rd16_stable(a, 0xFE, &mfg);
+    bool dieStable = rd16_stable(a, 0xFF, &die);
+
+    if (mfgStable && mfg == 0x5449 && dieStable && (die & 0xFFF0) == 0x2260) {
+        snprintf(out, outLen, "INA226   (canonical mfg=0x5449 die=0x2260)");
+        return;
+    }
+    if (a == 0x70) { snprintf(out, outLen, "PCA9685  (8-ch PWM / all-call)"); return; }
+    if (a == 0x4C) { snprintf(out, outLen, "TAS5825P (audio codec)"); return; }
+
+    if (a >= 0x40 && a <= 0x4F) {
+        /* In the INA/codec range but not a clean INA.  If the ID regs read
+         * UNSTABLE, two devices are fighting here (e.g. the PCA9685's HW
+         * address colliding with an INA226 that hasn't been re-strapped). */
+        if (!mfgStable || !dieStable) {
+            *clash = true;
+            snprintf(out, outLen,
+                     "** CLASH? unstable ID reads (mfg last=0x%04X die last=0x%04X) "
+                     "— two chips answering at 0x%02X", mfg, die, a);
+        } else {
+            snprintf(out, outLen,
+                     "single non-INA chip (stable mfg=0x%04X) — e.g. the PCA9685 "
+                     "hardware address", mfg);
+        }
+        return;
+    }
+    snprintf(out, outLen, "?? (mfg reg=0x%04X)", mfg);
 }
 
 static bool present(uint8_t a)
@@ -70,11 +118,21 @@ void app_main(void)
     for (;;) {
         printf("\n=== ScaleFX HubFX  I2C probe  ·  SDA=GPIO%d  SCL=GPIO%d  @ %d Hz ===\n",
                SDA_GPIO, SCL_GPIO, I2C_HZ);
-        int n = 0;
+        int n = 0, inas = 0, clashes = 0;
+        char label[96];
         for (uint8_t a = 0x08; a <= 0x77; a++) {
-            if (present(a)) { printf("  0x%02X   %s\n", a, identify(a)); n++; }
+            if (!present(a)) continue;
+            bool clash = false;
+            identify(a, label, sizeof(label), &clash);
+            printf("  0x%02X   %s\n", a, label);
+            n++;
+            if (clash) clashes++;
+            if (is_canonical_ina(a)) inas++;
         }
-        printf("=== %d device(s) found ===\n", n);
+        printf("=== %d device(s), %d canonical INA226, %d suspected clash%s ===\n",
+               n, inas, clashes, clashes == 1 ? "" : "es");
+        if (clashes == 0)
+            printf("=== NO address clashes detected — every occupied address answers cleanly ===\n");
         vTaskDelay(pdMS_TO_TICKS(3000));
     }
 }
