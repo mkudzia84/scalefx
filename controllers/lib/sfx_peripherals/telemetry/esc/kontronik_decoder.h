@@ -42,30 +42,33 @@ public:
     /// "+N" suffix when more bits are set.  Table: Kontronik spec V5.
     static uint8_t faultMessage(uint32_t faults, char* out, size_t cap) {
         struct F { uint8_t bit; uint8_t cls; const char* text; };
+        // Texts stay <= 15 chars so the " +N" multi-fault suffix always
+        // fits the 18-char EX Message cap (spec packet <= 29 B) — short but
+        // human readable on the transmitter.
         static constexpr F kTab[] = {
-            {0,  4, "ESC UNDERVOLTAGE"},   // battery undervoltage
-            {1,  4, "ESC OVERVOLTAGE"},    // battery overvoltage
+            {0,  4, "ESC UNDERVOLT"},      // battery undervoltage
+            {1,  4, "ESC OVERVOLT"},       // battery overvoltage
             {2,  4, "ESC OVERCURRENT"},    // overcurrent integral error
-            {3,  2, "ESC CURRENT WARN"},   // overcurrent integral warning
+            {3,  2, "ESC CURR WARN"},      // overcurrent integral warning
             {4,  2, "ESC TEMP WARN"},      // power-stage overtemp warning
             {5,  4, "ESC OVERTEMP"},       // power-stage overtemp error
-            {6,  3, "BEC UNDERVOLTAGE"},
-            {7,  3, "BEC OVERVOLTAGE"},
+            {6,  3, "BEC UNDERVOLT"},
+            {7,  3, "BEC OVERVOLT"},
             {8,  3, "BEC OVERCURRENT"},
             {9,  3, "BEC OVERTEMP"},
             {10, 2, "ESC SHUTDOWN"},       // rundown shutdown (speed control)
             {11, 2, "CAPACITY LIMIT"},     // preset discharge capacity reached
-            {12, 3, "ESC OPERATION ERR"},
-            {13, 2, "ESC OPERATION WARN"},
-            {14, 3, "ESC SELFTEST ERR"},
+            {12, 3, "ESC OPER ERROR"},
+            {13, 2, "ESC OPER WARN"},
+            {14, 3, "ESC SELFTEST"},       // self-test error found
             {15, 3, "ESC EEPROM ERR"},
             {16, 3, "ESC WATCHDOG"},
             // 17 ProgAllow — masked (benign)
-            {18, 2, "BATT U-MIN LIMIT"},   // TelMe preset undervoltage
+            {18, 2, "BATT U LIMIT"},       // TelMe preset undervoltage
             {19, 2, "CURRENT LIMIT"},      // TelMe preset overcurrent
             {20, 2, "ESC TEMP LIMIT"},     // TelMe preset ESC overtemp
             {21, 2, "BEC TEMP LIMIT"},     // TelMe preset BEC overtemp
-            {22, 2, "BEC CURRENT LIMIT"},  // TelMe preset BEC overcurrent
+            {22, 2, "BEC CURR LIMIT"},     // TelMe preset BEC overcurrent
             {23, 2, "DISCHARGE LIMIT"},    // TelMe preset discharge capacity
         };
         faults &= kFaultMask;
@@ -123,7 +126,7 @@ public:
         } else {                                     // 'I' — device info
             const uint16_t devVar = rd16(&_buf[4]);
             d.fwVersion = rd16(&_buf[6]);
-            static const char* kDev[] = {"KONTRONIK", "KOSMIK", "KOLIBRI", "JIVEPro", "KONTROL-X", "UHV"};
+            static const char* kDev[] = {"KONTRONIK", "KOSMIK", "KOLIBRI", "JIVE PRO", "KONTROL X", "UHV"};
             const uint8_t devIdx = (uint8_t)(devVar >> 10);
             std::snprintf(d.deviceName, sizeof(d.deviceName), "%s",
                           devIdx < 6 ? kDev[devIdx] : "KONTRONIK");

@@ -296,7 +296,8 @@ inline uint8_t buildExMessageBlock(uint8_t* buf, uint16_t usn, uint16_t lsn,
                                    uint8_t msgType, uint8_t msgClass, const char* text) {
     uint8_t pos = exBlockHead(buf, usn, lsn);
     uint8_t tlen = text ? (uint8_t)strlen(text) : 0;
-    if (tlen > 20) tlen = 20;            // 6-bit block len cap (<=31 bytes follow [1])
+    if (tlen > 18) tlen = 18;            // spec caps the EX packet at 29 B incl
+                                         // separators -> block <= 28 B -> text <= 18
     buf[pos++] = msgType;
     buf[pos++] = (uint8_t)(((msgClass & 0x07) << 5) | (tlen & 0x1F));
     for (uint8_t i = 0; i < tlen; ++i) buf[pos++] = (uint8_t)text[i];

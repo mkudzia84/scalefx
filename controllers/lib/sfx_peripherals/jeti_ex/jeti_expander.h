@@ -154,6 +154,9 @@ public:
         _rxWatch  = LinkMonitor{};
         _escWatch = LinkMonitor{};
         _lastRxResetAtDead = 0;
+        std::memset(_typeRank, 0, sizeof _typeRank);      // fresh discovery, fresh widths
+        std::memset(_msgSeqSent, 0, sizeof _msgSeqSent);
+        std::memset(_msgRepeat, 0, sizeof _msgRepeat);
         _respond = respondTelemetry;
         // Two-way telemetry (half-duplex reply) — RUNTIME-gated via _respond.
         // History: disabled 2026-05-30 because the ~3 ms TX reply on the shared
@@ -791,22 +794,34 @@ private:
 
     /// Map an agnostic hub sensor onto its Jeti EX wire type — the SOLE
     /// point where collection values become Jeti-typed.  Numeric sensors get
-    /// the smallest EX integer that fits the current magnitude (the EX data
-    /// block carries the type per value, so it may legally vary frame to
-    /// frame); Gps/DateTime pass their packed encodings through.  This also
-    /// fixes the old fixed-type trap where a producer picked Int6 (5
-    /// magnitude bits, |v| <= 31) for a value that later exceeded it.
-    static ExDataType exTypeFor(const TelemetryHub::Sensor& s) {
+    /// the smallest EX integer that fits the current magnitude, with TWO
+    /// stability rules for the radio's persistent sensor database:
+    ///   (1) floor at Int14 — an idle value of 0 must not flap to Int6 and
+    ///       back as the metric comes alive;
+    ///   (2) STICKY WIDENING — once a sensor has been sent wider, it never
+    ///       narrows again (per-device/per-slot rank cache, reset with the
+    ///       expander).  This also keeps the fix for the old fixed-type trap
+    ///       (a producer picking Int6 for a value that later exceeded it).
+    /// Gps/DateTime pass their packed encodings through.
+    ExDataType exTypeFor(uint8_t devIdx, uint8_t senIdx, const TelemetryHub::Sensor& s) {
         switch (s.kind) {
             case SensorKind::Gps:      return ExDataType::Gps;
             case SensorKind::DateTime: return ExDataType::DateTime;
             case SensorKind::Int:      break;
         }
         const int32_t v = s.value;
-        if (v >= -31 && v <= 31)               return ExDataType::Int6;
-        if (v >= -8191 && v <= 8191)           return ExDataType::Int14;
-        if (v >= -2097151 && v <= 2097151)     return ExDataType::Int22;
-        return ExDataType::Int30;
+        uint8_t rank = 0;                                       // Int14 floor
+        if (v < -8191 || v > 8191)         rank = 1;            // Int22
+        if (v < -2097151 || v > 2097151)   rank = 2;            // Int30
+        if (devIdx < TelemetryHub::kMaxDevices &&
+            senIdx < TelemetryHub::kMaxSensorsPerDevice) {
+            uint8_t& seen = _typeRank[devIdx][senIdx];
+            if (rank > seen) seen = rank;
+            rank = seen;
+        }
+        return rank == 0 ? ExDataType::Int14
+             : rank == 1 ? ExDataType::Int22
+                         : ExDataType::Int30;
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
@@ -841,9 +856,10 @@ private:
         uint8_t pos = exBlockHead(buf, d->usn, d->lsn);
         uint8_t packed = 0;
         while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 38) {
+            const uint8_t senIdx = _dataSen;
             const auto& s = d->sensors[_dataSen++];
             if (!s.active) continue;
-            pos += encodeSensorValue(&buf[pos], s.id, exTypeFor(s), s.value, s.decimals);
+            pos += encodeSensorValue(&buf[pos], s.id, exTypeFor(_dataDev, senIdx, s), s.value, s.decimals);
             ++packed;
         }
         // Exhausted this device's list → next device next time (fair rotation).
@@ -924,6 +940,8 @@ private:
     static constexpr uint8_t  kMsgRepeats        = 3;    // per-seq EX Message sends
     uint32_t _msgSeqSent[TelemetryHub::kMaxDevices] = {};
     uint8_t  _msgRepeat [TelemetryHub::kMaxDevices] = {};
+    // Sticky per-sensor EX width rank (0=Int14,1=Int22,2=Int30) — see exTypeFor.
+    uint8_t  _typeRank[TelemetryHub::kMaxDevices][TelemetryHub::kMaxSensorsPerDevice] = {};
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     // Publish rate limiter.  Each reply carries ONE value (round-robin over the
     // collection), so to refresh every metric TYPE at ~kPerValueHz the emit rate

@@ -151,14 +151,18 @@ private:
         auto& hub = sfx_telemetry::TelemetryHub::instance();
         sfx_telemetry::TelemetryHub::ScopedLock lk(hub);
         using sfx_telemetry::SensorKind;
-        // Synthetic identity: usn tags the ESC family, lsn the protocol —
-        // unique against real Jeti devices on the same radio.  Re-upsert every
-        // push: refreshes the device's lastMs AND its NAME, which upgrades
-        // from the protocol default to the real identity once the info frame
-        // decodes (Kontronik KODI → "KOLIBRI").
+        // Synthetic identity INSIDE the Jeti third-party manufacturer window
+        // (EX spec v1.07: 0xA400–0xA41F is free for third-party devices; IDs
+        // outside it render as garbled/unnamed entries on the radio — bench
+        // 2026-07-14 with the old 0xE5C0).  0xA410+proto keeps clear of the
+        // HubFx device (0xA400) and stays per-protocol unique; the DISPLAYED
+        // label is the free-text device name, not the serial.  Re-upsert
+        // every push: refreshes the device's lastMs AND its NAME, which
+        // upgrades from the protocol default to the real identity once the
+        // info frame decodes (Kontronik KODI → "KOLIBRI").
         const bool first = (_hubDev == 0xFF);
-        _hubDev = hub.upsertDevice((uint16_t)(0xE5C0u | (uint16_t)_proto),
-                                   0x0001, _d.deviceName, /*local=*/false, nowMs);
+        _hubDev = hub.upsertDevice((uint16_t)(0xA410u + ((uint16_t)_proto & 0x0F)),
+                                   0x0E5C, _d.deviceName, /*local=*/false, nowMs);
         if (_hubDev == 0xFF) return;
         if (first) {
             hub.setSensor(_hubDev, 1, SensorKind::Int, 0, 0, nowMs); hub.setLabel(_hubDev, 1, "RPM", "rpm");
