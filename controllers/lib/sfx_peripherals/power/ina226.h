@@ -350,6 +350,20 @@ public:
     float power_mW() const { return _power_mW; }
 
     /**
+     * @brief Consumed charge since boot (or the last reset), in mAh.
+     *
+     * Coulomb counter integrated inside update() across calls — every
+     * board that polls an INA226 gets pack/rail consumption accounting
+     * for free (feeds Jeti telemetry on HubFX; usable by any battery
+     * policy).  Signed: a charging current (negative on a discharge-
+     * oriented shunt) integrates back down.
+     */
+    float consumed_mAh() const { return _consumed_mAh; }
+
+    /// Reset the coulomb counter (e.g. on a fresh-pack event).
+    void resetConsumed_mAh() { _consumed_mAh = 0.0f; _lastUpdateMs = 0; }
+
+    /**
      * @brief Read bus voltage directly in millivolts (without caching)
      */
     float readBusVoltage_mV();
@@ -444,6 +458,8 @@ private:
     float _shuntVoltage_uV = 0.0f;  // microvolts
     float _current_mA = 0.0f;       // milliamps
     float _power_mW = 0.0f;         // milliwatts
+    float _consumed_mAh = 0.0f;     // coulomb counter (see consumed_mAh())
+    uint32_t _lastUpdateMs = 0;     // update() timestamp for mAh integration
 
     // Identity readback captured during begin().  `_idMatches` is the
     // outcome of comparing the readbacks against MANUFACTURER_ID /
