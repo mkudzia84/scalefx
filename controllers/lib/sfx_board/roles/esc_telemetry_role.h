@@ -34,7 +34,7 @@
 #include <cstdio>   // snprintf (instrumentation hex)
 #include <platform/sfx_platform.h>       // SFX_MILLIS
 #include <ports/input_port.h>
-#include <esc_telem/esc_telemetry_monitor.h>
+#include <telemetry/esc_telemetry_monitor.h>
 #include <serial/ports.h>                // InputPortFlags
 #include <serial/diag_log.h>             // [esctelem] bench instrumentation
 

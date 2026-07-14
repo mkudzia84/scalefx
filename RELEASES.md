@@ -32,7 +32,7 @@ and RPM pole/gear scaling. Consolidates the unreleased 2.36.1–2.38.0 work.
   no radio knowledge; the Jeti responder picks the smallest EX wire type per
   value at encode time (also fixes the fixed-`Int6` throttle truncation trap).
 - **ESC fault messages on the radio:** the Kontronik operation-error bits are
-  mapped from the official V5 spec (archived in `esc_telem/docs/`) with
+  mapped from the official V5 spec (archived in `telemetry/docs/`) with
   warning/error severities; fault CHANGES post a per-device message into the
   hub which the responder forwards as a Jeti **EX Message** packet (v1.07,
   class 2–4 → DC/DS log + popup, e.g. "ESC OVERTEMP +2"). The benign
@@ -83,7 +83,7 @@ and RPM pole/gear scaling. Consolidates the unreleased 2.36.1–2.38.0 work.
 
 ### Internal
 - Official spec PDFs archived: Kontronik Telemetrieprotokoll V5
-  (`esc_telem/docs/`) + JETI EX protocol v1.07 (`jeti_ex/docs/`).
+  (`telemetry/docs/`) + JETI EX protocol v1.07 (`jeti_ex/docs/`).
 - Bench instrumentation: `[esctelem]` 2 s health line (rxB/frames/errs +
   raw-byte snapshot) behind `SFX_INSTRUMENTATION`.
 
