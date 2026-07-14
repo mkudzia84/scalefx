@@ -25,6 +25,7 @@
 
     $: inputs = $deviceModel.inputs
     $: protocols = $deviceModel.inputProtocols
+    $: escProtocols = $deviceModel.escProtocols ?? []
     $: names = boardDisplayNames($deviceModel.ports)
     $: functionGroups = groupFns($deviceModel.channelFunctions)
 
@@ -68,9 +69,11 @@
             const cfg = inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)
             const max = maxCh(proto)
             if (cfg && cfg.channelCount > max) await setInputChannelCount(p, max)
-            // IN_2's telemetry role is inferred by the firmware (the expander
-            // stamps it) and surfaced via the topology re-read in AttachRole —
-            // no UI-side remap needed; the returned snapshot already has it.
+            // Picking Jeti EX on IN_1 still auto-stamps IN_2 with the
+            // esc-telemetry (jeti-exbus) downstream marker in firmware; the
+            // topology re-read in AttachRole surfaces it, so IN_2's card
+            // switches to the telemetry surface without a UI-side remap.
+            // IN_2's own protocol select can override it explicitly.
         } catch (e) { error = String(e) } finally { busy = false }
     }
     async function onCount(p: PortRef, n: number) {
@@ -112,12 +115,19 @@
         return $deviceModel.ports.find(x =>
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
     }
-    // A Jeti EX Telemetry port is the downstream telemetry PASS-THRU (no RC
-    // channels) — auto-assigned to IN_2 while IN_1 runs Jeti EX.  It carries a
-    // downstream slave's (e.g. ESC) telemetry toward the Rx, so it renders as a
-    // compact pass-thru row, NOT a channel-input group with function mappings.
+    // An esc-telemetry port carries a downstream ESC's telemetry INTO the hub
+    // (no RC channels) — either a native stream (Kontronik / Scorpion /
+    // Hobbywing) or the legacy Jeti EX-Bus downstream link auto-stamped on
+    // IN_2 while IN_1 runs Jeti EX.  It renders as a compact telemetry card
+    // (protocol + ESC-type selects, link chip), NOT a channel-input group.
     function isTelemetryPassthru(cfg: InputPortConfig): boolean {
-        return portOf(cfg.port)?.roleKind === RoleKind.JetiExTelemetry
+        return portOf(cfg.port)?.roleKind === RoleKind.EscTelemetry
+            || cfg.protocol === 'esc-telemetry'
+    }
+    // Display label for the selected ESC stream (falls back to the raw id).
+    function escLabel(cfg: InputPortConfig): string {
+        const id = cfg.escProtocol || 'jeti-exbus'
+        return escProtocols.find(ep => ep.id === id)?.label ?? id
     }
     // Rule 34: the protocol picker offers ONLY protocols whose backing
     // role is in the port's allowedRoles — a PWM-pulse-only input shows
@@ -129,9 +139,6 @@
         const allowed = new Set((portOf(p)?.allowedRoles ?? []).map(r => r.kind))
         return protocols.filter(pr => {
             if (pr.id === current) return true                  // always keep the current value
-            // Jeti EX Telemetry is the AUTO downstream role — assigned to IN_2
-            // when IN_1 is set to Jeti EX, never user-picked here.
-            if (pr.roleKind === RoleKind.JetiExTelemetry) return false
             return pr.roleKind === undefined || allowed.size === 0 || allowed.has(pr.roleKind)
         })
     }
@@ -160,8 +167,11 @@
 
     {#each inputs as cfg (cfg.port.guid + cfg.port.index)}
         {#if isTelemetryPassthru(cfg)}
-            <!-- Telemetry pass-thru (IN_2): a downstream EX-Bus telemetry input,
-                 NOT an RC channel source and NOT an output — no channel group. -->
+            <!-- ESC telemetry (typically IN_2): a downstream telemetry input,
+                 NOT an RC channel source and NOT an output — no channel group.
+                 Protocol stays selectable so the operator can flip the port
+                 between the native ESC streams, the legacy EX-Bus downstream
+                 link, or back to an RC protocol. -->
             <div class="card input-card passthru">
                 <div class="board-head">
                     <span class="board-name">{names[cfg.port.guid] ?? hw(cfg.port)} · {hw(cfg.port)}</span>
@@ -169,14 +179,27 @@
                         <span class="rail-chip" title="Rail voltage declared by the board's port descriptor">{rail(cfg.port)}</span>
                     {/if}
                     <!-- Live downstream-link health: a non-local device replying
-                         in the telemetry collection = the ESC on IN_2 is active. -->
+                         in the telemetry collection = the ESC on this port is active. -->
                     <span class="esc-chip" class:active={$escTelemetryActive}
                           title={$escTelemetryActive
                               ? 'A downstream device (e.g. ESC) is replying on this telemetry link.'
-                              : 'No downstream telemetry — nothing replying on IN_2 (check the ESC / wiring).'}>
+                              : 'No downstream telemetry — nothing replying on this port (check the ESC / wiring).'}>
                         {$escTelemetryActive ? '● active' : '○ no signal'}
                     </span>
-                    <span class="passthru-tag">Jeti EX Telemetry · pass-thru</span>
+                    <span class="passthru-tag">{escLabel(cfg)}</span>
+                </div>
+                <div class="form-row">
+                    <span class="field-label">Protocol</span>
+                    <select class="field-input" style="flex:0 0 150px" value={cfg.protocol} disabled={busy}
+                            title="Input decoding mode — limited to the roles this port can host"
+                            on:change={(e) => onProtocol(cfg.port, selValue(e))}>
+                        {#each protosFor(cfg.port, cfg.protocol) as proto}
+                            <option value={proto.id} disabled={!proto.implemented}>
+                                {proto.label}{proto.implemented ? '' : ' (soon)'}
+                            </option>
+                        {/each}
+                    </select>
+                    <span class="hint">ESC stream &amp; RPM gear ratio are configured on the <strong>Telemetry</strong> sub-tab.</span>
                 </div>
             </div>
         {:else}

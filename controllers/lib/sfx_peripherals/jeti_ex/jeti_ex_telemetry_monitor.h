@@ -3,7 +3,7 @@
  *
  * LISTEN-ONLY decoder for Jeti EX Bus TELEMETRY on a downstream link (e.g. to
  * an ESC).  Decodes the device's EX telemetry (`dataId 0x3A` frames) and feeds
- * it into the shared JetiTelemetryHub PASS-THROUGH — preserving the device's
+ * it into the shared TelemetryHub PASS-THROUGH — preserving the device's
  * own USN/LSN/name so the radio shows it as a distinct device.  Framing is the
  * shared JetiExFrameParser (CRC handled there); this class is just the EX-data
  * decode + hub upsert.
@@ -20,7 +20,7 @@
 
 #include "jeti_ex_common.h"
 #include "jeti_ex_frame.h"
-#include "jeti_telemetry_hub.h"
+#include <telemetry/telemetry_hub.h>
 
 namespace JetiEx {
 
@@ -73,7 +73,7 @@ private:
         const uint8_t  frameType = p[1] >> 6;                  // 0b01=data, 0b00=text
         const uint16_t usn = (uint16_t)(p[2] | (p[3] << 8));   // manufacturer
         const uint16_t lsn = (uint16_t)(p[4] | (p[5] << 8));   // device serial
-        auto& hub = JetiTelemetryHub::instance();
+        auto& hub = sfx_telemetry::TelemetryHub::instance();
         const uint8_t end = (uint8_t)(len - 1);                // exclude trailing crc8
 
         if (frameType == 1) {                                  // DATA: one or more values
@@ -86,7 +86,14 @@ private:
                 int32_t  value;
                 if (!decodeSensorValue(&p[off], (size_t)(end - off),
                                        id, type, value, dp, consumed)) break;
-                hub.setSensor(dev, id, type, dp, value, nowMs);
+                // The hub is protocol-agnostic — fold the EX integer widths
+                // into Int; Gps/DateTime keep their packed encodings.
+                using sfx_telemetry::SensorKind;
+                const SensorKind kind =
+                      (type == ExDataType::Gps)      ? SensorKind::Gps
+                    : (type == ExDataType::DateTime) ? SensorKind::DateTime
+                                                     : SensorKind::Int;
+                hub.setSensor(dev, id, kind, dp, value, nowMs);
                 _sensors++;
                 off = (uint8_t)(off + consumed);
             }

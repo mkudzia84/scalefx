@@ -16,11 +16,13 @@
     import TelemetryPanel from '../components/TelemetryPanel.svelte'
     import { deviceModel, RoleKind } from '../devicemodel'
 
-    // Telemetry emission is configured when an input port carries the
-    // jeti-ex-input role (IN_1 = the EX responder that emits telemetry to the
-    // radio).  Add future telemetry-emitting protocols' role kinds here.
+    // The Telemetry sub-tab shows when telemetry flows: an input carrying the
+    // jeti-ex-input role (IN_1 = the EX responder emitting to the radio) OR an
+    // esc-telemetry source (its stream + RPM-ratio config lives THERE, not on
+    // the Input panel).  Add future telemetry-emitting role kinds here.
     $: hasTelemetry = $deviceModel.ports.some(
-        p => p.kindName === 'input' && p.roleKind === RoleKind.JetiExInput)
+        p => p.kindName === 'input' &&
+             (p.roleKind === RoleKind.JetiExInput || p.roleKind === RoleKind.EscTelemetry))
 
     type SubTab = 'ports' | 'telemetry'
     let sub: SubTab = 'ports'

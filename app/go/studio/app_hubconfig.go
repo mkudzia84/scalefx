@@ -58,6 +58,13 @@ type yamlPortBinding struct {
 	// stamped per port.  Nil when omitted — the role attaches with its
 	// initFromPort defaults.  Only set for `kind: servo`.
 	Profile *devicemodel.ServoMotionProfile `yaml:"profile,omitempty"`
+	// esc-telemetry stream selector (kontronik | scorpion | hobbywing-v4 |
+	// hobbywing-v5 | jeti-exbus) — only on input ports with that role.
+	EscProtocol string `yaml:"esc_protocol,omitempty"`
+	// esc-telemetry RPM scaling: motor pole count (electrical rpm = shaft
+	// rpm × poles/2) + gearbox ratio; omitted when direct / unknown.
+	EscMotorPoles int     `yaml:"esc_motor_poles,omitempty"`
+	EscGearRatio  float64 `yaml:"esc_gear_ratio,omitempty"`
 }
 
 type yamlExpanderEntry struct {
@@ -219,6 +226,17 @@ func (a *App) LoadHubConfig() error {
 		if pb.Label != "" {
 			a.portNames[ref] = pb.Label
 		}
+		if pb.EscProtocol != "" {
+			ic := a.inputCfg(hubGUID, kind, pb.Idx)
+			ic.Protocol = devicemodel.InputEscTelem
+			ic.EscProtocol = pb.EscProtocol
+			if pb.EscMotorPoles >= 2 {
+				ic.EscMotorPoles = pb.EscMotorPoles
+			}
+			if pb.EscGearRatio > 0 {
+				ic.EscGearRatio = pb.EscGearRatio
+			}
+		}
 		if pb.Profile != nil && pb.Kind == "servo" {
 			a.portProfiles[ref] = ServoMotionProfileDTO(*pb.Profile)
 		}
@@ -364,6 +382,19 @@ func (a *App) SaveHubConfig() error {
 				Idx:   p.Ref.Index,
 				Role:  role,
 				Label: name,
+			}
+			if p.RoleKind == roles.KindEscTelemetry {
+				if ic, ok := a.inputs[devicemodel.PortRef{GUID: "", Kind: p.Ref.Kind, Index: p.Ref.Index}]; ok {
+					if ic.EscProtocol != "" {
+						pb.EscProtocol = ic.EscProtocol
+					}
+					if ic.EscMotorPoles > 2 {
+						pb.EscMotorPoles = ic.EscMotorPoles
+					}
+					if ic.EscGearRatio > 0 && ic.EscGearRatio != 1 {
+						pb.EscGearRatio = ic.EscGearRatio
+					}
+				}
 			}
 			if hasProf && p.KindName == "servo" {
 				dp := devicemodel.ServoMotionProfile(prof)

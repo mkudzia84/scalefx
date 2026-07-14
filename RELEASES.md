@@ -7,6 +7,88 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.38.1 — 2026-07-14
+
+Native ESC telemetry (Kontronik / Scorpion / Hobbywing) on the TELEM port,
+a protocol-agnostic telemetry collection, ESC fault messages on the radio,
+and RPM pole/gear scaling. Consolidates the unreleased 2.36.1–2.38.0 work.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.38.1 | ESP32-S3 | `hubfx-v2.38.1` |
+
+### New Features
+- **ESC Telemetry role (`esc-telemetry`, RoleKind 0x05):** an input port can
+  listen to an ESC's native telemetry broadcast — Kontronik KODL/KODI
+  (115200 8E1, CRC32, bench-verified on a KOLIBRI), Scorpion Tribunus
+  "Unsc Telem" (38400 8N1, CRC16-CCITT), Hobbywing Platinum V4/FlyFun
+  (19200 8N1) and Platinum V5 (115200 8N1, CRC16-MODBUS) — normalized to
+  RPM/V/I/mAh/throttle/temps/BEC/faults and published to the radio + Studio.
+  Each protocol is a decoder class behind a C++20 `EscTelemetryDecoder`
+  concept, composed by `EscTelemetryMonitorT<...>` (adding an ESC = one
+  decoder + one alias entry). Attach config: `[protocol][baudK][rpmDivider]`.
+- **Protocol-agnostic TelemetryHub** (`sfx_telemetry::TelemetryHub`, moved out
+  of `jeti_ex/`): producers publish `SensorKind` Int/Gps/DateTime values with
+  no radio knowledge; the Jeti responder picks the smallest EX wire type per
+  value at encode time (also fixes the fixed-`Int6` throttle truncation trap).
+- **ESC fault messages on the radio:** the Kontronik operation-error bits are
+  mapped from the official V5 spec (archived in `esc_telem/docs/`) with
+  warning/error severities; fault CHANGES post a per-device message into the
+  hub which the responder forwards as a Jeti **EX Message** packet (v1.07,
+  class 2–4 → DC/DS log + popup, e.g. "ESC OVERTEMP +2"). The benign
+  ProgAllow bit 17 is masked (it reads constantly while idle).
+- **RPM pole/gear scaling:** Kontronik transmits ELECTRICAL rpm — Studio's
+  Telemetry sub-tab gains **Motor poles** + **Gear ratio** per esc-telemetry
+  port; the firmware divides by (poles/2 × gear) at publish
+  (`esc_motor_poles` / `esc_gear_ratio` in `/hubfx.yaml` ports[]).
+- **Studio:** ESC telemetry configuration moved to the Input & Ports →
+  Telemetry sub-tab (stream selector + RPM scaling + live streaming chip);
+  the Input panel card keeps the protocol select with a pointer. The
+  Telemetry sub-tab now shows for esc-telemetry sources too.
+- **Jeti expander robustness (2.36.1/2.36.2 work):** restart-on-attach (live
+  role moves no longer need a reboot), deferred link-loss self-restart
+  (unplugged Rx recovers on replug, 15 s watchdog), ESC channel-frame mirror
+  emulating the real master cycle on the downstream link (Kolibri needs
+  channel frames before its telemetry-reply slot opens; rev-B-only).
+- **LightFX Studio:** loading a program template on a fresh board now seeds
+  channels from unclaimed LED-animator ports (mapped + renamed) instead of a
+  half-empty program.
+
+### Bug Fixes
+- **Raw-UART listen is RX-only:** the TX pad (GPIO3 sits directly on the
+  TELEM line on rev B) idled push-pull HIGH and flattened the ESC's start
+  bits (`rxB=0`) — raw mode never attaches TX; half-duplex roles gate it
+  like JETI_EX.
+- **UART handoff on role change:** attaching a native ESC protocol makes a
+  running JetiExpander release its EX downstream port
+  (`setDownstreamPort`) — previously both drained the same UART; switching
+  back to jeti-exbus re-adopts it.
+- **Kontronik KODI is 44 bytes** (spec field sum; the header sheet's 40 only
+  covers KODL) — the info frame now decodes: device identity (KOLIBRI/
+  KOSMIK/…) + firmware version, zero CRC errors at 100 frames/s.
+- Device name refreshes on every hub push, so the identity upgrades from the
+  protocol default once the info frame lands.
+
+### Protocol Changes
+- RoleKind 0x05 renamed `jeti-ex-telemetry` → `esc-telemetry` (legacy yaml
+  names map over; zero-length attach config = the old downstream-marker
+  semantics, so existing configs keep working).
+- Telemetry-collection sensor `type` byte (0xEC) now carries the agnostic
+  `SensorKind` (0=int, 1=gps, 2=datetime) instead of the Jeti ExDataType —
+  no host code interpreted the old byte.
+- UART raw mode gains parity support (`kSerial8E1` — Kontronik).
+
+### Breaking ⚠️
+- None on the wire (Rule 11 append-only attach config; legacy names accepted).
+
+### Internal
+- Official spec PDFs archived: Kontronik Telemetrieprotokoll V5
+  (`esc_telem/docs/`) + JETI EX protocol v1.07 (`jeti_ex/docs/`).
+- Bench instrumentation: `[esctelem]` 2 s health line (rxB/frames/errs +
+  raw-byte snapshot) behind `SFX_INSTRUMENTATION`.
+
+---
+
 ## 2.36.0 — 2026-07-14
 
 Battery + expander-rail telemetry on rev B, enabled by the U43 address

@@ -1,57 +1,86 @@
 /*
- * jeti_telemetry_hub.h — JetiTelemetryHub
+ * telemetry_hub.h — TelemetryHub, the board's protocol-agnostic telemetry
+ * collection.
  *
- * Board-unique singleton (Rule 14) that aggregates Jeti EX telemetry from
- * multiple sources and presents it to the master Jeti EX Bus channel (the one
- * wired to the receiver) as a set of distinct Jeti telemetry DEVICES — exactly
- * the EX Bus Expander topology from the spec (docs/EX_Bus_protocol_v1.21_EN.pdf,
- * page 1).  The radio keys devices by (USN manufacturer, LSN serial), so the
- * downstream device (e.g. an ESC) is served PASS-THROUGH with its own identity
- * and shows on the transmitter under its own name (e.g. "MEZON: RPM") next to
- * the HubFX-own device ("HubFx: Version").
+ * Board-unique singleton (Rule 14) that aggregates telemetry from any producer
+ * — HubFX-internal sensors (battery/expander rails, uptime), native ESC
+ * telemetry streams (Kontronik / Scorpion / Hobbywing), a downstream Jeti
+ * EX-Bus slave — into a flat DEVICE → SENSOR table.  Producers write plain
+ * typed values; they carry NO radio-protocol knowledge.
  *
- * Concentrator topology:
- *   downstream EX Bus slave (ESC) ─► UART2 monitor ─┐
- *   HubFX-internal sensors        ──────────────────┼─► JetiTelemetryHub (N devices)
- *                                                    │            │
- *   radio (Rx) ◄── UART1 master responder ◄──────────┴────────────┘  (rotates devices)
+ * Consumers scrape the collection independently:
+ *   - the Jeti EX responder (JetiExpander) — only while the jeti-ex-input
+ *     role is running — maps each sensor onto the smallest EX wire type at
+ *     frame-encode time and serves it to the radio,
+ *   - the telemetry-collection wire service (0xEB–0xED) serializes it for
+ *     the Studio Telemetry tab + CLI `telemetry`.
  *
- * Identity is preserved end-to-end: each device keeps its USN/LSN/name and its
- * sensors keep their ORIGINAL wire ids/labels/units.  Local (HubFX-own) devices
- * never expire; downstream devices + sensors that stop refreshing are marked
- * inactive so a disconnected ESC drops out of telemetry.
+ *                       producers                 consumers
+ *   ESC monitor (native stream) ──┐        ┌──► JetiExpander → radio
+ *   EX-Bus downstream monitor ────┼─► HUB ─┤
+ *   HubFX-internal sensors ───────┘        └──► 0xEB–0xED → Studio / CLI
  *
- * Thread-safety: a dedicated Core-0 task (the expander) and the main loop both
- * touch the hub.  Hold lock()/unlock() (or ScopedLock) around a read that spans
- * multiple sensors so a value can't change mid-frame.  Mutex is a no-op until
- * begin() wires it; single-threaded callers can ignore it.
+ * Identity is preserved end-to-end: each device keeps its USN/LSN/name and
+ * its sensors keep their original ids/labels/units, so a downstream device
+ * (e.g. an ESC) shows on the transmitter under its own name.  Local
+ * (HubFX-own) devices never expire; downstream devices + sensors that stop
+ * refreshing are marked inactive so a disconnected ESC drops out.
+ *
+ * Thread-safety: a dedicated Core-0 task (the Jeti responder) and the main
+ * loop both touch the hub.  Hold lock()/unlock() (or ScopedLock) around a
+ * read that spans multiple sensors so a value can't change mid-frame.  Mutex
+ * is a no-op until begin() wires it; single-threaded callers can ignore it.
  */
 
-#ifndef SFX_JETI_TELEMETRY_HUB_H
-#define SFX_JETI_TELEMETRY_HUB_H
+#ifndef SFX_TELEMETRY_HUB_H
+#define SFX_TELEMETRY_HUB_H
 
 #include <cstdint>
 #include <cstring>
 
 #include <platform/sfx_platform.h>   // SfxMutex
-#include "jeti_ex_common.h"
 
-namespace JetiEx {
+namespace sfx_telemetry {
 
-class JetiTelemetryHub {
+/// Value shape of one sensor — protocol-agnostic.  Numeric sensors store the
+/// scaled integer (value × 10^decimals); Gps/DateTime keep the source's raw
+/// 32-bit packed encoding for pass-through (a consumer that can't represent
+/// them skips them).
+enum class SensorKind : uint8_t {
+    Int      = 0,   ///< scaled signed integer (decimals = implied dp)
+    Gps      = 1,   ///< packed GPS coordinate (pass-through)
+    DateTime = 2,   ///< packed date/time (pass-through)
+};
+
+class TelemetryHub {
 public:
-    static constexpr uint8_t kMaxDevices         = 6;    ///< HubFX-own + downstream
-    static constexpr uint8_t kMaxSensorsPerDevice = 16;  ///< EX value ids 0..15
+    static constexpr uint8_t kMaxDevices          = 6;   ///< HubFX-own + downstream
+    static constexpr uint8_t kMaxSensorsPerDevice = 16;
 
     struct Sensor {
-        uint8_t    id       = 0;          ///< wire sensor id within the device (1..15)
-        ExDataType type     = ExDataType::Int14;
+        uint8_t    id       = 0;          ///< sensor id within the device (1..15)
+        SensorKind kind     = SensorKind::Int;
         uint8_t    decimals = 0;
         int32_t    value    = 0;
         char       label[21] = {};
         char       unit[6]   = {};
         uint32_t   lastMs    = 0;
         bool       active    = false;
+    };
+
+    /// A device's current textual condition — set by producers on fault-state
+    /// CHANGES (never per-frame), consumed by radio responders (Jeti EX
+    /// Message packet) and UIs.  Class semantics (protocol-agnostic, aligned
+    /// 1:1 with the Jeti EX message classes):
+    ///   0 basic info | 1 status | 2 warning | 3 recoverable error |
+    ///   4 non-recoverable error.
+    /// `seq` bumps on every change so consumers can detect + de-duplicate;
+    /// empty text = condition cleared (consumers announce nothing).
+    struct Message {
+        uint8_t  cls    = 0;
+        uint32_t seq    = 0;
+        uint32_t lastMs = 0;
+        char     text[24] = {};
     };
 
     struct Device {
@@ -63,21 +92,22 @@ public:
         uint32_t lastMs = 0;
         Sensor   sensors[kMaxSensorsPerDevice];
         uint8_t  sensorCount = 0;
+        Message  msg;
     };
 
-    static JetiTelemetryHub& instance() {
-        static JetiTelemetryHub inst;       // C++11 thread-safe static local
+    static TelemetryHub& instance() {
+        static TelemetryHub inst;           // C++11 thread-safe static local
         return inst;
     }
 
     // ── Mutex ────────────────────────────────────────────────────────
     void lock()   { sfxMutexLock(_mutex); }
     void unlock() { sfxMutexUnlock(_mutex); }
-    /// RAII guard for spanning reads (responder building a multi-sensor frame).
+    /// RAII guard for spanning reads (a consumer building a multi-sensor frame).
     struct ScopedLock {
-        explicit ScopedLock(JetiTelemetryHub& h) : _h(h) { _h.lock(); }
+        explicit ScopedLock(TelemetryHub& h) : _h(h) { _h.lock(); }
         ~ScopedLock() { _h.unlock(); }
-        JetiTelemetryHub& _h;
+        TelemetryHub& _h;
     };
 
     // ── Device registry ──────────────────────────────────────────────
@@ -103,7 +133,7 @@ public:
     // ── Sensor upsert (by device index) ──────────────────────────────
     /// Upsert a sensor VALUE within a device.  Returns false on bad index or a
     /// full per-device table.
-    bool setSensor(uint8_t devIdx, uint8_t id, ExDataType type,
+    bool setSensor(uint8_t devIdx, uint8_t id, SensorKind kind,
                    uint8_t decimals, int32_t value, uint32_t nowMs) {
         if (devIdx >= _deviceCount) return false;
         Device& d = _devices[devIdx];
@@ -113,7 +143,7 @@ public:
             s = &d.sensors[d.sensorCount++];
             s->id = id;
         }
-        s->type     = type;
+        s->kind     = kind;
         s->decimals = decimals;
         s->value    = value;
         s->lastMs   = nowMs;
@@ -123,8 +153,9 @@ public:
         return true;
     }
 
-    /// Set just label/unit for a sensor (from an EX text frame).  Creates the
-    /// sensor if not seen yet (some devices send text before the first value).
+    /// Set just label/unit for a sensor (from a producer's metadata frame).
+    /// Creates the sensor if not seen yet (some devices send text before the
+    /// first value).
     void setLabel(uint8_t devIdx, uint8_t id, const char* label, const char* unit) {
         if (devIdx >= _deviceCount) return;
         Device& d = _devices[devIdx];
@@ -136,6 +167,20 @@ public:
         }
         if (label) copyStr(s->label, sizeof s->label, label);
         if (unit)  copyStr(s->unit,  sizeof s->unit,  unit);
+    }
+
+    /// Set/clear a device's condition message.  No-op when class AND text are
+    /// unchanged (so producers may call it repeatedly); otherwise the seq
+    /// bumps and consumers re-announce.  Empty text = cleared.
+    void setMessage(uint8_t devIdx, uint8_t cls, const char* text, uint32_t nowMs) {
+        if (devIdx >= _deviceCount) return;
+        Device& d = _devices[devIdx];
+        const char* t = text ? text : "";
+        if (d.msg.cls == cls && std::strcmp(d.msg.text, t) == 0) { d.msg.lastMs = nowMs; return; }
+        d.msg.cls = cls;
+        copyStr(d.msg.text, sizeof d.msg.text, t);
+        d.msg.seq++;
+        d.msg.lastMs = nowMs;
     }
 
     /// Mark non-local devices/sensors not refreshed within `timeoutMs` inactive
@@ -155,7 +200,7 @@ public:
         }
     }
 
-    // ── Read-side (responder) ────────────────────────────────────────
+    // ── Read-side (consumers) ────────────────────────────────────────
     uint8_t       deviceCount()      const { return _deviceCount; }
     const Device* device(uint8_t i)  const { return (i < _deviceCount) ? &_devices[i] : nullptr; }
 
@@ -171,9 +216,9 @@ public:
     }
 
 private:
-    JetiTelemetryHub() { sfxMutexInit(_mutex); }
-    JetiTelemetryHub(const JetiTelemetryHub&) = delete;
-    JetiTelemetryHub& operator=(const JetiTelemetryHub&) = delete;
+    TelemetryHub() { sfxMutexInit(_mutex); }
+    TelemetryHub(const TelemetryHub&) = delete;
+    TelemetryHub& operator=(const TelemetryHub&) = delete;
 
     Device* findDevice(uint16_t usn, uint16_t lsn) {
         for (uint8_t i = 0; i < _deviceCount; ++i)
@@ -196,6 +241,6 @@ private:
     SfxMutex _mutex;
 };
 
-}  // namespace JetiEx
+}  // namespace sfx_telemetry
 
-#endif  // SFX_JETI_TELEMETRY_HUB_H
+#endif  // SFX_TELEMETRY_HUB_H

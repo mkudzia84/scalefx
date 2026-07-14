@@ -417,7 +417,7 @@ void InputDispatcherServicePolicyT<TTopology>::fireConnection(const Link& l) {
 template <hubfx::topology::TopologyService TTopology>
 size_t InputDispatcherServicePolicyT<TTopology>::buildTelemetrySnapshot(
         uint8_t* buf, size_t cap) const {
-    using Hub = JetiEx::JetiTelemetryHub;
+    using Hub = sfx_telemetry::TelemetryHub;
     Hub& hub = Hub::instance();
 
     // Helpers — bounds-checked little-endian writers.  `w` is the cursor;
@@ -466,7 +466,7 @@ size_t InputDispatcherServicePolicyT<TTopology>::buildTelemetrySnapshot(
             // worst-case sensor entry ≈ 8 + 32 + 32; stop if it won't fit.
             if (w + 8 + 64 > cap) break;
             putU8(s.id);
-            putU8((uint8_t)s.type);
+            putU8((uint8_t)s.kind);
             putU8(s.decimals);
             putU8((uint8_t)(s.active ? 0x01 : 0));
             putI32(s.value);

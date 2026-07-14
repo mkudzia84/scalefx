@@ -7,7 +7,9 @@
 <script lang="ts">
     import { onMount, onDestroy } from 'svelte'
     import { telemetry, fmtSensorValue, startTelemetryPolling, stopTelemetryPolling,
-             linkStates, installConnectionListener, LINK_STATE_NAMES } from '../telemetry'
+             linkStates, installConnectionListener, LINK_STATE_NAMES, escTelemetryActive } from '../telemetry'
+    import { deviceModel, setInputEscProtocol, setInputEscRpmScaling,
+             type InputPortConfig, type PortRef } from '../devicemodel'
 
     onMount(() => {
         installConnectionListener()
@@ -24,7 +26,91 @@
     $: links = Object.values($linkStates)
     $: worstLink = links.reduce((w, l) => Math.max(w, l.state), 0)
     $: anyBrownouts = links.reduce((n, l) => n + (l.brownouts ?? 0), 0)
+
+    // ── ESC telemetry sources (config moved here from the Input panel) ──
+    let busy = false
+    let srcError = ''
+    $: escPorts = $deviceModel.inputs.filter(c => c.protocol === 'esc-telemetry')
+    $: escProtocols = $deviceModel.escProtocols ?? []
+    function hw(p: PortRef): string {
+        const m = $deviceModel.ports.find(x =>
+            x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
+        return m?.hardwareName || `IN${p.index + 1}`
+    }
+    function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
+    async function onEscProto(p: PortRef, escProto: string) {
+        busy = true; srcError = ''
+        try { await setInputEscProtocol(p, escProto) }
+        catch (e) { srcError = String(e) } finally { busy = false }
+    }
+    function numOf(e: Event): number { return Number((e.target as HTMLInputElement).value) }
+    async function onPoles(cfg: InputPortConfig, e: Event) {
+        const v = Math.round(numOf(e))
+        if (!Number.isFinite(v) || v < 2 || v > 100 || v % 2 !== 0) { srcError = 'Motor poles must be even, 2–100'; return }
+        busy = true; srcError = ''
+        try { await setInputEscRpmScaling(cfg.port, v, cfg.escGearRatio || 1) }
+        catch (err) { srcError = String(err) } finally { busy = false }
+    }
+    async function onGear(cfg: InputPortConfig, e: Event) {
+        const v = numOf(e)
+        if (!Number.isFinite(v) || v <= 0 || v >= 100) { srcError = 'Gear ratio must be 0–100'; return }
+        busy = true; srcError = ''
+        try { await setInputEscRpmScaling(cfg.port, cfg.escMotorPoles || 2, v) }
+        catch (err) { srcError = String(err) } finally { busy = false }
+    }
+    // Effective publish divider = pole pairs × gear (what the firmware applies).
+    function rpmDivider(cfg: InputPortConfig): number {
+        const pairs = (cfg.escMotorPoles && cfg.escMotorPoles >= 2) ? cfg.escMotorPoles / 2 : 1
+        const gear  = (cfg.escGearRatio && cfg.escGearRatio > 0) ? cfg.escGearRatio : 1
+        return pairs * gear
+    }
 </script>
+
+{#if escPorts.length > 0}
+    {#if srcError}<div class="banner err">{srcError}</div>{/if}
+    {#each escPorts as cfg (cfg.port.guid + cfg.port.index)}
+        <div class="card esc-src">
+            <div class="card-header">
+                <h3>ESC telemetry — {hw(cfg.port)}</h3>
+                <span class="esc-chip" class:active={$escTelemetryActive}
+                      title={$escTelemetryActive
+                          ? 'The ESC is streaming on this telemetry link.'
+                          : 'No stream — check the ESC telemetry mode / wiring.'}>
+                    {$escTelemetryActive ? '● streaming' : '○ no signal'}
+                </span>
+            </div>
+            <div class="form-row">
+                <span class="field-label">ESC</span>
+                <select class="field-input" style="flex:0 0 260px" value={cfg.escProtocol || 'jeti-exbus'}
+                        disabled={busy}
+                        title="Which ESC's native telemetry stream this port listens to — sensors flow to the Jeti radio + this panel"
+                        on:change={(e) => onEscProto(cfg.port, selValue(e))}>
+                    {#each escProtocols as ep}
+                        <option value={ep.id}>{ep.label}</option>
+                    {/each}
+                </select>
+            </div>
+            <div class="form-row">
+                <span class="field-label">Motor poles</span>
+                <input class="field-input narrow" type="number" min="2" max="100" step="2"
+                       value={cfg.escMotorPoles || 2} disabled={busy}
+                       title="Magnet/pole count of the motor — Kontronik transmits ELECTRICAL rpm = shaft rpm × poles/2. An outrunner's pole count is its magnet count (e.g. 10)."
+                       on:change={(e) => onPoles(cfg, e)} />
+                <span class="field-label">Gear ratio</span>
+                <input class="field-input narrow" type="number" min="0.01" max="99" step="0.01"
+                       value={cfg.escGearRatio || 1} disabled={busy}
+                       title="Gearbox ratio motor:output (1 = direct drive). The published RPM is the OUTPUT shaft (head/prop) speed."
+                       on:change={(e) => onGear(cfg, e)} />
+                <span class="unit">: 1</span>
+            </div>
+            <p class="hint">
+                Published RPM = transmitted ÷ <strong>{rpmDivider(cfg).toFixed(2)}</strong>
+                (pole pairs × gear ratio) — Kontronik ESCs transmit electrical RPM,
+                so both corrections apply before the value reaches the radio and this panel.
+            </p>
+        </div>
+    {/each}
+{/if}
 
 <div class="card telem-card">
     <div class="card-header">
@@ -107,4 +193,11 @@
     .s-val { font-family: var(--font-mono); font-weight: 600; color: var(--text-bright); }
     .sensor.dim .s-val { color: var(--text-dim); }
     .s-unit { font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); min-width: 28px; }
+    .esc-src { margin-bottom: 12px; }
+    .esc-chip {
+        font-size: 11px; padding: 2px 8px; border-radius: 10px;
+        background: var(--bg-raised); color: var(--text-dim);
+        border: 1px solid var(--border);
+    }
+    .esc-chip.active { color: var(--ok, #3fb950); border-color: var(--ok, #3fb950); }
 </style>

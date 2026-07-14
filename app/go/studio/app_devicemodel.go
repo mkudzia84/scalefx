@@ -36,6 +36,7 @@ type DeviceModelSnapshot struct {
 	Inputs           []devicemodel.InputPortConfig    `json:"inputs"`
 	ChannelFunctions []devicemodel.ChannelFunctionDef `json:"channelFunctions"`
 	InputProtocols   []devicemodel.InputProtocolDef   `json:"inputProtocols"`
+	EscProtocols     []devicemodel.EscProtocolDef     `json:"escProtocols"`
 }
 
 // RoleKindInfo is a (id, wire-name, friendly-label) tuple for role UIs.
@@ -193,6 +194,7 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 		Inputs:           []devicemodel.InputPortConfig{},
 		ChannelFunctions: devicemodel.ChannelFunctions(),
 		InputProtocols:   devicemodel.InputProtocols(),
+		EscProtocols:     devicemodel.EscProtocols(),
 	}
 	a.dmMu.Lock()
 	defer a.dmMu.Unlock()
@@ -387,16 +389,22 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 // left empty (role defaults); per-role config comes from the functional
 // tabs / config files.
 func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSnapshot, error) {
+	return a.attachRoleCfg(guid, kind, index, roleKind, nil)
+}
+
+// attachRoleCfg — AttachRole with role-specific config bytes (esc-telemetry
+// protocol selector, future baud overrides).
+func (a *App) attachRoleCfg(guid string, kind, index, roleKind byte, cfg []byte) (DeviceModelSnapshot, error) {
 	defer a.diag.Around("AttachRole",
 		map[string]any{"guid": guid, "kind": kind, "idx": index, "role": roles.KindName(roleKind)})()
-	a.diag.Info("DM", "AttachRole %s → %s/%s%d",
-		roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index)
+	a.diag.Info("DM", "AttachRole %s → %s/%s%d cfg=%d B",
+		roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index, len(cfg))
 	c := a.snapshotClient()
 	if c == nil {
 		a.diag.Error("DM", "AttachRole: not connected")
 		return DeviceModelSnapshot{}, fmt.Errorf("not connected")
 	}
-	if err := c.Topology.AttachRole(guid, kind, index, roleKind, nil); err != nil {
+	if err := c.Topology.AttachRole(guid, kind, index, roleKind, cfg); err != nil {
 		a.diag.Error("DM", "AttachRole %s failed: %v", roles.KindName(roleKind), err)
 		return a.deviceModelSnapshot(), fmt.Errorf("attach %s: %w", roles.KindName(roleKind), err)
 	}

@@ -13,7 +13,7 @@ import { diag } from './diag'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     AttachRole, DetachRole, SetPortName,
-    SetInputProtocol, SetInputChannelCount, SetChannelFunction,
+    SetInputProtocol, SetInputEscProtocol, SetInputEscRpmScaling, SetInputChannelCount, SetChannelFunction,
     LoadHubConfig, SaveHubConfig, RemoveExpanderConfig,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
@@ -28,13 +28,13 @@ export const portKindName: Record<number, string> = {
 
 export const RoleKind = {
     None: 0x00, ServoActuator: 0x01, RcPwmInput: 0x02, SbusInput: 0x03,
-    JetiExInput: 0x04, JetiExTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
+    JetiExInput: 0x04, EscTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
     Heater: 0x12, BiDcMotor: 0x20,
 } as const
 
 export const roleKindName: Record<number, string> = {
     0x00: 'none', 0x01: 'servo-actuator', 0x02: 'rc-pwm-input',
-    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'jeti-ex-telemetry',
+    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'esc-telemetry',
     0x10: 'led-animator', 0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
 }
 
@@ -112,9 +112,17 @@ export interface ChannelMap { channel: number; function: string }
 export interface InputPortConfig {
     port: PortRef
     protocol: string
+    /** ESC stream selector when protocol === 'esc-telemetry'. */
+    escProtocol?: string
+    // RPM scaling: motor pole count (electrical rpm = shaft rpm × poles/2)
+    // + gearbox ratio.  The firmware divides by (poles/2 × gear) at publish;
+    // absent = as transmitted (1:1).
+    escMotorPoles?: number
+    escGearRatio?: number
     channelCount: number
     channels: ChannelMap[]
 }
+export interface EscProtocolDef { id: string; label: string; wire: number }
 export interface ChannelFunctionDef { id: string; label: string; group: string }
 export interface InputProtocolDef {
     id: string; label: string; roleKind: number; implemented: boolean; maxChannels: number
@@ -128,11 +136,12 @@ export interface DeviceModelSnapshotT {
     inputs: InputPortConfig[]
     channelFunctions: ChannelFunctionDef[]
     inputProtocols: InputProtocolDef[]
+    escProtocols: EscProtocolDef[]
 }
 
 const empty: DeviceModelSnapshotT = {
     ports: [], domains: [], issues: [], roleCatalog: [],
-    inputs: [], channelFunctions: [], inputProtocols: [],
+    inputs: [], channelFunctions: [], inputProtocols: [], escProtocols: [],
 }
 
 /** normalize guarantees every array field is non-null.  Go marshals an
@@ -148,6 +157,7 @@ function normalize(snap: unknown): DeviceModelSnapshotT {
         inputs: s.inputs ?? [],
         channelFunctions: s.channelFunctions ?? [],
         inputProtocols: s.inputProtocols ?? [],
+        escProtocols: s.escProtocols ?? [],
     }
 }
 
@@ -395,6 +405,18 @@ export async function removeAbandonedBoard(guid: string): Promise<void> {
 // catalog still exists in the Go package but is no longer wired to the UI.
 
 // ─── Input config ─────────────────────────────────────────────────────
+
+export async function setInputEscProtocol(p: PortRef, escProto: string): Promise<void> {
+    const snap = await SetInputEscProtocol(p.guid, p.kind, p.index, escProto)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // esc_protocol persists into /hubfx.yaml ports[]
+}
+
+export async function setInputEscRpmScaling(p: PortRef, motorPoles: number, gearRatio: number): Promise<void> {
+    const snap = await SetInputEscRpmScaling(p.guid, p.kind, p.index, motorPoles, gearRatio)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // esc_motor_poles / esc_gear_ratio persist into /hubfx.yaml ports[]
+}
 
 export async function setInputProtocol(p: PortRef, protocol: string): Promise<void> {
     const snap = await SetInputProtocol(p.guid, p.kind, p.index, protocol)

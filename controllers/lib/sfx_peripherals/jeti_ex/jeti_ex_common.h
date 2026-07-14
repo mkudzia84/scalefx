@@ -263,7 +263,8 @@ inline bool decodeSensorValue(const uint8_t* buf, size_t avail,
 // stamp each frame with the source device — the radio groups by (USN,LSN).
 // Layout: [0x9F sep][type|len][USN16LE][LSN16LE][reserved][body...][crc8].
 // `len` (low 6 bits of [1]) counts bytes [1..lastbody]; type bits 7-6:
-// 0b01 = data, 0b00 = text.  Returns the total block length (incl. crc8).
+// 0b01 = data, 0b00 = text, 0b10 = message (v1.07).  Returns the total
+// block length (incl. crc8).
 
 /// Write the shared 7-byte head; caller fills [1] (type|len) + body, then crc8.
 inline uint8_t exBlockHead(uint8_t* buf, uint16_t usn, uint16_t lsn) {
@@ -280,6 +281,26 @@ inline uint8_t buildExDataBlock(uint8_t* buf, uint16_t usn, uint16_t lsn,
     uint8_t pos = exBlockHead(buf, usn, lsn);
     pos += encodeSensorValue(&buf[pos], id, type, value, dp);
     buf[1] = 0x40 | (pos - 1);           // data (0b01) | len
+    buf[pos] = crc8_ex(&buf[1], pos - 1);
+    return (uint8_t)(pos + 1);
+}
+
+/// MESSAGE block (EX protocol v1.07, "Message string specification" —
+/// docs/JETI_Telem_protocol_v1.07_EN.pdf).  Pushes textual information to the
+/// pilot with semantics; DC/DS radios log it and pop it up per class.
+///   msgClass: 0 basic, 1 status, 2 warning, 3 recoverable error,
+///             4 non-recoverable error.
+///   msgType:  device-specific primary id (localization hook — we use it as
+///             a stable per-source tag).
+inline uint8_t buildExMessageBlock(uint8_t* buf, uint16_t usn, uint16_t lsn,
+                                   uint8_t msgType, uint8_t msgClass, const char* text) {
+    uint8_t pos = exBlockHead(buf, usn, lsn);
+    uint8_t tlen = text ? (uint8_t)strlen(text) : 0;
+    if (tlen > 20) tlen = 20;            // 6-bit block len cap (<=31 bytes follow [1])
+    buf[pos++] = msgType;
+    buf[pos++] = (uint8_t)(((msgClass & 0x07) << 5) | (tlen & 0x1F));
+    for (uint8_t i = 0; i < tlen; ++i) buf[pos++] = (uint8_t)text[i];
+    buf[1] = 0x80 | (pos - 1);           // message (0b10) | len
     buf[pos] = crc8_ex(&buf[1], pos - 1);
     return (uint8_t)(pos + 1);
 }

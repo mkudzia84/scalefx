@@ -145,6 +145,16 @@ inline uint8_t packRoleCfg(const PortMapping& m, uint8_t* cfgBuf) {
     if (m.profileSet && m.role == RoleKind::ServoActuator) {
         return (uint8_t)sfx_core::ServoProfileWire::pack(cfgBuf, m.profile);
     }
+    if (m.role == RoleKind::EscTelemetry && m.escProtocol != 0xFF) {
+        // [protocol][baudKHi][baudKLo][ratioHi][ratioLo] — baud 0 = protocol
+        // default; ratio = RPM divider ×100 (0 = 1.00).  Unset protocol ->
+        // zero-length cfg = legacy jeti-exbus marker semantics.
+        cfgBuf[0] = m.escProtocol;
+        cfgBuf[1] = 0; cfgBuf[2] = 0;
+        cfgBuf[3] = (uint8_t)(m.escRpmRatioX100 >> 8);
+        cfgBuf[4] = (uint8_t)(m.escRpmRatioX100 & 0xFF);
+        return 5;
+    }
     if (m.role == RoleKind::JetiExInput) {
         // [broadcastHz][baudHi][baudLo][downstream] — 0,0,0 = no auto-broadcast
         // + default 125000 baud; byte 3 is RESERVED (the IN_2 telemetry monitor

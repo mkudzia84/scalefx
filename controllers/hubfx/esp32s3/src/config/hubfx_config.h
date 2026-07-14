@@ -88,6 +88,15 @@ struct PortMapping {
     bool                       profileSet = false;
     sfx_core::ServoMotionProfile profile{};
 
+    /// esc-telemetry protocol selector (esc_protocol: key on the port entry;
+    /// 0xFF = unset -> legacy jeti-exbus downstream marker).
+    uint8_t escProtocol = 0xFF;
+    /// esc-telemetry RPM divider ×100 — computed from esc_motor_poles
+    /// (electrical rpm = shaft rpm × poles/2; Kontronik transmits electrical)
+    /// and esc_gear_ratio (gearbox): divider = poles/2 × gear.  0 = unset
+    /// (firmware default 1.00).
+    uint16_t escRpmRatioX100 = 0;
+
     // (The former `jetiDownstream` flag is gone — the IN_2 / ESC telemetry
     //  monitor is AUTODETECT now: always wired, the presence machine decides if
     //  a device is there.  See role_jeti_input_handler.cpp.)
@@ -255,6 +264,19 @@ inline void parseServoProfile(const TNode* item, PortMapping& m) {
 /// Accept both snake_case (`led_animator`) and kebab-case
 /// (`led-animator`) — kebab is what `RoleKind::getName()` returns; snake
 /// matches the rest of the YAML convention.  Unknown ⇒ `None` + WARN.
+inline uint8_t escProtocolFromName(const char* name) {
+    if (!name || !name[0]) return 0xFF;
+    if (std::strcmp(name, "kontronik") == 0)     return 0;
+    if (std::strcmp(name, "scorpion") == 0)      return 1;
+    if (std::strcmp(name, "hobbywing-v4") == 0 ||
+        std::strcmp(name, "hobbywing_v4") == 0)  return 2;
+    if (std::strcmp(name, "hobbywing-v5") == 0 ||
+        std::strcmp(name, "hobbywing_v5") == 0)  return 3;
+    if (std::strcmp(name, "jeti-exbus") == 0 ||
+        std::strcmp(name, "jeti_exbus") == 0)    return 4;
+    return 0xFF;
+}
+
 inline uint8_t hubfxRoleKindFromName(const char* name) {
     if (!name || !name[0])                                return RoleKind::None;
     if (std::strcmp(name, "none")              == 0)      return RoleKind::None;
@@ -267,7 +289,9 @@ inline uint8_t hubfxRoleKindFromName(const char* name) {
     if (std::strcmp(name, "jeti_ex_input")     == 0 ||
         std::strcmp(name, "jeti-ex-input")     == 0)      return RoleKind::JetiExInput;
     if (std::strcmp(name, "jeti_ex_telemetry") == 0 ||
-        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::JetiExTelemetry;
+        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::EscTelemetry;  // legacy name
+    if (std::strcmp(name, "esc_telemetry") == 0 ||
+        std::strcmp(name, "esc-telemetry") == 0)           return RoleKind::EscTelemetry;
     if (std::strcmp(name, "led_animator")      == 0 ||
         std::strcmp(name, "led-animator")      == 0)      return RoleKind::LedAnimator;
     if (std::strcmp(name, "dc_motor")          == 0 ||
@@ -351,6 +375,22 @@ struct HubFxConfigSchema {
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                 // Rule 42 storage — servo motion profile per port.
                 parseServoProfile(item, m);
+                m.escProtocol = escProtocolFromName(
+                    item->template childAs<const char*>("esc_protocol", ""));
+                {
+                    // RPM scaling: divider = (motor poles / 2) × gear ratio.
+                    float polePairs = 1.0f, gear = 1.0f;
+                    const int32_t poles = item->template childAs<int32_t>("esc_motor_poles", 0);
+                    if (poles >= 2 && poles <= 100) polePairs = (float)poles / 2.0f;
+                    const char* gs = item->template childAs<const char*>("esc_gear_ratio", "");
+                    if (gs && gs[0]) {
+                        const float g = std::strtof(gs, nullptr);
+                        if (g > 0.0f && g < 100.0f) gear = g;
+                    }
+                    const float div = polePairs * gear;
+                    if (div > 0.0f && div != 1.0f && div < 655.0f)
+                        m.escRpmRatioX100 = (uint16_t)(div * 100.0f + 0.5f);
+                }
                 d.numPorts++;
             }
         }

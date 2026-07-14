@@ -19,7 +19,7 @@ const (
 	KindRcPwmInput    byte = 0x02
 	KindSbusInput     byte = 0x03
 	KindJetiExInput   byte = 0x04
-	KindJetiExTelemetry byte = 0x05
+	KindEscTelemetry  byte = 0x05 // was jeti-ex-telemetry (repurposed 2026-07-14: generic ESC telemetry w/ protocol selector)
 	KindLedAnimator   byte = 0x10
 	KindDcMotor       byte = 0x11
 	KindHeater        byte = 0x12
@@ -40,8 +40,8 @@ func KindName(k byte) string {
 		return "sbus-input"
 	case KindJetiExInput:
 		return "jeti-ex-input"
-	case KindJetiExTelemetry:
-		return "jeti-ex-telemetry"
+	case KindEscTelemetry:
+		return "esc-telemetry"
 	case KindLedAnimator:
 		return "led-animator"
 	case KindDcMotor:
@@ -69,8 +69,9 @@ func KindFromName(s string) (byte, bool) {
 		return KindSbusInput, true
 	case "jeti-ex-input", "jeti-ex", "jetiex":
 		return KindJetiExInput, true
-	case "jeti-ex-telemetry", "jeti-telemetry", "jetiex-telem":
-		return KindJetiExTelemetry, true
+	case "esc-telemetry", "esc-telem",
+		"jeti-ex-telemetry", "jeti-telemetry", "jetiex-telem": // legacy names map over
+		return KindEscTelemetry, true
 	case "led-animator", "led":
 		return KindLedAnimator, true
 	case "dc-motor", "motor":

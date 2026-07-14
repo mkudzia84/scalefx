@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.36.0-hubfx"
-#define BUILD_NUMBER     897
+#define FIRMWARE_VERSION "2.38.1-hubfx"
+#define BUILD_NUMBER     914
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -1041,6 +1041,13 @@ void setup() {
     // steal cycles from the SD writer (the prior Jeti task's starvation mode).
     JetiEx::JetiExpander::instance().setUploadGate(
         [&board]() { return board.policy<StorageService>().isUploadActive(); });
+#if HUBFX_PCB_REV >= 2
+    // Downstream (IN_2) channel-frame mirror — the EX Bus heartbeat a slave's
+    // supervision needs (a Kolibri mutes without it).  Rev B only: its split
+    // TX/RX headers put IN_2 TX (GPIO3) far from IN_1 RX (GPIO2), so the
+    // rev A crosstalk that forced telemetry-poll-only downstream is gone.
+    JetiEx::JetiExpander::instance().setEscChannelMirror(true);
+#endif
 
     // Alert chimes — configuration is driven by `/alerts.yaml`
     // (severity → AlertSound + volume).  Initial config landed via
@@ -1242,7 +1249,7 @@ void loop() {
     // counted mAh) feed Batt/Exp sensors at kRailTelemetryMs.  Sensors
     // register ONLY for monitors that came up (canonical-ID gate) — a stock
     // un-reworked board simply shows no Exp rows.  Values reach both the
-    // radio and Studio's Telemetry panel via the JetiTelemetryHub.
+    // radio and Studio's Telemetry panel via the TelemetryHub.
     // (The undervoltage AlertSound::BatteryLow detector is still parked —
     // telemetry-only for now.)
     {
@@ -1253,7 +1260,7 @@ void loop() {
                 jetiSensorsReg = true;
                 int maj = 0, mnr = 0;
                 sscanf(FIRMWARE_VERSION, "%d.%d", &maj, &mnr);   // "2.16.0-hubfx"
-                jexp.setLocalSensor(3, "Version", "", JetiEx::ExDataType::Int14, 2,
+                jexp.setLocalSensor(3, "Version", "", 2,
                                     (int32_t)(maj * 100 + mnr), SFX_MILLIS());   // 216 → "2.16"
             }
 #if HUBFX_PCB_REV >= 2
@@ -1271,13 +1278,13 @@ void loop() {
                 if (!railSensorsReg && (battUp || expUp)) {
                     railSensorsReg = true;
                     if (battUp) {
-                        jexp.setLocalSensor(4, "Batt U",   "V",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
-                        jexp.setLocalSensor(5, "Batt I",   "A",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
-                        jexp.setLocalSensor(6, "Batt used","mAh", JetiEx::ExDataType::Int22, 0, 0, nowMs);
+                        jexp.setLocalSensor(4, "Batt U",   "V",   2, 0, nowMs);
+                        jexp.setLocalSensor(5, "Batt I",   "A",   2, 0, nowMs);
+                        jexp.setLocalSensor(6, "Batt used","mAh", 0, 0, nowMs);
                     }
                     if (expUp) {
-                        jexp.setLocalSensor(7, "Exp I",    "A",   JetiEx::ExDataType::Int14, 2, 0, nowMs);
-                        jexp.setLocalSensor(8, "Exp used", "mAh", JetiEx::ExDataType::Int22, 0, 0, nowMs);
+                        jexp.setLocalSensor(7, "Exp I",    "A",   2, 0, nowMs);
+                        jexp.setLocalSensor(8, "Exp used", "mAh", 0, 0, nowMs);
                     }
                 }
                 if (battUp) {

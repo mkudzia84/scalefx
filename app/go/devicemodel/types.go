@@ -200,7 +200,7 @@ func RoleLabel(kind byte) string {
 		return "SBUS Input"
 	case roles.KindJetiExInput:
 		return "Jeti EX Input"
-	case roles.KindJetiExTelemetry:
+	case roles.KindEscTelemetry:
 		return "Jeti EX Telemetry"
 	case roles.KindLedAnimator:
 		return "LED Animator"
@@ -227,7 +227,7 @@ func allowedRoleKinds(kind byte) []byte {
 	case ports.KindHBridge:
 		return []byte{roles.KindBiDcMotor, roles.KindDcMotor}
 	case ports.KindInput:
-		return []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput, roles.KindJetiExTelemetry}
+		return []byte{roles.KindRcPwmInput, roles.KindSbusInput, roles.KindJetiExInput, roles.KindEscTelemetry}
 	}
 	return nil
 }

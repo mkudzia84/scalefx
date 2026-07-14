@@ -77,6 +77,13 @@ public:
         // the external device before the first txEnable().
         if (_txPin >= 0) {
             gpio_set_direction((gpio_num_t)_txPin, GPIO_MODE_INPUT);
+            // Idle the shared line PULLED UP, not floating: an open-collector
+            // slave (Jeti one-wire style — bench: Kontronik Kolibri) can only
+            // pull LOW; without a line pull-up its reply highs float and decode
+            // is luck (rev B PCBs carry NO external pull-up on INP/TELEM — the
+            // internal ~45 k here is the firmware-side stopgap; a 4.7-10 k on
+            // the line is the proper hardware fix, REV C).
+            gpio_set_pull_mode((gpio_num_t)_txPin, GPIO_PULLUP_ONLY);
         }
         return _rxPin >= 0 && (_uartNum == 1 || _uartNum == 2);
     }
@@ -138,34 +145,41 @@ public:
         // GPIO matrix in txEnable()/txDisable() (see the comment above).
         _uart.beginConfig(uartPort(), _rxPin, /*tx=*/-1, cfg,
                           /*invert=*/0, /*rs485=*/false, /*rxBuf=*/1024);
+        // Belt-and-braces line bias for open-collector slaves: pull-up on the
+        // RX pad (through the bridge on split-pin boards) AND on the parked
+        // TX pad (directly on the line) — see begin().
+        gpio_set_pull_mode((gpio_num_t)_rxPin, GPIO_PULLUP_ONLY);
+        if (_txPin >= 0) gpio_set_pull_mode((gpio_num_t)_txPin, GPIO_PULLUP_ONLY);
         _mode = Mode::JETI_EX;
         return true;
     }
 
     bool configureUartRaw(uint32_t baud,
-                          uint32_t /*serialConfig*/,
+                          uint32_t serialConfig,
                           bool     invert,
                           bool     halfDuplex) override {
-        // Raw passthrough for future CRSF / DSM roles (none wired yet).
-        // Framing defaults to 8N1; per-protocol parity/stop mapping lands
-        // when a raw-UART role actually ships.
+        // Raw passthrough — ESC telemetry streams (Kontronik 8E1, the rest
+        // 8N1) and future CRSF / DSM roles.  `serialConfig` = kSerial8N1 /
+        // kSerial8E1 (input_port.h).
         teardownActive();
         uart_config_t cfg = {};
         cfg.baud_rate  = (int)baud;
         cfg.data_bits  = UART_DATA_8_BITS;
-        cfg.parity     = UART_PARITY_DISABLE;
+        cfg.parity     = (serialConfig == kSerial8E1) ? UART_PARITY_EVEN
+                                                      : UART_PARITY_DISABLE;
         cfg.stop_bits  = UART_STOP_BITS_1;
         cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
         cfg.source_clk = UART_SCLK_DEFAULT;
-        // TX routing: full-duplex uses the dedicated TX pin when present
-        // (-1 = RX-only, as before).  Half-duplex on a SPLIT-pin board must
-        // NOT attach TX permanently — the TX pad sits directly on the shared
-        // line and UART TX idles high, which would fight the external
-        // driver; begin RX-only and gate the reply slot with txEnable()/
-        // txDisable() exactly like JETI_EX.  Single-wire boards keep the
-        // legacy rs485-flag path on _rxPin.
+        // TX routing: raw mode NEVER attaches TX permanently.  On a split-pin
+        // board the TX pad sits DIRECTLY on the shared line (rev B: GPIO3 on
+        // TELEM) and UART TX idles push-pull HIGH — a permanently-attached TX
+        // fights any external push-pull transmitter and flattens its start
+        // bits (bench 2026-07-14: native Kontronik listen read rxB=0 until
+        // this was made RX-only).  A raw role that needs to reply gates the
+        // slot with txEnable()/txDisable() exactly like JETI_EX (halfDuplex);
+        // single-wire boards keep the legacy rs485-flag path on _rxPin.
         const bool splitPins = (_txPin >= 0);
-        const int  txPin     = splitPins ? (halfDuplex ? -1 : _txPin)
+        const int  txPin     = splitPins ? -1
                                          : (halfDuplex ? _rxPin : -1);
         _uart.beginConfig(uartPort(), _rxPin, txPin, cfg,
                           invert ? UART_SIGNAL_RXD_INV : 0,
@@ -244,7 +258,8 @@ public:
         if (!txSlotAllowed()) return;
         const int tp = txDrivePin();
         esp_rom_gpio_connect_out_signal(tp, SIG_GPIO_OUT_IDX, /*invert=*/false, /*oen_invert=*/false);
-        gpio_set_direction((gpio_num_t)tp, GPIO_MODE_INPUT);   // high-Z; matrix RX intact
+        gpio_set_direction((gpio_num_t)tp, GPIO_MODE_INPUT);   // release the line; matrix RX intact
+        gpio_set_pull_mode((gpio_num_t)tp, GPIO_PULLUP_ONLY);  // idle PULLED UP (open-collector slaves)
     }
 
 private:

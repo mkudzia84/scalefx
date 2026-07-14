@@ -43,7 +43,7 @@ namespace InputRoutingPacket {
 
 // ── Telemetry collection (item 4) ────────────────────────────────────
 //
-// Read the master's live telemetry collection (JetiTelemetryHub) — the
+// Read the master's live telemetry collection (TelemetryHub) — the
 // hub-local sensors + every actively-polled input device (e.g. an ESC on
 // IN_2).  Surfaced in Studio's Input/Output Ports tab and via the CLI.
 namespace TelemetryPacket {

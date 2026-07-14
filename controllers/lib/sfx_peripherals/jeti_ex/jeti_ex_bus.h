@@ -189,7 +189,7 @@ public:
      *
      * When set, a telemetry request invokes this hook instead of the internal
      * sensor-table responder — the JetiExpander serves MULTI-DEVICE from the
-     * shared JetiTelemetryHub through it (each device with its own USN/LSN so
+     * shared TelemetryHub through it (each device with its own USN/LSN so
      * the radio shows them separately).  The handler builds an EX data block
      * and calls sendTelemetry().
      */
