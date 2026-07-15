@@ -18,8 +18,9 @@
 #include <variant>
 
 #if SFX_PLATFORM_ESP32
-#  include <jeti_ex/jeti_expander.h>   // downstream UART handoff on esc-telemetry attach
+#  include <jeti_ex/jeti_expander.h>   // torn down when the Jeti input role detaches
 #endif
+
 
 namespace sfx_core {
 
@@ -203,34 +204,15 @@ uint8_t RoleServicePolicy::applyAttach(uint8_t portKind, uint8_t portIdx,
                 case RoleKind::JetiExInput: ok = _jeti.attachInput(*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::EscTelemetry: {
                     // [protocol:u8][baudKHi:u8][baudKLo:u8][ratioHi:u8][ratioLo:u8]
-                    // (Rule 11 append-only) — zero-length = legacy jeti-exbus
-                    // downstream marker (old yaml files).  ratio = RPM divider
-                    // ×100 (pole pairs × gearbox); 0 = 1.00.
-                    const uint8_t proto = (cfgLen >= 1) ? cfg[0]
-                                          : EscTelemetryRole::kProtoJetiExBus;
+                    // (Rule 11 append-only) — zero-length / unknown protocol
+                    // defaults to Kontronik (the jeti-exbus downstream marker
+                    // mode was REMOVED 2026-07-15).  ratio = RPM divider ×100
+                    // (pole pairs × gearbox); 0 = 1.00.
+                    const uint8_t proto = (cfgLen >= 1) ? cfg[0] : 0 /*kontronik*/;
                     uint32_t baud = 0;
                     if (cfgLen >= 3) baud = (uint32_t)(((uint16_t)cfg[1] << 8) | cfg[2]) * 1000u;
                     uint16_t ratioX100 = 0;
                     if (cfgLen >= 5) ratioX100 = (uint16_t)(((uint16_t)cfg[3] << 8) | cfg[4]);
-#if SFX_PLATFORM_ESP32
-                    // UART handoff with a running JetiExpander: a NATIVE
-                    // protocol takes the port away from the expander's EX
-                    // downstream link (else both drain the same UART and the
-                    // expander's poll TX walks over the ESC's stream); the
-                    // jeti-exbus marker offers it (back).  Must happen BEFORE
-                    // bind() so the native UART config is applied last.
-                    {
-                        auto& jx = JetiEx::JetiExpander::instance();
-                        if (jx.running()) {
-                            if (proto != EscTelemetryRole::kProtoJetiExBus) {
-                                if (jx.downstreamPort() == b->port)
-                                    jx.setDownstreamPort(nullptr);
-                            } else {
-                                jx.setDownstreamPort(b->port);
-                            }
-                        }
-                    }
-#endif
                     auto& er = b->role.emplace<EscTelemetryRole>();
                     if (!er.bind(b->port, proto, baud, ratioX100)) {
                         b->role.emplace<std::monostate>();
@@ -325,20 +307,10 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
             auto* b = _reg->inputAt(portIdx);
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
 #if SFX_PLATFORM_ESP32
-            // The JetiExpander owns BOTH Jeti links; detaching the Rx (IN_1)
-            // role tears it down (end() releases both ports) AND clears the
-            // paired downstream telemetry marker so IN_2 reverts to no role.
+            // Detaching the Rx (IN_1) role tears the JetiExpander down —
+            // it owns only IN_1 now (the downstream pairing was removed).
             if (std::holds_alternative<JetiExInputRole>(b->role)) {
                 JetiEx::JetiExpander::instance().end();
-                for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
-                    if (i == portIdx) continue;
-                    auto* ob = _reg->inputAt(i);
-                    if (ob) {
-                        auto* er = std::get_if<EscTelemetryRole>(&ob->role);
-                        if (er && er->protocol() == EscTelemetryRole::kProtoJetiExBus)
-                            ob->role.emplace<std::monostate>();   // clear the pairing marker only
-                    }
-                }
             }
 #endif
             // Release the peripheral the previous role had claimed.

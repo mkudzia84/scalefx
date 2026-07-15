@@ -5,7 +5,7 @@
  * owns both links and the IN_1 (input) attach pairs the IN_2 (telemetry)
  * marker:
  *   JetiExInput     — the Rx-side EX Bus channel stream (starts the expander)
- *   (the downstream link marker is now EscTelemetryRole protocol=jeti-exbus)
+ *   (ESC telemetry is the native esc-telemetry role — no downstream pairing)
  *
  * Owns each attach + the channel-frame query + the broadcast-rate command.
  */
