@@ -89,8 +89,8 @@ struct PortMapping {
     sfx_core::ServoMotionProfile profile{};
 
     /// esc-telemetry protocol selector (esc_protocol: key on the port entry;
-    /// 0xFF = unset -> legacy jeti-exbus downstream marker).
-    uint8_t escProtocol = 0xFF;
+    /// defaults to 0 = kontronik).
+    uint8_t escProtocol = 0;
     /// esc-telemetry RPM divider ×100 — computed from esc_motor_poles
     /// (electrical rpm = shaft rpm × poles/2; Kontronik transmits electrical)
     /// and esc_gear_ratio (gearbox): divider = poles/2 × gear.  0 = unset
@@ -264,17 +264,18 @@ inline void parseServoProfile(const TNode* item, PortMapping& m) {
 /// Accept both snake_case (`led_animator`) and kebab-case
 /// (`led-animator`) — kebab is what `RoleKind::getName()` returns; snake
 /// matches the rest of the YAML convention.  Unknown ⇒ `None` + WARN.
+/// esc-telemetry stream selector.  Unknown / missing / retired names
+/// (incl. the removed "jeti-exbus" downstream-marker mode) fall back to
+/// kontronik — an esc-telemetry port ALWAYS binds a native decoder.
 inline uint8_t escProtocolFromName(const char* name) {
-    if (!name || !name[0]) return 0xFF;
+    if (!name || !name[0]) return 0;                 // default kontronik
     if (std::strcmp(name, "kontronik") == 0)     return 0;
     if (std::strcmp(name, "scorpion") == 0)      return 1;
     if (std::strcmp(name, "hobbywing-v4") == 0 ||
         std::strcmp(name, "hobbywing_v4") == 0)  return 2;
     if (std::strcmp(name, "hobbywing-v5") == 0 ||
         std::strcmp(name, "hobbywing_v5") == 0)  return 3;
-    if (std::strcmp(name, "jeti-exbus") == 0 ||
-        std::strcmp(name, "jeti_exbus") == 0)    return 4;
-    return 0xFF;
+    return 0;                                        // retired/unknown -> kontronik
 }
 
 inline uint8_t hubfxRoleKindFromName(const char* name) {

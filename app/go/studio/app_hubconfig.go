@@ -59,7 +59,7 @@ type yamlPortBinding struct {
 	// initFromPort defaults.  Only set for `kind: servo`.
 	Profile *devicemodel.ServoMotionProfile `yaml:"profile,omitempty"`
 	// esc-telemetry stream selector (kontronik | scorpion | hobbywing-v4 |
-	// hobbywing-v5 | jeti-exbus) — only on input ports with that role.
+	// hobbywing-v5) — only on input ports with that role.
 	EscProtocol string `yaml:"esc_protocol,omitempty"`
 	// esc-telemetry RPM scaling: motor pole count (electrical rpm = shaft
 	// rpm × poles/2) + gearbox ratio; omitted when direct / unknown.

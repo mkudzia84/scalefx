@@ -81,7 +81,7 @@
             </div>
             <div class="form-row">
                 <span class="field-label">ESC</span>
-                <select class="field-input" style="flex:0 0 260px" value={cfg.escProtocol || 'jeti-exbus'}
+                <select class="field-input" style="flex:0 0 260px" value={cfg.escProtocol || 'kontronik'}
                         disabled={busy}
                         title="Which ESC's native telemetry stream this port listens to — sensors flow to the Jeti radio + this panel"
                         on:change={(e) => onEscProto(cfg.port, selValue(e))}>

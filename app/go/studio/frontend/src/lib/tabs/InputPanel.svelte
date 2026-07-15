@@ -69,11 +69,9 @@
             const cfg = inputs.find(c => c.port.guid === p.guid && c.port.index === p.index)
             const max = maxCh(proto)
             if (cfg && cfg.channelCount > max) await setInputChannelCount(p, max)
-            // Picking Jeti EX on IN_1 still auto-stamps IN_2 with the
-            // esc-telemetry (jeti-exbus) downstream marker in firmware; the
-            // topology re-read in AttachRole surfaces it, so IN_2's card
-            // switches to the telemetry surface without a UI-side remap.
-            // IN_2's own protocol select can override it explicitly.
+            // Each input port is independent — Jeti EX on IN_1 no longer
+            // touches IN_2 (the downstream auto-stamp was removed; ESC
+            // telemetry is an explicit per-port protocol choice).
         } catch (e) { error = String(e) } finally { busy = false }
     }
     async function onCount(p: PortRef, n: number) {
@@ -115,18 +113,16 @@
         return $deviceModel.ports.find(x =>
             x.ref.guid === p.guid && x.ref.kind === p.kind && x.ref.index === p.index)
     }
-    // An esc-telemetry port carries a downstream ESC's telemetry INTO the hub
-    // (no RC channels) — either a native stream (Kontronik / Scorpion /
-    // Hobbywing) or the legacy Jeti EX-Bus downstream link auto-stamped on
-    // IN_2 while IN_1 runs Jeti EX.  It renders as a compact telemetry card
-    // (protocol + ESC-type selects, link chip), NOT a channel-input group.
+    // An esc-telemetry port carries an ESC's native telemetry stream INTO
+    // the hub (no RC channels) — Kontronik / Scorpion / Hobbywing.  It
+    // renders as a compact telemetry card, NOT a channel-input group.
     function isTelemetryPassthru(cfg: InputPortConfig): boolean {
         return portOf(cfg.port)?.roleKind === RoleKind.EscTelemetry
             || cfg.protocol === 'esc-telemetry'
     }
     // Display label for the selected ESC stream (falls back to the raw id).
     function escLabel(cfg: InputPortConfig): string {
-        const id = cfg.escProtocol || 'jeti-exbus'
+        const id = cfg.escProtocol || 'kontronik'
         return escProtocols.find(ep => ep.id === id)?.label ?? id
     }
     // Rule 34: the protocol picker offers ONLY protocols whose backing

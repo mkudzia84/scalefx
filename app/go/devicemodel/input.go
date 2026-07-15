@@ -38,10 +38,9 @@ var inputProtocols = []InputProtocolDef{
 	{ID: InputPpm, Label: "PPM", RoleKind: 0x02 /*RcPwmInput*/, Implemented: true, MaxChannels: 24},
 	{ID: InputSbus, Label: "SBUS", RoleKind: 0x03 /*SbusInput*/, Implemented: true, MaxChannels: 16},
 	{ID: InputJetiEx, Label: "Jeti EX", RoleKind: 0x04 /*JetiExInput*/, Implemented: true, MaxChannels: 24},
-	// Downstream ESC telemetry (no RC channels) — a protocol sub-selector
-	// picks the ESC's native stream (Kontronik / Scorpion / Hobbywing) or
-	// the legacy Jeti EX Bus downstream link; sensors flow to the radio +
-	// Studio via the telemetry hub.
+	// Native ESC telemetry (no RC channels) — a protocol sub-selector picks
+	// the ESC's stream (Kontronik / Scorpion / Hobbywing); sensors flow to
+	// the radio + Studio via the telemetry hub.
 	{ID: InputEscTelem, Label: "ESC Telemetry", RoleKind: 0x05 /*EscTelemetry*/, Implemented: true, MaxChannels: 0},
 }
 
@@ -149,13 +148,12 @@ type EscProtocolDef struct {
 	Wire  byte   `json:"wire"` // esc-telemetry attach config byte
 }
 
-// escProtocols mirrors the firmware's EscProtocol enum + kProtoJetiExBus.
+// escProtocols mirrors the firmware's EscProtocol enum (telemetry/esc/).
 var escProtocols = []EscProtocolDef{
 	{ID: "kontronik", Label: "Kontronik (Kolibri/Kosmik/JIVE Pro)", Wire: 0},
 	{ID: "scorpion", Label: "Scorpion Tribunus (Unsc Telem)", Wire: 1},
 	{ID: "hobbywing-v4", Label: "Hobbywing Platinum V4 / FlyFun", Wire: 2},
 	{ID: "hobbywing-v5", Label: "Hobbywing Platinum V5", Wire: 3},
-	{ID: "jeti-exbus", Label: "Jeti EX Bus (downstream slave)", Wire: 4},
 }
 
 // EscProtocols returns the ESC telemetry protocol catalog.
@@ -176,8 +174,7 @@ type InputPortConfig struct {
 	Port         PortRef       `json:"port"`
 	Protocol     InputProtocol `json:"protocol"`
 	// EscProtocol selects the stream when Protocol == InputEscTelem
-	// ("kontronik" | "scorpion" | "hobbywing-v4" | "hobbywing-v5" |
-	//  "jeti-exbus").
+	// ("kontronik" | "scorpion" | "hobbywing-v4" | "hobbywing-v5").
 	EscProtocol  string        `json:"escProtocol,omitempty"`
 	// EscMotorPoles is the motor's magnet/pole count (even, ≥2).  The
 	// Kontronik stream carries ELECTRICAL rpm = shaft rpm × poles/2, so the

@@ -67,13 +67,13 @@ func (a *App) ensureInputConfigs() {
 		// when the port actually has an input role attached.
 		if proto, ok := devicemodel.ProtocolByRoleKind(p.RoleKind); ok && proto != devicemodel.InputNone {
 			cfg.Protocol = proto
-			// An esc-telemetry role with no recorded stream selector is the
-			// firmware's zero-config attach — the legacy jeti-exbus downstream
-			// marker (Jeti pairing auto-stamp / old yaml).  Reflect that so
-			// the ESC sub-select shows the truth, not a blank.
-			if proto == devicemodel.InputEscTelem && cfg.EscProtocol == "" {
-				cfg.EscProtocol = "jeti-exbus"
-			}
+			// NEVER invent an EscProtocol default here: this runs on every
+			// topology refresh, potentially BEFORE the /hubfx.yaml hydration,
+			// and a synthetic "jeti-exbus" would then be PERSISTED by the
+			// next Apply — silently overwriting the operator's real stream
+			// selection (bench 2026-07-15: a saved kontronik flipped back to
+			// jeti-exbus).  An empty value renders as the jeti-exbus fallback
+			// in the UI and is simply omitted from the yaml on save.
 		}
 	}
 }
