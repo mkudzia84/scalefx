@@ -37,6 +37,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <new>       // placement-new for the PSRAM device table
 
 #include <platform/sfx_platform.h>   // SfxMutex
 
@@ -57,16 +58,17 @@ public:
     static constexpr uint8_t kMaxDevices          = 6;   ///< HubFX-own + downstream
     static constexpr uint8_t kMaxSensorsPerDevice = 16;
 
-    struct Sensor {
+    struct Sensor {                       // 4-aligned first, chars+u8 tail:
+        int32_t    value    = 0;          //   packs to 40 B (was 44 with the
+        uint32_t   lastMs   = 0;          //   u8-first layout) — 96 sensors
+        char       label[21] = {};        //   live in the device table.
+        char       unit[6]   = {};
         uint8_t    id       = 0;          ///< sensor id within the device (1..15)
         SensorKind kind     = SensorKind::Int;
         uint8_t    decimals = 0;
-        int32_t    value    = 0;
-        char       label[21] = {};
-        char       unit[6]   = {};
-        uint32_t   lastMs    = 0;
-        bool       active    = false;
+        bool       active   = false;
     };
+    static_assert(sizeof(Sensor) <= 40, "Sensor grew — 96 of these in the hub table");
 
     /// A device's current textual condition — set by producers on fault-state
     /// CHANGES (never per-frame), consumed by radio responders (Jeti EX
@@ -77,11 +79,12 @@ public:
     /// `seq` bumps on every change so consumers can detect + de-duplicate;
     /// empty text = condition cleared (consumers announce nothing).
     struct Message {
-        uint8_t  cls    = 0;
         uint32_t seq    = 0;
         uint32_t lastMs = 0;
         char     text[24] = {};
+        uint8_t  cls    = 0;
     };
+    static_assert(sizeof(Message) <= 36, "Message grew — one per device");
 
     struct Device {
         uint16_t usn   = 0;               ///< manufacturer id (identity key)
@@ -100,6 +103,12 @@ public:
         return inst;
     }
 
+    /// True once the device table is allocated (PSRAM on ESP32, heap on
+    /// Pico).  Allocation happens in the constructor — i.e. on the first
+    /// instance() call, which is always at runtime (never static-init), so
+    /// PSRAM is up.  On allocation failure the hub is inert (capacity 0).
+    bool ready() const { return _devices != nullptr; }
+
     // ── Mutex ────────────────────────────────────────────────────────
     void lock()   { sfxMutexLock(_mutex); }
     void unlock() { sfxMutexUnlock(_mutex); }
@@ -116,6 +125,7 @@ public:
     /// index, or 0xFF if the table is full.
     uint8_t upsertDevice(uint16_t usn, uint16_t lsn, const char* name,
                          bool local, uint32_t nowMs) {
+        if (!_devices) return 0xFF;
         Device* d = findDevice(usn, lsn);
         if (!d) {
             if (_deviceCount >= kMaxDevices) return 0xFF;
@@ -216,7 +226,17 @@ public:
     }
 
 private:
-    TelemetryHub() { sfxMutexInit(_mutex); }
+    TelemetryHub() {
+        sfxMutexInit(_mutex);
+        // Device table in PSRAM (perf audit, instructions/34): ~4.4 KB that
+        // previously sat in .bss internal SRAM.  Access is 2 Hz publishes +
+        // ~65 Hz reads of a few dozen bytes under the mutex — PSRAM latency
+        // is irrelevant here.  sfxPsramCalloc falls back to plain heap on
+        // boards without PSRAM (Pico).
+        _devices = static_cast<Device*>(sfxPsramCalloc(kMaxDevices, sizeof(Device)));
+        if (_devices)
+            for (uint8_t i = 0; i < kMaxDevices; ++i) new (&_devices[i]) Device();
+    }
     TelemetryHub(const TelemetryHub&) = delete;
     TelemetryHub& operator=(const TelemetryHub&) = delete;
 
@@ -236,7 +256,7 @@ private:
         dst[n] = '\0';
     }
 
-    Device   _devices[kMaxDevices];
+    Device*  _devices = nullptr;          // PSRAM table (see ctor); null = inert
     uint8_t  _deviceCount = 0;
     SfxMutex _mutex;
 };

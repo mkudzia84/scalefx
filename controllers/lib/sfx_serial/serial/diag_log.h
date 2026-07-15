@@ -302,6 +302,7 @@ private:
         uint8_t  len;                     // message length (excluding null)
         char     message[MAX_MSG_LEN];    // null-terminated
     };
+    static_assert(sizeof(LogEntry) <= 136, "LogEntry grew — ring is RING_SIZE of these");
 
     // Allocated in begin() via sfxPsramCalloc — PSRAM on ESP32, heap on
     // Pico. Set-once after begin(); read by logv/ingest/sendHistory.

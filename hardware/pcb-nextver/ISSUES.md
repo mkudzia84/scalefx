@@ -194,3 +194,18 @@ wrapper does). `NativeFile::openWriteFile` now retries through an
   (rev B logs `[INA] battery @ 0x41`, "1/1 monitors up").
 - Rail monitoring (undervoltage alert + Jeti V/I telemetry) still
   disabled pending bench validation of U44 readings under load.
+
+
+## REV C reassessment — TELEM pull-up (2026-07-15)
+
+The 4.7 kΩ pull-up on the TELEM line was recommended while diagnosing the
+Jeti EX-Bus DOWNSTREAM mode (Kolibri as EX slave, replies never decoding).
+That mode is now REMOVED from the firmware (HubFX 2.39.0), and the
+diagnosis is retrospectively uncertain: the downstream path had no TX-echo
+drain at all and the frame parser accepted any type byte, so the Kolibri's
+replies may have been SWALLOWED by parser desync (the same mechanism as
+the 2026-07-15 input-gap saga on INP) rather than electrically lost.
+Native Kontronik telemetry (push-pull) runs error-free with no pull-up.
+
+→ TELEM pull-up: downgraded from "required fix" to OPTIONAL robustness.
+→ INP pull-up: still recommended (spec: the bus master owns the idle level).

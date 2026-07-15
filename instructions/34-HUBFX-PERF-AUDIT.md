@@ -117,17 +117,18 @@ a reasonable post-mortem depth (halving to 256 saves only PSRAM, which has
 
 ## 5. Recommended execution order
 
-| # | Item | Win | Risk | Effort |
-|---|---|---|---|---|
-| 1 | MP3 pool cap 4 (after channel-claim audit) | −27 KB DRAM worst-case | low | XS |
-| 2 | TelemetryHub → PSRAM | −4.4 KB DRAM | low | S |
-| 3 | PCM scratch → PSRAM (+underrun bench check) | −18 KB @4 slots | med | S |
-| 4 | Aligned PSRAM asset allocs + static_asserts | hygiene | none | XS |
-| 5 | Sensor/Device struct reorder | ~0.3 KB + hygiene | none | XS |
-| 6 | Pre-decoded PCM for gun/alert clips | decode CPU ↓ | low | M |
-| 7 | Non-blocking reply TX | 2 ms/reply task time | med-high | M |
-| 8 | CRC → ROM folds | cleanliness | low | S |
+| # | Item | Win | Risk | Effort | Status (2026-07-15) |
+|---|---|---|---|---|---|
+| 1 | MP3 pool cap 4 | — | — | XS | **REJECTED after audit**: every channel has an owner (Alert/EngineA+B/GunA+B/Gear, audio_layout.h) — a cap would fail a legitimate all-effects moment.  Savings achieved via #3 instead. |
+| 2 | TelemetryHub → PSRAM | −4.4 KB DRAM | low | S | **DONE** — device table sfxPsramCalloc'd in the ctor (placement-new init, null = inert hub); static RAM 30.6 % → 29.3 %. |
+| 3 | PCM scratch → PSRAM | −4.6 KB × active MP3 slot (~28 KB @6) | med | S | **DONE** (SPIRAM with internal fallback) — ⚠ bench: verify underruns=0 during a dual-decode engine crossfade before merging to main. |
+| 4 | Aligned PSRAM asset allocs + static_asserts | hygiene | none | XS | **DONE** — asset cache buf 32 B-aligned; size guards on LogEntry / Sensor / Message. |
+| 5 | Sensor/Message struct reorder | ~0.4 KB + hygiene | none | XS | **DONE** — 4-aligned members first; Sensor ≤ 40 B. |
+| 6 | Pre-decoded PCM for gun/alert clips | decode CPU ↓ | low | M | deferred |
+| 7 | Non-blocking reply TX | 2 ms/reply task time | med-high | M | deferred |
+| 8 | CRC → ROM folds | cleanliness | low | S | deferred |
 
-Items 1–5 are a single small PR; 6–8 only if a concrete need appears.
-DRAM after 1–3: steady-state free ≈ 55–75 KB (from 25) — comfortable
-headroom for the config export/import feature and future effects.
+Expected steady-state DRAM free after 2+3: ≈ 55–65 KB (from 25) —
+comfortable headroom for the config export/import feature and future
+effects.  Bench validation of #3 (underruns during crossfade) is the one
+open gate before this reaches `main`.
