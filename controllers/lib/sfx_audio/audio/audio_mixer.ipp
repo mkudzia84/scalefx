@@ -584,7 +584,7 @@ bool AudioMixer<TI2S, TCodec>::play(int channel, const char* filename, const Aud
     ws.bitsPerSample = ws.source->bitsPerSample();
     ws.totalFrames   = ws.source->totalFrames();
 
-    MIXER_LOG("Ch%d: header OK (%uHz/%uch/%ub, %u frames)", channel,
+    MIXER_TRACE("Ch%d: header OK (%uHz/%uch/%ub, %u frames)", channel,
               (unsigned)ws.sampleRate_Hz, (unsigned)ws.numChannels,
               (unsigned)ws.bitsPerSample, (unsigned)ws.totalFrames);
 
@@ -1161,7 +1161,7 @@ int AudioMixer<TI2S, TCodec>::getWavBufferFrames(int channel) const {
 
 template<typename TI2S, typename TCodec>
 bool AudioMixer<TI2S, TCodec>::queueCommand(const Command& cmd) {
-    MIXER_LOG(">>> queueCommand: type=%d ch=%d file=%s",
+    MIXER_TRACE(">>> queueCommand: type=%d ch=%d file=%s",
              (int)cmd.type, cmd.channelId, cmd.filename[0] ? cmd.filename : "(none)");
     
     sfxMutexLock(_cmdMutex);
@@ -1177,7 +1177,7 @@ bool AudioMixer<TI2S, TCodec>::queueCommand(const Command& cmd) {
     _cmdQueueHead.store(nextHead, std::memory_order_release);
 
     sfxMutexUnlock(_cmdMutex);
-    MIXER_LOG("<<< Cmd queued: type=%d ch=%d (head=%d tail=%d)",
+    MIXER_TRACE("<<< Cmd queued: type=%d ch=%d (head=%d tail=%d)",
              (int)cmd.type, cmd.channelId, _cmdQueueHead.load(std::memory_order_relaxed), _cmdQueueTail.load(std::memory_order_relaxed));
     return true;
 }
@@ -1191,13 +1191,13 @@ void AudioMixer<TI2S, TCodec>::processCommands() {
         _cmdQueueTail.store((_cmdQueueTail.load(std::memory_order_relaxed) + 1) % AUDIO_CMD_QUEUE_SIZE, std::memory_order_release);
         sfxMutexUnlock(_cmdMutex);
 
-        MIXER_LOG("processCommands: dequeued type=%d ch=%d (tail now=%d)",
+        MIXER_TRACE("processCommands: dequeued type=%d ch=%d (tail now=%d)",
                  (int)cmd.type, cmd.channelId, _cmdQueueTail.load(std::memory_order_relaxed));
         executeCommand(cmd);
         processed++;
     }
     if (processed > 0) {
-        MIXER_LOG("processCommands: processed %d commands", processed);
+        MIXER_TRACE("processCommands: processed %d commands", processed);
     }
 }
 
@@ -1205,9 +1205,9 @@ template<typename TI2S, typename TCodec>
 void AudioMixer<TI2S, TCodec>::executeCommand(const Command& cmd) {
     switch (cmd.type) {
         case CommandType::Play: {
-            MIXER_LOG("executeCommand: PLAY ch%d: %s", cmd.channelId, cmd.filename);
+            MIXER_TRACE("executeCommand: PLAY ch%d: %s", cmd.channelId, cmd.filename);
             bool result = play(cmd.channelId, cmd.filename, cmd.options);
-            MIXER_LOG("executeCommand: play() returned %s", result ? "true" : "false");
+            MIXER_TRACE("executeCommand: play() returned %s", result ? "true" : "false");
             break;
         }
         case CommandType::Stop:
