@@ -313,6 +313,17 @@ void JetiExBus::sendExBusResponse(uint8_t packetId, uint8_t dataId,
         // silent for ~2 ms more, so only our echo is in RX.  Instant (no yield),
         // so it doesn't eat into the IN_2 poll window that serveTelemetry runs
         // next.  echoShort now just tallies "the tail was still in flight".
+        // Wait (bounded) for the echo TAIL to actually land before flushing:
+        // flush() returns when the TX shift register empties, but the RX side
+        // finishes sampling the last byte ~1 byte-time later and the driver
+        // ISR posts it on the RX-timeout tick — an immediate flushRx() missed
+        // those 1-3 bytes essentially ALWAYS (echoShort ran at ~100%), leaking
+        // them into the parser where a 0x3E/0x3D-valued CRC byte seeds a
+        // mis-frame.  The master stays silent ~2 ms after our reply, so a
+        // <=500 us bounded wait is free and drives the leak to zero.
+        const uint32_t w0 = SFX_MICROS();
+        while ((uint16_t)_serial->available() < totalLen &&
+               (SFX_MICROS() - w0) < 500) { /* spin: <=0.5 ms in the quiet slot */ }
         const bool hadTail = ((uint16_t)_serial->available() < totalLen);
         _serial->flushRx();
         if (hadTail) _echoShort++;

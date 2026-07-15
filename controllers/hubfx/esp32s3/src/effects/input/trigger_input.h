@@ -64,6 +64,13 @@ struct TriggerMapping {
     uint8_t           centerDeadbandPct = 2;    ///< % of span at output==0
 
     FailsafeBehaviour failsafe      = FailsafeBehaviour::ForceLow;
+
+    /// Signal-loss DEBOUNCE: the failsafe behaviour engages only after the
+    /// input has been invalid for this long — shorter glitches HOLD the last
+    /// value silently.  Jeti receivers themselves hold ~1 s before failsafing
+    /// servo outputs; an instant force_low turned every sub-second wire
+    /// glitch into a full engine stop/start cycle (bench 2026-07-15).
+    uint16_t          failsafeDelayMs = 500;
 };
 
 /// Decoded value handed back by `TriggerInput::feed()` and to the
@@ -107,6 +114,7 @@ public:
         _haveLast = false;
         _last     = TriggerValue{};
         _last.kind = mapping.kind;
+        _invalidSinceMs = 0;
     }
 
     const TriggerMapping& mapping() const { return _mapping; }
@@ -123,7 +131,7 @@ public:
     /// hysteresis / deadband / failsafe rules, sets `changed`, and
     /// fires the callback if changed.  Always returns the (now-current)
     /// value so the dispatcher can also use it directly.
-    TriggerValue feed(uint16_t pulseUs, bool valid);
+    TriggerValue feed(uint16_t pulseUs, bool valid, uint32_t nowMs);
 
 private:
     TriggerValue compute(uint16_t pulseUs) const;
@@ -143,6 +151,7 @@ private:
     bool           _haveLast = false;
     uint16_t       _lastPulseUs = 0;       ///< raw µs from the most recent feed()
     bool           _lastPulseValid = false;
+    uint32_t       _invalidSinceMs = 0;   // failsafe debounce anchor (0 = signal OK)
     OnChangeFn     _cb       = nullptr;
     void*          _ctx      = nullptr;
 };

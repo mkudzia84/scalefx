@@ -181,9 +181,11 @@ public:
         const bool splitPins = (_txPin >= 0);
         const int  txPin     = splitPins ? -1
                                          : (halfDuplex ? _rxPin : -1);
+        // 4 KB RX ring = ~1 s of a 4 kB/s ESC stream — rides out main-loop /
+        // task stalls (audio bursts, config applies) without dropping bytes.
         _uart.beginConfig(uartPort(), _rxPin, txPin, cfg,
                           invert ? UART_SIGNAL_RXD_INV : 0,
-                          halfDuplex && !splitPins, /*rxBuf=*/1024);
+                          halfDuplex && !splitPins, /*rxBuf=*/4096);
         _rawHalfDuplex = halfDuplex && splitPins;
         _mode = Mode::UART_RAW;
         return true;

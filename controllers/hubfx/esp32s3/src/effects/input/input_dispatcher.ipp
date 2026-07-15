@@ -247,7 +247,7 @@ void InputDispatcherServicePolicyT<TTopology>::onRoleEvent(
         uint16_t us = 0;
         bool     v  = false;
         if (!extract(p, len, b.channel, us, v)) continue;
-        b.input->feed(us, v);
+        b.input->feed(us, v, SFX_MILLIS());
     }
 }
 

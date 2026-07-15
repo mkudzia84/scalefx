@@ -7,6 +7,73 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.39.0 — 2026-07-15
+
+The input-signal saga: RC blackouts during audio playback root-caused to FIVE
+stacked causes and fixed; the legacy Jeti EX-Bus downstream slave mode removed;
+RPM scaling by motor poles + gear ratio.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.39.0 | ESP32-S3 | `hubfx-v2.39.0` |
+
+### Bug Fixes (the input-gap stack — each necessary, none sufficient alone)
+- **asset_loader priority 22 → 3** (Core 0): the SD→PSRAM preload outranked the
+  RC input task and starved it for whole read bursts.
+- **UART ISRs into IRAM** (`ESP_INTR_FLAG_IRAM` + `CONFIG_UART_ISR_IN_IRAM`):
+  MP3-decode cache pressure delayed the flash-resident RX ISR past the 128 B
+  FIFO horizon (~10 ms @125k) — real byte loss in 1–2 s windows.
+- **MP3 decoder task → Core 1 @ prio 22**: the decoder's initial-prefetch
+  sprint (flat-out decode on every source open = every engine transition)
+  broke reception even with the IRAM ISR.  The historical "decoder on Core 1
+  = 10× underruns" was a priority mistake (it was tried at prio 5, starving
+  BELOW the producer/consumer pair), not a core problem.
+- **EX frame parser validates the type byte** (0x01/0x03 only): a stray
+  0x3E after a gap or echo leak seeded a bogus frame whose "length" was a
+  channel-value byte, swallowing valid polls — one glitch became a
+  seconds-long channel/telemetry blackout.
+- **TX self-echo tail drained deterministically**: flushRx() ran before the
+  echo's last bytes physically landed (echoShort ≈ 100 % of replies), leaking
+  bytes into the parser; now a bounded ≤500 µs wait inside the master's quiet
+  window drives the leak to zero.
+- **Failsafe debounce** (TriggerInput): signal-loss behaviours (force_low/…)
+  engage only after 500 ms of sustained loss — a single bad frame no longer
+  commands "engine off" (Jeti receivers themselves hold ~1 s).
+- ESC-telemetry raw-UART RX ring 1024 → 4096 B (~1 s of stream headroom).
+- Studio: a topology refresh racing the /hubfx.yaml hydration could invent a
+  default ESC stream selector and PERSIST it on Apply, silently overwriting
+  the operator's choice (the kontronik→jeti-exbus flip) — defaults are no
+  longer invented.
+- Reply-gate de-beat: the 12 ms floor against the ~11.6 ms poll period
+  skipped almost every other poll; a 3 ms early margin lifts replies from
+  ~48 Hz to ~65 Hz (per-sensor refresh up ~35 %).
+
+### New Features
+- **RPM scaling by Motor poles + Gear ratio** (Telemetry sub-tab, per
+  esc-telemetry port): published RPM = transmitted ÷ (poles/2 × gear) —
+  Kontronik transmits ELECTRICAL rpm.  Persisted as `esc_motor_poles` +
+  `esc_gear_ratio`; one combined ×100 divider on the wire (unchanged).
+- Reply-rate instrumentation: the 2 s `[jexp] TX` line now reports measured
+  `respHz` + `vals/s` + the target interval; `[jexp] IN_1 failed-frame[N]`
+  hex-dumps the first CRC-failed frame per window (the tool that cracked
+  the saga).
+
+### Breaking ⚠️
+- **Jeti EX-Bus downstream slave mode REMOVED** (the IN_2 master link that
+  polled an ESC as a Jeti slave with mirrored channel frames): native ESC
+  telemetry supersedes it, its 25 ms mirror TX taxed the input task, and a
+  stale config resurrecting it caused a perf regression.  `esc_protocol:
+  jeti-exbus` (or unknown/missing values) now falls back to kontronik; the
+  Jeti input attach no longer auto-claims a second input port.
+
+### Internal
+- jeti_ex_telemetry_monitor.h deleted; expander is IN_1-only (~10 KB smaller
+  firmware).  DRAM audit: branch adds ~3 KB; the session-time drop is the
+  (pre-existing, documented) lazy MP3 decoder pool + the 32 KB DMA WAV
+  buffer.
+
+---
+
 ## 2.38.1 — 2026-07-14
 
 Native ESC telemetry (Kontronik / Scorpion / Hobbywing) on the TELEM port,

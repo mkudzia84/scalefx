@@ -251,6 +251,9 @@ public:
     /// Total bytes seen on the UART. Diagnoses wrong-baud (bytes climb but
     /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
     uint32_t rxByteCount() const { return _parser.rxBytes(); }
+#if SFX_INSTRUMENTATION
+    uint8_t  takeFailedFrame(uint8_t* out, uint8_t cap) { return _parser.takeFailedFrame(out, cap); }
+#endif
 
     // Two-way (half-duplex reply) instrumentation — verify TX/RX switching drops
     // + issues on the shared single-wire line.  Surfaced via the [jexp] TX diag
