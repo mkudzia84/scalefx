@@ -95,25 +95,16 @@ func (e *yamlExpanderEntry) expanderKind() string {
 	return ""
 }
 
-// yamlAudio / yamlFeatures / yamlTelemetry mirror the same-named blocks
-// in `hubfx_config.h::populate()` — the firmware reads them at top
-// level.  Studio used to drop them on save (the struct didn't have
-// fields for them) which RESET them to firmware defaults every Apply
-// — bit us hard because `features.enginefx` and `features.gunfx`
-// default to FALSE, so an Apply silently killed both effects.
-// Round-trip them now: read on Load, write back on Save.
+// yamlAudio / yamlTelemetry mirror the same-named blocks in
+// `hubfx_config.h::populate()` — the firmware reads them at top level.
+// (The `features:` master-enable matrix was RETIRED 2026-07-26: each
+// effect's enable now lives ONLY in its own sub-config, so hubfx.yaml is
+// pure port/input/audio mapping.  A `features:` key in an OLD file is
+// simply ignored on load — yaml.v3 drops unknown fields — and never
+// re-emitted.)
 
 type yamlAudio struct {
 	CodecSupply string `yaml:"codec_supply,omitempty"`
-}
-
-type yamlFeatures struct {
-	Alerts        bool `yaml:"alerts"`
-	Enginefx      bool `yaml:"enginefx"`
-	LandingLights bool `yaml:"landing_lights"`
-	Lightfx       bool `yaml:"lightfx"`
-	Gears         bool `yaml:"gears"`
-	Gunfx         bool `yaml:"gunfx"`
 }
 
 type yamlTelemetry struct {
@@ -125,28 +116,10 @@ type yamlTelemetry struct {
 type hubYamlConfig struct {
 	SchemaVersion int                 `yaml:"schema_version,omitempty"`
 	Audio         *yamlAudio          `yaml:"audio,omitempty"`
-	Features      *yamlFeatures       `yaml:"features,omitempty"`
 	Telemetry     *yamlTelemetry      `yaml:"telemetry,omitempty"`
 	Inputs        []yamlInputBinding  `yaml:"inputs,omitempty"`
 	Ports         []yamlPortBinding   `yaml:"ports,omitempty"`
 	Expanders     []yamlExpanderEntry `yaml:"expanders,omitempty"`
-}
-
-// defaultFeatures is what Studio emits when /hubfx.yaml has no
-// `features:` block on load.  All-true so a fresh first save doesn't
-// kill the effects the operator just configured.  The firmware-side
-// FeaturesBlock defaults (enginefx=false, gunfx=false) only apply
-// when the YAML key is genuinely absent — Studio now ALWAYS emits a
-// `features:` block, so the firmware defaults stop being a footgun.
-func defaultFeatures() *yamlFeatures {
-	return &yamlFeatures{
-		Alerts:        true,
-		Enginefx:      true,
-		LandingLights: true,
-		Lightfx:       true,
-		Gears:         true,
-		Gunfx:         true,
-	}
 }
 
 // LoadHubConfig downloads /hubfx.yaml and applies the inputs[]
@@ -176,12 +149,10 @@ func (a *App) LoadHubConfig() error {
 	const hubGUID = ""
 
 	a.dmMu.Lock()
-	// Capture the top-level non-overlay blocks (audio / features /
-	// telemetry) so Save can round-trip them.  Nil ⇒ the YAML had no
-	// such block; we leave the field nil and Save substitutes the
-	// canonical default (all-true for features).
+	// Capture the top-level non-overlay blocks (audio / telemetry) so Save
+	// can round-trip them.  Nil ⇒ the YAML had no such block.  (`features:`
+	// was retired — an effect's enable lives in its own sub-config now.)
 	a.hubAudio     = cfg.Audio
-	a.hubFeatures  = cfg.Features
 	a.hubTelemetry = cfg.Telemetry
 	// ── inputs[] → channel.function ────────────────────────────────
 	for _, ib := range cfg.Inputs {
@@ -294,20 +265,13 @@ func (a *App) SaveHubConfig() error {
 	const hubGUID = ""
 
 	cfg := hubYamlConfig{SchemaVersion: 1}
-	// Round-trip the top-level blocks we don't have a UI for yet.
-	// `features` is critical — if we omit it, the firmware applies
-	// FeaturesBlock defaults (enginefx=false, gunfx=false) and silently
-	// disables those effects on every Apply.  Use the in-memory overlay
-	// from LoadHubConfig if present, else the canonical all-true
-	// defaults so a fresh first save doesn't kill anything.
+	// Round-trip the top-level blocks we don't have a UI for yet (audio /
+	// telemetry).  `features:` is intentionally NOT emitted — effect enable
+	// lives in each effect's own sub-config now, so hubfx.yaml is pure
+	// port/input/audio mapping and never churns when an effect is toggled.
 	a.dmMu.Lock()
 	if a.hubAudio != nil {
 		cfg.Audio = a.hubAudio
-	}
-	if a.hubFeatures != nil {
-		cfg.Features = a.hubFeatures
-	} else {
-		cfg.Features = defaultFeatures()
 	}
 	if a.hubTelemetry != nil {
 		cfg.Telemetry = a.hubTelemetry

@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.39.0-hubfx"
-#define BUILD_NUMBER     930
+#define FIRMWARE_VERSION "2.41.0-hubfx"
+#define BUILD_NUMBER     937
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -613,13 +613,18 @@ static void reassertHubFxFeatures(const HubFxConfig& cfg) {
         }
     }
 
-    hubfx::config::applyHubFxConfig<HubFxBoard,
-                                     AlertService,
-                                     EngineFxService,
-                                     LightFxEffectService,
-                                     LandingLightService,
-                                     GearControlService,
-                                     GunFxService>(board, cfg);
+    // NOTE (2026-07-26): the `features:` master-enable matrix was RETIRED.
+    // Each effect's enable now lives ONLY in its own sub-config (`enginefx.yaml`
+    // `enabled:` etc.) and is applied by that store's callback — hubfx.yaml is
+    // pure port/input/audio mapping again.  Previously this re-applied
+    // features.<effect> on every reload, which forced Studio to re-upload
+    // hubfx.yaml on every effect toggle; that upload colliding with audio
+    // playback wedged the flash (Rule 54).  No feature override here anymore.
+    //
+    // Refresh the runtime capability mask AFTER every effect store has applied
+    // its own enable (this hook runs LAST in the reload) so INIT / Studio see
+    // the true set of live effects.
+    board.recomputeEnabledCapabilities();
 }
 
 // /hubfx.yaml store apply callback — fires on the initial load AND on every

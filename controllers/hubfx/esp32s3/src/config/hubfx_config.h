@@ -159,20 +159,12 @@ struct HubFxConfig {
         char codecSupply[8] = "12v";          ///< 12v | 15v | 20v | 24v
     } audio;
 
-    /// Master enable matrix.  Each flag is the kill-switch for one
-    /// effect family; setting it false overrides whatever the matching
-    /// sub-file says about its own enabled state.  The runtime-
-    /// capability walker on `BoardServer` picks these up via each
-    /// service's `enabled()` accessor so the host's CLI / Studio view
-    /// of which features are live tracks the YAML.
-    struct FeaturesBlock {
-        bool alerts        = true;
-        bool enginefx      = false;
-        bool landingLights = true;
-        bool lightfx       = true;
-        bool gears         = true;
-        bool gunfx         = false;
-    } features;
+    // NOTE (2026-07-26): the `features:` master-enable matrix was RETIRED.
+    // Each effect's enable now lives ONLY in its own sub-config (enginefx.yaml
+    // `enabled:` …), applied by that store's callback — a fresh board boots
+    // inert because each sub-config defaults `enabled: false`.  hubfx.yaml is
+    // pure port/input/audio mapping; a `features:` key in an OLD file just
+    // parses to nothing (no schema binding) and is ignored.
 
     /// Port → role mapping.  Populated by the YAML's `ports:` sequence;
     /// each entry attaches one `RoleKind` variant to one hub-local port.
@@ -311,7 +303,6 @@ namespace hubfx_config_schema {
 using namespace sfx;
 
 using Aud   = HubFxConfig::AudioBlock;
-using Feat  = HubFxConfig::FeaturesBlock;
 using Telem = HubFxConfig::TelemetryBlock;
 
 inline const auto fields = schema<HubFxConfig>(
@@ -320,14 +311,8 @@ inline const auto fields = schema<HubFxConfig>(
         prop<&Aud::codecSupply>("codec_supply", "12v")
     ),
 
-    group<&HubFxConfig::features>("features",
-        prop<&Feat::alerts>       ("alerts",         true),
-        prop<&Feat::enginefx>     ("enginefx",       false),
-        prop<&Feat::landingLights>("landing_lights", true),
-        prop<&Feat::lightfx>      ("lightfx",        true),
-        prop<&Feat::gears>        ("gears",          true),
-        prop<&Feat::gunfx>        ("gunfx",          false)
-    ),
+    // (`features:` group retired 2026-07-26 — effect enable lives in each
+    // effect's own sub-config; an old file's `features:` key parses to nothing.)
 
     group<&HubFxConfig::telemetry>("telemetry",
         prop<&Telem::inputs>    ("inputs",      false),

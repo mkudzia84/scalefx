@@ -1,23 +1,17 @@
 # /hubfx.yaml — Minimal config (firmware schema defaults).
 #
-# Equivalent to "no file present" — every value here mirrors the
-# `HubFxConfig` struct defaults.  /hubfx.yaml is intentionally thin:
-# the master enable matrix + system audio block live here, every
-# effect's details live in its own canonical sub-file at a fixed path.
+# hubfx.yaml is pure PORT / INPUT / AUDIO mapping.  Each effect's enable +
+# details live in its OWN sub-config (/enginefx.yaml, /lightfx.yaml, …), which
+# default `enabled: false` — so a bare board boots inert until the operator
+# turns an effect on in its panel.  (The old `features:` master-enable matrix
+# was retired 2026-07-26; a `features:` key in an old file is simply ignored.)
 
 schema_version: 1
 
 audio:
   codec_supply: 12v
 
-features:
-  alerts:         true
-  enginefx:       false
-  landing_lights: true
-  lightfx:        true
-  gears:          true
-  gunfx:          false
-
 # `ports:` omitted — falls back to "LedAnimator on every PWM port +
-# ServoActuator on every servo port" so a bare HubFX still drives LEDs
-# out of the box.  See helicopter_ka50.yaml for the explicit form.
+# ServoActuator on every servo port", but with every effect disabled (each
+# sub-config defaults off) the board sits idle until a feature is turned on.
+# See helicopter_ka50.yaml for the explicit form.

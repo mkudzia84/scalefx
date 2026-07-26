@@ -276,42 +276,16 @@ void applyPortRoles(TBoard& board, const HubFxConfig& cfg) {
                  (unsigned)attached, (unsigned)cfg.numExpanders);
 }
 
-/// Apply `/hubfx.yaml` — flip every service's `setEnabled()` to match
-/// the master matrix.  Idempotent: called once after /hubfx.yaml loads
-/// (so the audio.codec_supply caller in the sketch fires early) and
-/// again after every sub-file has loaded (so the master matrix has the
-/// last word over each sub-file's local `enabled:` flag).
-template <typename TBoard,
-          typename TAlertService,
-          typename TEngineService,
-          typename TLightFxService,
-          typename TLandingService,
-          typename TGearService,
-          typename TGunFxService>
-void applyHubFxConfig(TBoard& board, const HubFxConfig& cfg) {
-    const auto& f = cfg.features;
-    board.template policy<TAlertService>()  .setEnabled(f.alerts);
-    board.template policy<TEngineService>() .setEnabled(f.enginefx);
-    board.template policy<TLightFxService>().setEnabled(f.lightfx);
-    board.template policy<TLandingService>().setEnabled(f.landingLights);
-    board.template policy<TGearService>()   .setEnabled(f.gears);
-    board.template policy<TGunFxService>()  .setEnabled(f.gunfx);
-    board.recomputeEnabledCapabilities();
-
-    SFX_LOG_INFO("[hubfx-config] features: alerts=%s enginefx=%s lightfx=%s "
-                 "landing=%s gears=%s gunfx=%s",
-                 f.alerts        ? "on" : "off",
-                 f.enginefx      ? "on" : "off",
-                 f.lightfx       ? "on" : "off",
-                 f.landingLights ? "on" : "off",
-                 f.gears         ? "on" : "off",
-                 f.gunfx         ? "on" : "off");
-}
+// NOTE (2026-07-26): `applyHubFxConfig` (the `/hubfx.yaml` `features:`
+// master-enable matrix) was RETIRED.  Each effect's enable now lives ONLY in
+// its own sub-config (`enginefx.yaml` `enabled:` …), applied by that store's
+// callback; hubfx.yaml is pure port/input/audio mapping.  The runtime
+// capability mask is refreshed by `board.recomputeEnabledCapabilities()` in
+// `reassertHubFxFeatures`, which runs LAST on every load/reload.
 
 /// Apply `/lightfx.yaml` — load the program catalog from the explicit
 /// paths in `cfg.programPaths[]`, then configure the service.  Master
-/// brightness + local enable land here; /hubfx.yaml's master kill-
-/// switch re-applies after via `applyHubFxConfig`.
+/// brightness + local enable land here.
 ///
 /// `hub` is required for v2 channel-name resolution — programs
 /// reference LED channels by NAME against /hubfx.yaml's LedAnimator
