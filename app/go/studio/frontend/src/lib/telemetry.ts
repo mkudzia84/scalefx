@@ -40,7 +40,7 @@ export const telemetry = writable<TelemetrySnapshot | null>(null)
  *  non-local device — i.e. an ESC on IN_2 is replying.  Drives the IN_2
  *  jeti-ex-telemetry port's active / no-signal indicator. */
 export const escTelemetryActive = derived(telemetry, $t =>
-    !!$t && $t.devices.some(d => !d.local && d.active))
+    !!$t && ($t.devices ?? []).some(d => !d.local && d.active))
 
 // Shared, ref-counted poller so multiple views (the Telemetry sub-tab + the
 // IN_2 port indicator) drive ONE 1 Hz GetTelemetry loop, not several.
@@ -63,7 +63,15 @@ export function stopTelemetryPolling(): void {
 export async function pollTelemetry(): Promise<void> {
     try {
         const snap = (await GetTelemetry()) as Omit<TelemetrySnapshot, 'ts'>
-        telemetry.set({ ...snap, ts: Date.now() })
+        // Normalize on ingest: Go nil slices arrive as JSON null (an empty
+        // TelemetryHub has Devices == nil).  `$t.devices.some(...)` on that
+        // null threw inside the escTelemetryActive derived on every connect
+        // with no ESC attached — the 2026-07-26 app-wide store freeze.
+        const devices = (Array.isArray(snap?.devices) ? snap.devices : []).map(d => ({
+            ...d,
+            sensors: Array.isArray(d?.sensors) ? d.sensors : [],
+        }))
+        telemetry.set({ ...snap, devices, ts: Date.now() })
     } catch {
         /* transient — keep the last snapshot */
     }

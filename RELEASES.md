@@ -7,6 +7,41 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## Studio 2026-07-26 hotfix — the REAL "hanging UI" root cause
+
+No firmware change (HubFX stays 2.41.0).  The fresh-board freeze survived the
+2.41.0 Studio fixes because its true cause was deeper than the wizard modal /
+connect dialog: **Svelte 3's `svelte/store` shares ONE module-level
+`subscriber_queue` across every store in the app, and a subscriber callback
+that throws mid-notification leaves that queue non-empty forever — after
+which every `set()` on ANY store silently notifies nobody.** Handlers still
+fire and no error surfaces (nothing is ever marked dirty, so the FE.FLUSH
+scheduler watchdog sees a clean queue), which is exactly the observed
+"clicks land but nothing re-renders" freeze.
+
+### Bug Fixes
+- **Trigger fixed**: `escTelemetryActive` derived read `$t.devices.some(…)`
+  while Go's `TelemetrySnapshot.Devices` is a nil slice (→ JSON `null`) on
+  any board with no ESC/Jeti device attached — it threw on the first
+  telemetry poll after every connect, freezing the whole UI.  Telemetry
+  snapshots are now normalized on ingest (`devices`/`sensors` null → `[]`)
+  and the derived is null-tolerant.
+- **Class fixed**: `svelte/store` is vite-aliased to a hardened drop-in
+  (`lib/safestore.ts`, same 3.59.2 semantics) whose notify queue try/catches
+  every subscriber and always drains — one bad subscriber can no longer mute
+  the app.  Every caught throw is reported to the diag log as `FE.STORE`
+  with phase + stack (rate-limited), so the culprit names itself.
+- Regression net: `safestore.test.ts` (queue-poisoning, derived-throw,
+  cross-store isolation) + the whole vitest suite now runs through the
+  aliased store.
+
+### Internal
+- GUI-driving harness: `winshot.ps1` gained the Alt-key foreground unlock +
+  verification (background `SetForegroundWindow` is silently blocked by the
+  OS foreground lock, so synthetic clicks landed on the wrong window).
+
+---
+
 ## 2.41.0 — 2026-07-26
 
 The effect-enable rationalization: the `/hubfx.yaml` `features:` master-enable
