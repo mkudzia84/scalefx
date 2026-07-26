@@ -178,6 +178,48 @@ directory (e.g. `/lightfx/programs/<n>.yaml` on a fresh board) failed with
 wrapper does). `NativeFile::openWriteFile` now retries through an
 `mkdir -p` of the parent chain (covers flash AND SD backends).
 
+## 6. 🔴 OPEN — USB host path dead on rev B (U41 hub never attaches upstream)
+
+**Symptom (2026-07-26).** Expander boards plugged into USB1/USB4 never mount:
+`expanders`/Studio show none, no `EXPANDER_CONNECTED`, silent at every layer.
+
+**Isolation (A/B with the minimal probe — `tests/hw/hubfx_usb_probe/`).**
+A pure-IDF USB-host enumeration probe (usb_host_install + client that prints
+VID/PID on every mount; HUBS_SUPPORTED to match production; console UART0):
+
+| Board | Probe result |
+|---|---|
+| rev B (HubFx-78A8) + known-good expander plugged | **nothing, ever** (40 s+ windows, repeated) |
+| rev A (old board) + same methodology | **device enumerates** (`devices_seen` 0→1 on plug) |
+
+Same probe binary, same procedure ⇒ probe + expander boards exonerated;
+**not** a firmware regression (v2.41.0 stack fine) — the rev-B unit's USB
+host path is a hardware fault.  Supporting: `USB_1` LED (driven by hub pin
+U41.14) lit on rev A under production firmware, **dark on rev B** in every
+condition.
+
+Note: IDF's hub driver services hub devices internally and does NOT report
+them to host clients — `devices_seen=0` at boot is NORMAL (rev A also shows
+0 until a downstream device is plugged).  Don't read "no hub at boot" as
+the fault signature; the discriminator is a plugged device staying invisible.
+
+**Topology (hubfx.tel):** S3 U26.25/26 (GPIO19/20 D−/D+) → R19/R20 →
+U41.11/12 hub upstream; hub AVDD = 3V3 via L4 (U41.16); RESET_HUB = passive
+RC R24 (pull-up 3V3) + C65 (U41.13); X2 = 12 MHz hub crystal (U41.1/2);
+downstream D1 → USB1 via D7, D4 → USB4 via D8.
+
+**Bench plan (next session, DMM + scope):** measure DC on upstream D+
+(R20 ↔ U41.12):
+- ≈3.3 V ⇒ hub alive + asserting attach ⇒ break between R19/R20 and the S3
+  (check both ends of each resistor for opens/swap);
+- ≈0 V ⇒ hub not attaching ⇒ check U41.16 AVDD (3.3 V?), U41.13 RESET_HUB
+  (~3.3 V after power-up?), then X2 oscillation (scope).
+
+The probe stays available: flash `tests/hw/hubfx_usb_probe`, watch UART0 @
+115200 — any electrical fix immediately prints a `DEVICE VID/PID` line on
+plug (2 s heartbeats prove the probe is alive).  Same partition table as
+production, so configs survive; restore with `scalefx-flash flash hubfx`.
+
 ## Firmware/tooling changes made during this bring-up
 
 - `HUBFX_PCB_REV` compile-time pin-map switch (rev B default; `=1`
