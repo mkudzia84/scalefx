@@ -46,6 +46,7 @@ namespace ExpanderKind {
     constexpr uint8_t LightFX      = 0x02;
     constexpr uint8_t GearControl  = 0x03;
     constexpr uint8_t PicoDefault  = 0x04;  ///< Arduino-Pico default PID 0x000A — can't disambiguate by PID alone
+    constexpr uint8_t PortExpander = 0x05;
 
     inline const char* getName(uint8_t kind) {
         switch (kind) {
@@ -53,6 +54,7 @@ namespace ExpanderKind {
             case LightFX:      return "LightFX";
             case GearControl:  return "GearControl";
             case PicoDefault:  return "Pico(default-PID)";
+            case PortExpander: return "PortExpander";
             default:           return "Unknown";
         }
     }

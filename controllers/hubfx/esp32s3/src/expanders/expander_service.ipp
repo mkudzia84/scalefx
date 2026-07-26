@@ -606,6 +606,7 @@ uint8_t ExpanderServicePolicyT<MaxExpanders, MaxKnownGuids>::classifyByVidPid(
         case USB_PID_GUNFX:        return ExpanderKind::GunFX;
         case USB_PID_LIGHTFX:      return ExpanderKind::LightFX;
         case USB_PID_GEARCONTROL:  return ExpanderKind::GearControl;
+        case USB_PID_PORTEXPANDER: return ExpanderKind::PortExpander;
         case USB_PID_PICO_DEFAULT: return ExpanderKind::PicoDefault;
         default:                   return ExpanderKind::Unknown;
     }

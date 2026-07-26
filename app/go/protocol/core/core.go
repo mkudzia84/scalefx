@@ -118,10 +118,11 @@ const (
 // ─── Controller Type Strings ───
 
 const (
-	CtrlGearControl = "gearcontrol"
-	CtrlGunFX       = "gunfx"
-	CtrlHubFX       = "hubfx"
-	CtrlLightFX     = "lightfx"
+	CtrlGearControl  = "gearcontrol"
+	CtrlGunFX        = "gunfx"
+	CtrlHubFX        = "hubfx"
+	CtrlLightFX      = "lightfx"
+	CtrlPortExpander = "portexpander"
 )
 
 // ─── Init Mode — mirrors InitMode namespace in core.h ───
@@ -394,6 +395,10 @@ func DetectControllerType(name string) string {
 		{"GunFX", CtrlGunFX},
 		{"HubFX", CtrlHubFX},
 		{"LightFX", CtrlLightFX},
+		// Firmware emits the short prefix "PortExp" (kName in
+		// portexpander_pico.ino), e.g. "PortExp-8A2F".
+		{"PortExpander", CtrlPortExpander},
+		{"PortExp", CtrlPortExpander},
 	} {
 		if strings.HasPrefix(name, entry.prefix) {
 			return entry.ctype

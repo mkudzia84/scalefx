@@ -50,6 +50,10 @@ func BoardKindFromName(name string) string {
 		return "gunfx"
 	case strings.HasPrefix(n, "gearctrl"), strings.HasPrefix(n, "gearcontrol"):
 		return "gearcontrol"
+	// Firmware prefix is "PortExp" (kName in portexpander_pico.ino);
+	// "portexp" also matches the long form "portexpander".
+	case strings.HasPrefix(n, "portexp"):
+		return "portexpander"
 	}
 	return ""
 }
@@ -201,7 +205,10 @@ func RoleLabel(kind byte) string {
 	case roles.KindJetiExInput:
 		return "Jeti EX Input"
 	case roles.KindEscTelemetry:
-		return "Jeti EX Telemetry"
+		// The esc-telemetry role decodes a downstream ESC's native telemetry
+		// stream (Kontronik / Scorpion / Hobbywing) — historically the Jeti
+		// EX Bus pass-thru, hence the old label; it is generic ESC telemetry now.
+		return "ESC Telemetry"
 	case roles.KindLedAnimator:
 		return "LED Animator"
 	case roles.KindDcMotor:

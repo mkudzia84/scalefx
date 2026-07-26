@@ -13,11 +13,12 @@ import (
 // ─── ExpanderKind — single-byte enum, append-only (Rule 11) ───────────
 
 const (
-	KindUnknown     byte = 0x00
-	KindGunFX       byte = 0x01
-	KindLightFX     byte = 0x02
-	KindGearControl byte = 0x03
-	KindPicoDefault byte = 0x04
+	KindUnknown      byte = 0x00
+	KindGunFX        byte = 0x01
+	KindLightFX      byte = 0x02
+	KindGearControl  byte = 0x03
+	KindPicoDefault  byte = 0x04
+	KindPortExpander byte = 0x05
 )
 
 // KindName returns a human-readable name for an expander kind byte.
@@ -31,6 +32,8 @@ func KindName(k byte) string {
 		return "GearControl"
 	case KindPicoDefault:
 		return "Pico(default-PID)"
+	case KindPortExpander:
+		return "PortExpander"
 	default:
 		return "Unknown"
 	}
