@@ -66,7 +66,20 @@ static void identify(uint8_t a, char *out, size_t outLen, bool *clash)
     bool dieStable = rd16_stable(a, 0xFF, &die);
 
     if (mfgStable && mfg == 0x5449 && dieStable && (die & 0xFFF0) == 0x2260) {
-        snprintf(out, outLen, "INA226   (canonical mfg=0x5449 die=0x2260)");
+        /* Live readouts map WHICH rail this INA meters:
+         *   bus  (reg 0x02): LSB 1.25 mV — the monitored rail voltage
+         *   shunt(reg 0x01): LSB 2.5 µV signed — raw drop across the shunt
+         * Raw shunt µV is printed rather than mA so the readout is valid
+         * before any calibration (current = shunt_uV / R_shunt). */
+        uint16_t busRaw = 0, shRaw = 0;
+        rd16(a, 0x02, &busRaw);
+        rd16(a, 0x01, &shRaw);
+        const uint32_t bus_mV   = (uint32_t)busRaw * 125 / 100;
+        const int32_t  shunt_uV = (int32_t)((int16_t)shRaw) * 25 / 10;
+        snprintf(out, outLen,
+                 "INA226   (canonical)  bus=%lu.%03lu V  shunt=%+ld uV",
+                 (unsigned long)(bus_mV / 1000), (unsigned long)(bus_mV % 1000),
+                 (long)shunt_uV);
         return;
     }
     if (a == 0x70) { snprintf(out, outLen, "PCA9685  (8-ch PWM / all-call)"); return; }

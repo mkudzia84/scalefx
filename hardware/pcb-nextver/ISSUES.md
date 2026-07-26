@@ -178,9 +178,11 @@ directory (e.g. `/lightfx/programs/<n>.yaml` on a fresh board) failed with
 wrapper does). `NativeFile::openWriteFile` now retries through an
 `mkdir -p` of the parent chain (covers flash AND SD backends).
 
-## 6. 🔴 OPEN — USB host path dead on rev B (U41 hub never attaches upstream)
+## 6. 🔴 OPEN — USB host path dead on the REV C unit (U41 hub never attaches upstream)
 
-**Symptom (2026-07-26).** Expander boards plugged into USB1/USB4 never mount:
+**Symptom (2026-07-26, board HubFx-78A8 — initially assumed rev B, later
+identified by the operator as a REV C unit).** Expander boards plugged into
+USB1/USB4 never mount:
 `expanders`/Studio show none, no `EXPANDER_CONNECTED`, silent at every layer.
 
 **Isolation (A/B with the minimal probe — `tests/hw/hubfx_usb_probe/`).**
@@ -189,18 +191,20 @@ VID/PID on every mount; HUBS_SUPPORTED to match production; console UART0):
 
 | Board | Probe result |
 |---|---|
-| rev B (HubFx-78A8) + known-good expander plugged | **nothing, ever** (40 s+ windows, repeated) |
+| REV C unit (HubFx-78A8) + known-good expander plugged | **nothing, ever** (40 s+ windows, repeated) |
 | rev A (old board) + same methodology | **device enumerates** (`devices_seen` 0→1 on plug) |
 
 Same probe binary, same procedure ⇒ probe + expander boards exonerated;
 **not** a firmware regression (v2.41.0 stack fine) — the rev-B unit's USB
 host path is a hardware fault.  Supporting: `USB_1` LED (driven by hub pin
-U41.14) lit on rev A under production firmware, **dark on rev B** in every
-condition.
+U41.14) lit on the old board under production firmware, **dark on the REV C
+unit** in every condition.  Since rev C respun the U41 area (I²C restrap
+rework territory), cross-check the respin diffs around the hub (R19/R20,
+L4, X2, RESET_HUB RC) — a layout/BOM change there is a prime suspect.
 
 Note: IDF's hub driver services hub devices internally and does NOT report
-them to host clients — `devices_seen=0` at boot is NORMAL (rev A also shows
-0 until a downstream device is plugged).  Don't read "no hub at boot" as
+them to host clients — `devices_seen=0` at boot is NORMAL (the old board also
+shows 0 until a downstream device is plugged).  Don't read "no hub at boot" as
 the fault signature; the discriminator is a plugged device staying invisible.
 
 **Topology (hubfx.tel):** S3 U26.25/26 (GPIO19/20 D−/D+) → R19/R20 →
