@@ -66,6 +66,7 @@
 | [21-STUDIO-ENGINEFX-PANEL.md](21-STUDIO-ENGINEFX-PANEL.md) | Reference design for operational effect tabs — panel anatomy, channel-setup cluster (threshold + hysteresis bar), sound rows, validation lattice, dirty-draft state. Crib for any new effect tab. |
 | [20-STUDIO-DEVICE-MODEL.md](20-STUDIO-DEVICE-MODEL.md) | Studio's authoritative device model in Go (`devicemodel/`) — port/role/claim semantics, validation, presets. The frontend renders + edits this one source of truth. |
 | [33-CONFIG-WIZARD.md](33-CONFIG-WIZARD.md) | Guided Setup Wizard (modal stepper over the draft stores: features → input → channel map → one step per enabled effect with auto-attaching ports → review/apply) + the design for a Claude-powered config assistant. As-built tree + the no-TS-in-markup gotcha in §10. |
+| [34-HUBFX-PERF-AUDIT.md](34-HUBFX-PERF-AUDIT.md) | DRAM/PSRAM budget + decoder-pool sizing + speed folds (mix kernel already esp-dsp SIMD) + alignment — findings and a priority-ordered optimization plan (2026-07-15 overnight audit). |
 
 ## Debugging & gotchas
 

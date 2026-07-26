@@ -9,7 +9,7 @@ namespace hubfx::effects::input {
 
 // ─── feed() — public entry point ────────────────────────────────────
 
-inline TriggerValue TriggerInput::feed(uint16_t pulseUs, bool valid) {
+inline TriggerValue TriggerInput::feed(uint16_t pulseUs, bool valid, uint32_t nowMs) {
     // Shadow the raw µs unconditionally so consumers (Studio verbose
     // status mirror) can surface the live µs trace even when the
     // trigger is subscribed as Boolean / EnumN / Prop*.
@@ -20,8 +20,21 @@ inline TriggerValue TriggerInput::feed(uint16_t pulseUs, bool valid) {
     v.kind = _mapping.kind;
 
     if (!valid) {
+        // Failsafe DEBOUNCE: a brief invalid window (wire glitch, one noisy
+        // EX frame burst) HOLDS the last value silently; the configured
+        // failsafe behaviour engages only after failsafeDelayMs of sustained
+        // loss.  Real RC loss still failsafes — just like the receiver's own
+        // servo-output hold (~1 s), not on the first bad frame.
+        if (_invalidSinceMs == 0) _invalidSinceMs = nowMs ? nowMs : 1;
+        if ((nowMs - _invalidSinceMs) < _mapping.failsafeDelayMs && _haveLast) {
+            v = _last;           // hold — no event, no failsafe yet
+            v.changed = false;
+            v.initial = false;
+            return v;
+        }
         v = applyFailsafe();
     } else {
+        _invalidSinceMs = 0;
         v = compute(pulseUs);
         v.valid = true;
     }

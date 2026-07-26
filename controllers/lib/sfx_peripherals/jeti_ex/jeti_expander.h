@@ -7,17 +7,18 @@
  * time-critical ~4 ms response slots are never blocked by the soft main loop —
  * and never touch the hard-real-time audio on Core 1.
  *
- *   IN_1 (Rx side, we are SLAVE)  : answer the receiver's telemetry polls with
- *                                   the MERGED multi-device set from the hub
- *                                   (half-duplex TX), and decode RC channels.
- *   IN_2 (ESC side, we are MASTER): mirror the receiver's master frames out to
- *                                   the downstream device ("copy the input
- *                                   signal") so it replies; decode its EX
- *                                   telemetry into the hub PASS-THROUGH with
- *                                   its own USN/LSN/name.
+ *   IN_1 (Rx side, we are SLAVE): answer the receiver's telemetry polls with
+ *   the MERGED multi-device set from the hub (half-duplex TX), and decode RC
+ *   channels.
  *
- * The JetiTelemetryHub is the shared merge point.  Devices keep their identity,
- * so the radio shows the downstream device under its own name next to "HubFx".
+ * The TelemetryHub is the shared merge point.  Devices keep their identity,
+ * so the radio shows every producer (HubFx-own sensors, native ESC telemetry
+ * from the esc-telemetry role, ...) under its own name.
+ *
+ * (The former IN_2 downstream EX-Bus master link — polling an ESC as a Jeti
+ * slave with mirrored channel frames — was REMOVED 2026-07-15: native ESC
+ * telemetry supersedes it, and its ~3.5 ms mirror TX every 25 ms on this task
+ * was a standing input-latency tax.  See telemetry/esc/ for the decoders.)
  *
  * ESP32-only (FreeRTOS task + half-duplex GPIO-matrix TX).
  */
@@ -31,17 +32,22 @@
 #include <platform/sfx_stream.h>   // sfx::Stream (was <Arduino.h>)
 #include <freertos/FreeRTOS.h>     // dedicated IN_1 servicing task
 #include <freertos/task.h>
+#include <atomic>                  // deferred link-loss restart request (Rule 15)
 #include <cstdint>
-#include <cstring>                 // memcpy (ESC poll-template capture)
+#include <cstdio>                  // snprintf (saved hub name for restart)
+#include <cstring>                 // memset (discovery caches)
 #include <functional>
 
 #include <ports/input_port.h>
 #include <serial/diag_log.h>
 #include "jeti_ex_bus.h"
-#include "jeti_ex_telemetry_monitor.h"
-#include "jeti_telemetry_hub.h"
+#include <telemetry/telemetry_hub.h>
 
 namespace JetiEx {
+
+using sfx_telemetry::TelemetryHub;
+using sfx_telemetry::SensorKind;
+
 
 class JetiExpander {
 public:
@@ -50,12 +56,10 @@ public:
         return inst;
     }
 
-    /// Start the expander.  `rxPort` is the Rx-facing link (IN_1), `escPort`
-    /// the downstream link (IN_2).  Registers the HubFX-own device (usn/lsn/
-    /// name) as a local hub device, wires the responder + forward hooks, and
-    /// spawns the Core-0 task.  Idempotent.
+    /// Start the expander on the Rx-facing link (IN_1).  Registers the
+    /// HubFX-own device (usn/lsn/name) as a local hub device, wires the
+    /// responder hook, and spawns the Core-0 task.  Idempotent.
     bool begin(sfx_peripherals::InputPort* rxPort,
-               sfx_peripherals::InputPort* escPort,
                uint16_t hubUsn, uint16_t hubLsn, const char* hubName,
                uint32_t baud = 125000,
                bool respondTelemetry = false) {
@@ -63,27 +67,24 @@ public:
         if (!rxPort) return false;
         _rxPort  = rxPort;
         _baud    = baud;                              // kept for UART re-init on loss
+        // Save the full begin() parameter set so the deferred link-loss
+        // restart (maybeResetRx -> tickMainLoop) can re-run begin() verbatim.
+        _hubUsn = hubUsn;
+        _hubLsn = hubLsn;
+        std::snprintf(_hubName, sizeof(_hubName), "%s", hubName ? hubName : "HubFx");
         if (!rxPort->configureJetiEx(baud)) return false;
         sfx::Stream* rxStream = rxPort->uartStream();
         if (!rxStream) return false;
 
-        // Downstream (ESC) link on IN_2 — AUTODETECT, no config flag (was the
-        // opt-in `downstream:`).  We always configure IN_2 and let the presence
-        // machine decide if a device is there: it SLOW-probes (200 ms) only by
-        // replaying a captured REAL Rx poll (maybePollEsc fires nothing until
-        // IN_1 has captured one — i.e. only while the radio is actually driving
-        // IN_1), and the monitor drain is BOUNDED, so a disconnected/floating
-        // IN_2 (held idle by its pull-up) just reads "absent" — no stall, no
-        // crosstalk floods.  A device that replies is promoted to ACTIVE and
-        // shows on the radio automatically.  Channel RX on IN_1 is unaffected.
-        _escPort   = nullptr;
-        _escStream = nullptr;
-        if (escPort && escPort->configureJetiEx(baud)) {
-            _escStream = escPort->uartStream();
-            if (_escStream) { _escPort = escPort; _escMon.begin(_escStream); }
-        }
-
         if (!_rxBus.begin(rxStream)) return false;
+        // Fresh link monitors — the new bus counters start at zero, and stale
+        // baselines from a previous run would read as a wrap (spurious NOISY)
+        // and keep deadSecs climbing across a restart.
+        _rxWatch  = LinkMonitor{};
+        _lastRxResetAtDead = 0;
+        std::memset(_typeRank, 0, sizeof _typeRank);      // fresh discovery, fresh widths
+        std::memset(_msgSeqSent, 0, sizeof _msgSeqSent);
+        std::memset(_msgRepeat, 0, sizeof _msgRepeat);
         _respond = respondTelemetry;
         // Two-way telemetry (half-duplex reply) — RUNTIME-gated via _respond.
         // History: disabled 2026-05-30 because the ~3 ms TX reply on the shared
@@ -97,25 +98,14 @@ public:
             _rxBus.setTxPort(rxPort);                 // half-duplex TX on IN_1 (reply)
             _rxBus.onTelemetryRequest([this](uint8_t pkt){ serveTelemetry(pkt); });
         }
-        // Phase 2 — downstream ESC master link (IN_2).  We do NOT mirror every
-        // Rx frame out IN_2 (its TX crosstalks GPIO6->GPIO5 onto the IN_1 channel
-        // RX and dropped the signal).  Instead we CAPTURE the Rx's latest
-        // telemetry-request frame as a poll template and replay it on IN_2 ONLY
-        // inside IN_1's guaranteed-quiet post-reply window (maybePollEsc, called
-        // from serveTelemetry), at the autodetect cadence.  Capturing is harmless
-        // (no TX) so it's always armed when the downstream link is up.
-        if (_escPort) {
-            _rxBus.onRawFrame([this](const uint8_t* f, uint8_t l){ captureEscPoll(f, l); });
-        }
-
         // Register the HubFX-own device (local → never expires) + its built-in
         // sensors, so it shows on the radio even with no downstream ESC.
         {
-            auto& hub = JetiTelemetryHub::instance();
-            JetiTelemetryHub::ScopedLock lk(hub);
+            auto& hub = TelemetryHub::instance();
+            TelemetryHub::ScopedLock lk(hub);
             _localDev = hub.upsertDevice(hubUsn, hubLsn, hubName, /*local=*/true, 0);
             if (_localDev != 0xFF) {
-                hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0, 0, 0);
+                hub.setSensor(_localDev, kUptimeId, SensorKind::Int, 0, 0, 0);
                 hub.setLabel (_localDev, kUptimeId, "Uptime", "s");
             }
         }
@@ -131,7 +121,6 @@ public:
         _lastBuiltin = _lastExpire = 0;
         const uint32_t now0 = SFX_MILLIS();
         _rxWatch.reset(now0);
-        _escWatch.reset(now0);
 
         // Telemetry reply is time-critical: the master reserves a ~4 ms slot and
         // our reply is ~2 ms, so it must START within ~1.3 ms of the poll.  The
@@ -157,9 +146,8 @@ public:
                              (unsigned)kTaskPrio, (unsigned)kTaskStackBytes);
             }
         }
-        SFX_LOG_INFO("[jexp] started (rx=IN_1%s, esc=IN_2%s, baud=%lu)",
-                     _task ? " task" : " loop",
-                     _escPort ? "" : " off", (unsigned long)baud);
+        SFX_LOG_INFO("[jexp] started (rx=IN_1%s, baud=%lu)",
+                     _task ? " task" : " loop", (unsigned long)baud);
         return true;
     }
 
@@ -167,12 +155,25 @@ public:
     // decode ONLY when the dedicated IN_1 task is NOT running — i.e. listen-only
     // mode.  When responding, the task owns the UART and this is a no-op so the
     // two never double-drive the port.
-    void tickMainLoop() { if (!_task) update(); }
+    void tickMainLoop() {
+        // Deferred link-loss restart — REQUESTED by maybeResetRx (which runs
+        // on the expander's own IN_1 task, where a UART teardown/re-init
+        // crashes: the 2026-05 lesson that got the inline reset disabled)
+        // and EXECUTED here on the main loop, the context end()/begin()
+        // normally run in.  end() joins the task before touching the UART,
+        // so the restart is race-free; a replug mid-restart just starts
+        // decoding on the fresh UART.
+        if (_restartReq.exchange(false, std::memory_order_acq_rel)) {
+            restartAfterLinkLoss();
+            return;
+        }
+        if (!_task) update();
+    }
 
     // Drive one decode pass — called every ~1 ms by the IN_1 task (responding)
     // or every main-loop iteration via tickMainLoop() (listen-only).  Drains
-    // IN_2 (ESC monitor) then IN_1 (channels +, when telemetry is enabled, the
-    // reply hook), and refreshes built-in sensors.  No-op until begin()/end().
+    // IN_1 (channels + the reply hook) and refreshes built-in sensors.
+    // No-op until begin()/end().
     void update() {
         if (!_running) return;
         // Main-loop lag (µs since the previous update()): the worst-case AGE of a
@@ -185,15 +186,6 @@ public:
         if (_loopLagUs > _maxLoopLagUs) _maxLoopLagUs = _loopLagUs;
         _lastUpdateUs = nowUs;
         const uint32_t now = SFX_MILLIS();
-        // IN_2 first: drain the ESC's telemetry into the hub before IN_1
-        // re-parses the next echoed master frame.  Only when the downstream
-        // link is in use (otherwise _escPort is null — see begin()).  ALWAYS
-        // drain (bounded) — the monitor only watches health, never gates.
-        if (_escPort) {
-            _escMon.update(now);
-            _escWatch.observe(now, _escMon.rxByteCount(), _escMon.frameCount(), "IN_2");
-            updateEscPresence(now);   // promote/demote ESC + adjust poll cadence
-        }
         _rxBus.update();            // IN_1: master frames → channels (+ reply hook)
         _rxWatch.observe(now, _rxBus.rxByteCount(), _rxBus.rxFrameCount(), "IN_1");
         maybeResetRx(now);          // UART reset/reconnect on prolonged IN_1 loss
@@ -210,48 +202,59 @@ public:
                          (unsigned long)_rxBus.rxErrorCount(),
                          _rxBus.channelCount(), _rxBus.isValid() ? 1 : 0,
                          _rxWatch.noisy() ? " NOISY" : "");
+            // Corruption ground truth: hex of the FIRST CRC-failed frame since
+            // the last window.  Read against a healthy channel frame
+            // (3E 03 28 <id> 31 20 <16 x u16LE> crc16): missing bytes = ISR/
+            // ring drop, bit garbage = electrical, shifted = framing/parser.
+            uint8_t ff[64];
+            const uint8_t fn = _rxBus.takeFailedFrame(ff, sizeof ff);
+            if (fn) {
+                char hex[129];
+                for (uint8_t i = 0; i < fn && i < 64; ++i)
+                    std::snprintf(&hex[i * 2], 3, "%02X", ff[i]);
+                SFX_LOG_INFO("[jexp] IN_1 failed-frame[%u]: %s", (unsigned)fn, hex);
+            }
         }
         // Two-way reply health (every 2 s, only while responding): polls vs resp
         // = reply coverage; echoShort + slotOver = TX/RX-turnaround issues;
         // lastUs/maxUs = did the reply fit the ~4 ms slot.  Cross-check rxErr
         // above — if it climbs as resp climbs, the TX reply is corrupting RX.
         if (_respond && now - _lastTxLog >= 2000) {
+            // MEASURED reply rate over the window (the "how fast does
+            // telemetry actually trigger back" number): replies/s and packed
+            // data values/s.  Compare against the target interval
+            // (replyIntervalMs) to spot gating/beat losses.
+            const uint32_t rNow = _rxBus.txResponseCount();
+            const uint32_t dtMs = now - _lastTxLog;   // ~2000
+            const uint32_t respHz = dtMs ? ((rNow - _lastRespCount) * 1000u) / dtMs : 0;
+            const uint32_t valsPs = dtMs ? ((_dataValsSent - _lastValsSent) * 1000u) / dtMs : 0;
+            _lastRespCount = rNow;
+            _lastValsSent  = _dataValsSent;
             _lastTxLog = now;
-            SFX_LOG_INFO("[jexp] TX polls=%lu resp=%lu lateSkip=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu loopLagUs=%lu maxLoopLagUs=%lu",
-                         (unsigned long)_rxBus.pollsSeen(), (unsigned long)_rxBus.txResponseCount(),
+            SFX_LOG_INFO("[jexp] TX polls=%lu resp=%lu respHz=%lu vals/s=%lu target=%lums lateSkip=%lu echoShort=%lu slotOver=%lu lastUs=%lu maxUs=%lu loopLagUs=%lu maxLoopLagUs=%lu",
+                         (unsigned long)_rxBus.pollsSeen(), (unsigned long)rNow,
+                         (unsigned long)respHz, (unsigned long)valsPs,
+                         (unsigned long)replyIntervalMs(),
                          (unsigned long)_lateSkip,
                          (unsigned long)_rxBus.echoShort(), (unsigned long)_rxBus.slotOverruns(),
                          (unsigned long)_rxBus.lastTxDurUs(), (unsigned long)_rxBus.maxTxDurUs(),
                          (unsigned long)_loopLagUs, (unsigned long)_maxLoopLagUs);
             _maxLoopLagUs = 0;   // reset the 2 s window peak
         }
-        // Downstream ESC (IN_2) autodetect health (every 2 s, only when the
-        // downstream link is up): present = autodetect state; polls = IN_2 master
-        // polls issued (windowed into IN_1's quiet slot); replies = ESC telemetry
-        // frames decoded; rxErr climbing with no replies ⇒ wrong baud / crosstalk.
-        if (_escPort && now - _lastEscLog >= 2000) {
-            _lastEscLog = now;
-            SFX_LOG_INFO("[jexp] IN_2 ESC present=%d polls=%lu replies=%lu sensors=%lu rxB=%lu rxErr=%lu",
-                         _escPresent ? 1 : 0, (unsigned long)_escPolls,
-                         (unsigned long)_escMon.telemetryFrames(),
-                         (unsigned long)_escMon.sensorUpdates(),
-                         (unsigned long)_escMon.rxByteCount(),
-                         (unsigned long)_escMon.errorCount());
-        }
 #endif
 
         if (now - _lastBuiltin >= 1000 && _localDev != 0xFF) {
             _lastBuiltin = now;
-            auto& hub = JetiTelemetryHub::instance();
-            JetiTelemetryHub::ScopedLock lk(hub);
-            hub.setSensor(_localDev, kUptimeId, ExDataType::Int22, 0,
+            auto& hub = TelemetryHub::instance();
+            TelemetryHub::ScopedLock lk(hub);
+            hub.setSensor(_localDev, kUptimeId, SensorKind::Int, 0,
                           (int32_t)(now / 1000), now);
         }
         if (now - _lastExpire >= 1000) {
             _lastExpire = now;
-            auto& hub = JetiTelemetryHub::instance();
-            JetiTelemetryHub::ScopedLock lk(hub);
-            hub.expireStale(now, 2000);   // disconnected ESC drops out
+            auto& hub = TelemetryHub::instance();
+            TelemetryHub::ScopedLock lk(hub);
+            hub.expireStale(now, 2000);   // a silent producer's device drops out
         }
     }
 
@@ -268,34 +271,31 @@ public:
             _task = nullptr;
         }
         _rxBus.end();
-        _escMon.end();
-        if (_rxPort)  _rxPort->disable();
-        if (_escPort) _escPort->disable();
-        _rxPort = _escPort = nullptr;
-        _escStream = nullptr;
+        if (_rxPort) _rxPort->disable();
+        _rxPort = nullptr;
     }
 
     bool running() const { return _running; }
 
     // ── HubFX-own telemetry (the local device) ───────────────────────
     void setLocalSensor(uint8_t id, const char* label, const char* unit,
-                        ExDataType type, uint8_t decimals, int32_t value, uint32_t nowMs) {
+                        uint8_t decimals, int32_t value, uint32_t nowMs) {
         if (_localDev == 0xFF) return;
-        auto& hub = JetiTelemetryHub::instance();
-        JetiTelemetryHub::ScopedLock lk(hub);
-        hub.setSensor(_localDev, id, type, decimals, value, nowMs);
+        auto& hub = TelemetryHub::instance();
+        TelemetryHub::ScopedLock lk(hub);
+        hub.setSensor(_localDev, id, SensorKind::Int, decimals, value, nowMs);
         if (label) hub.setLabel(_localDev, id, label, unit);
     }
     void setLocalValue(uint8_t id, int32_t value, uint32_t nowMs) {
         if (_localDev == 0xFF) return;
-        auto& hub = JetiTelemetryHub::instance();
-        JetiTelemetryHub::ScopedLock lk(hub);
-        // Preserve type/decimals — re-set via the existing sensor entry.
+        auto& hub = TelemetryHub::instance();
+        TelemetryHub::ScopedLock lk(hub);
+        // Preserve kind/decimals — re-set via the existing sensor entry.
         const auto* d = hub.device(_localDev);
         if (!d) return;
         for (uint8_t i = 0; i < d->sensorCount; ++i)
             if (d->sensors[i].id == id) {
-                hub.setSensor(_localDev, id, d->sensors[i].type,
+                hub.setSensor(_localDev, id, d->sensors[i].kind,
                               d->sensors[i].decimals, value, nowMs);
                 return;
             }
@@ -320,11 +320,8 @@ public:
     uint32_t lateSkip()     const { return _lateSkip; }      // replies gated (loop behind)
     uint32_t loopLagUs()    const { return _loopLagUs; }     // last main-loop interval
     uint32_t maxLoopLagUs() const { return _maxLoopLagUs; }  // worst main-loop interval
-    uint32_t escBytes()  const { return _escMon.rxByteCount(); }
-    uint32_t escFrames() const { return _escMon.telemetryFrames(); }
-    uint32_t escErrors() const { return _escMon.errorCount(); }
-    uint8_t  deviceCount() const { return JetiTelemetryHub::instance().deviceCount(); }
-    uint8_t  sensorCount() const { return JetiTelemetryHub::instance().activeSensorCount(); }
+    uint8_t  deviceCount() const { return TelemetryHub::instance().deviceCount(); }
+    uint8_t  sensorCount() const { return TelemetryHub::instance().activeSensorCount(); }
 
     /// Current publish interval (ms) — scaled so each of the N active metric
     /// types refreshes at ~kPerValueHz: interval = 1000 / (N·perValueHz), clamped
@@ -343,7 +340,6 @@ public:
     /// (noisy line / wrong baud / unhandled frame types).  The drain keeps
     /// running regardless (we never give up on catching a real frame).
     bool rxLinkNoisy()  const { return _rxWatch.noisy(); }
-    bool escLinkNoisy() const { return _escWatch.noisy(); }
     uint32_t rxBrownouts() const { return _rxBrownouts; }   // IN_1 UART resets (diag)
     uint32_t rxNoiseSecs() const { return _rxWatch.totalNoiseSecs; }
 
@@ -442,7 +438,6 @@ private:
         }
     };
     LinkMonitor _rxWatch;
-    LinkMonitor _escWatch;
 
     // Telemetry hook (runs during update()'s _rxBus.update()): build the next
     // multi-device frame from the hub (under lock), then half-duplex TX it.
@@ -453,7 +448,13 @@ private:
         // signal gaps).  The radio tolerates skipped polls (it just asks again);
         // telemetry still updates smoothly.
         const uint32_t now = SFX_MILLIS();
-        if (now - _lastRespMs < replyIntervalMs()) return;
+        // Beat-tolerant gate: the master polls every ~11.6 ms while the floor
+        // interval is 12 ms — a strict >= interval check skips almost every
+        // OTHER poll (measured 48 Hz replies vs 86 Hz polls, halving sensor
+        // refresh).  Allow a 3 ms early margin so consecutive polls stay
+        // eligible; the interval still bounds the average rate.
+        const uint32_t iv = replyIntervalMs();
+        if (now - _lastRespMs + 3 < iv) return;
 
         // TIMELINESS GATE (the real fix for the gun-trigger RX drop).  The Jeti
         // master reserves a ~4 ms window after a poll-with-break and tolerates a
@@ -469,55 +470,27 @@ private:
         if (_loopLagUs > kReplyLagBudgetUs) { _lateSkip++; return; }
         _lastRespMs = now;
 
-        auto& hub = JetiTelemetryHub::instance();
+        auto& hub = TelemetryHub::instance();
         uint8_t buf[40];
         uint8_t len = 0;
         {
-            JetiTelemetryHub::ScopedLock lk(hub);
+            TelemetryHub::ScopedLock lk(hub);
             _seq++;
+            // Priority: a fresh device MESSAGE (fault warning/error → radio
+            // popup) preempts the normal rotation — each new message is
+            // repeated kMsgRepeats times so a lossy slot can't swallow it.
+            len = buildMessage(hub, buf);
             // Text (device names + sensor labels) every 8th reply — labels
             // rarely change, so spend the rest on packed value frames (max
             // throughput; the radio caches labels once seen).
-            if ((_seq % 8) == 0) len = buildText(hub, buf);     // names + labels
-            else                 len = buildData(hub, buf);     // packed values
-            if (!len)            len = buildText(hub, buf);      // fallback
+            if (!len) {
+                if ((_seq % 8) == 0) len = buildText(hub, buf); // names + labels
+                else                 len = buildData(hub, buf); // packed values
+                if (!len)            len = buildText(hub, buf);  // fallback
+            }
         }
         if (len) _rxBus.sendTelemetry(pktId, buf, len);
 
-        // IN_1 is now in its guaranteed-quiet slot: the master released the line
-        // for ~4 ms and our reply consumed only ~2 ms.  This is the ONLY safe
-        // window to TX on IN_2 — its TX crosstalks the adjacent IN_1 RX, so it
-        // must land while IN_1 is idle or it corrupts a channel frame.
-        maybePollEsc(now);
-    }
-
-    // ── Downstream ESC master link (IN_2) — Phase 2 ──────────────────
-    // Capture the Rx's latest TELEMETRY-REQUEST (0x3A) frame as the poll template
-    // to replay at the ESC.  We replay a RECENT real master poll (its packetId is
-    // fresh from the Rx stream) rather than synthesise one — the ESC, a slave on
-    // its bus, replies to any valid telemetry request; the hub decodes whatever
-    // comes back via _escMon.  Capture is pure copy (no TX) — always safe.
-    void captureEscPoll(const uint8_t* frame, uint8_t len) {
-        if (!_escPort || len < 6 || len > sizeof(_escPoll)) return;
-        if (frame[4] != DATA_TELEMETRY) return;                // telemetry polls only
-        memcpy(_escPoll, frame, len);
-        _escPollLen = len;
-    }
-
-    // Poll the ESC on IN_2 — CALLED ONLY from serveTelemetry, i.e. inside IN_1's
-    // quiet reply slot.  The IN_2 TX (~1 ms) crosstalks the adjacent IN_1 RX, so
-    // it MUST land here or it corrupts a channel frame (why plain mirroring was
-    // disabled).  Cadence is the autodetect interval: fast when the ESC answers,
-    // slow probe when absent.  The reply is decoded by _escMon in update().
-    void maybePollEsc(uint32_t now) {
-        if (!_escPort || !_escStream || _escPollLen == 0) return;
-        if (now - _escLastPollMs < _escPollIntervalMs) return;
-        _escLastPollMs = now;
-        _escPolls++;
-        _escPort->txEnable();
-        _escStream->write(_escPoll, _escPollLen);
-        _escStream->flush();                                   // ~1 ms — fits the slot
-        _escPort->txDisable();
     }
 
     // Prolonged IN_1 loss — count the brownout for diag.  ⚠ The actual UART
@@ -538,33 +511,68 @@ private:
         ++_rxBrownouts;
         SFX_LOG_WARN("[jexp] IN_1 dead %lus (brownout #%u) — holding outputs",
                      (unsigned long)dead, (unsigned)_rxBrownouts);
-        // _rxPort->configureJetiEx(_baud);  // DISABLED — see note above (crashes from this task)
+        // Prolonged loss: request a full expander restart (UART re-init) at a
+        // slower cadence than the brownout log.  Runs on the MAIN LOOP via
+        // tickMainLoop — NEVER from this task (the inline configureJetiEx
+        // here crashed; a UART can't be torn down from the task reading it).
+        // Passive recovery still applies meanwhile: the UART keeps listening,
+        // so a plain replug resumes decode without the restart — this is the
+        // safety net for a wedged UART/framing state.
+        if ((dead % kRxRestartSecs) == 0) {
+            _restartReq.store(true, std::memory_order_release);
+        }
     }
 
-    // ESC presence autodetect — called each task pass from update().  PRESENT
-    // (fast poll) the moment _escMon decodes a fresh telemetry reply; ABSENT
-    // (slow probe) after kEscAbsentMs of silence.  The hub's expireStale drops
-    // the device from the radio set on demotion.  Handles hot-plug both ways:
-    // a freshly-plugged ESC is caught by the slow probe; an unplugged one ages
-    // out.  No config change needed — `downstream:` only enables the link.
-    void updateEscPresence(uint32_t now) {
-        if (!_escPort) return;
-        const uint32_t frames = _escMon.telemetryFrames();
-        if (frames != _escLastReplyFrames) {                   // a reply arrived
-            _escLastReplyFrames = frames;
-            _escLastReplyMs = now;
-            if (!_escPresent) {
-                _escPresent = true;
-                _escPollIntervalMs = kEscActivePollMs;
-                SFX_LOG_INFO("[jexp] IN_2 ESC present — telemetry replying (poll %lums)",
-                             (unsigned long)kEscActivePollMs);
-            }
-        } else if (_escPresent && now - _escLastReplyMs > kEscAbsentMs) {
-            _escPresent = false;
-            _escPollIntervalMs = kEscProbePollMs;
-            SFX_LOG_INFO("[jexp] IN_2 ESC absent — back to %lums probe",
-                         (unsigned long)kEscProbePollMs);
+    /// Full self-restart after prolonged IN_1 loss — main-loop context only
+    /// (invoked from tickMainLoop).  Re-runs begin() with the saved
+    /// parameter set; on failure the next kRxRestartSecs crossing retries.
+    void restartAfterLinkLoss() {
+        if (!_running) return;
+        auto* rx   = _rxPort;
+        const uint32_t baud = _baud;
+        const bool respond  = _respond;
+        const uint16_t usn = _hubUsn, lsn = _hubLsn;
+        char name[sizeof(_hubName)];
+        std::snprintf(name, sizeof(name), "%s", _hubName);
+        SFX_LOG_WARN("[jexp] restarting after link loss (brownout #%u) — UART re-init",
+                     (unsigned)_rxBrownouts);
+        end();
+        if (!begin(rx, usn, lsn, name, baud, respond)) {
+            SFX_LOG_ERROR("[jexp] restart FAILED — will retry on the next %lus crossing",
+                          (unsigned long)kRxRestartSecs);
         }
+    }
+
+    /// Map an agnostic hub sensor onto its Jeti EX wire type — the SOLE
+    /// point where collection values become Jeti-typed.  Numeric sensors get
+    /// the smallest EX integer that fits the current magnitude, with TWO
+    /// stability rules for the radio's persistent sensor database:
+    ///   (1) floor at Int14 — an idle value of 0 must not flap to Int6 and
+    ///       back as the metric comes alive;
+    ///   (2) STICKY WIDENING — once a sensor has been sent wider, it never
+    ///       narrows again (per-device/per-slot rank cache, reset with the
+    ///       expander).  This also keeps the fix for the old fixed-type trap
+    ///       (a producer picking Int6 for a value that later exceeded it).
+    /// Gps/DateTime pass their packed encodings through.
+    ExDataType exTypeFor(uint8_t devIdx, uint8_t senIdx, const TelemetryHub::Sensor& s) {
+        switch (s.kind) {
+            case SensorKind::Gps:      return ExDataType::Gps;
+            case SensorKind::DateTime: return ExDataType::DateTime;
+            case SensorKind::Int:      break;
+        }
+        const int32_t v = s.value;
+        uint8_t rank = 0;                                       // Int14 floor
+        if (v < -8191 || v > 8191)         rank = 1;            // Int22
+        if (v < -2097151 || v > 2097151)   rank = 2;            // Int30
+        if (devIdx < TelemetryHub::kMaxDevices &&
+            senIdx < TelemetryHub::kMaxSensorsPerDevice) {
+            uint8_t& seen = _typeRank[devIdx][senIdx];
+            if (rank > seen) seen = rank;
+            rank = seen;
+        }
+        return rank == 0 ? ExDataType::Int14
+             : rank == 1 ? ExDataType::Int22
+                         : ExDataType::Int30;
     }
 
     // ── Multi-device rotation (cursors advanced under the hub lock) ───
@@ -576,11 +584,11 @@ private:
     // faster and the radio stops browning out.  Round-robin: pack from _dataSen
     // forward within the current device; when its sensors are exhausted, advance
     // to the next device so no device is starved.
-    uint8_t buildData(JetiTelemetryHub& hub, uint8_t* buf) {
+    uint8_t buildData(TelemetryHub& hub, uint8_t* buf) {
         const uint8_t devN = hub.deviceCount();
         if (!devN) return 0;
         // Find a device with ≥1 active sensor (bounded scan; skip empty/inactive).
-        const JetiTelemetryHub::Device* d = nullptr;
+        const TelemetryHub::Device* d = nullptr;
         for (uint8_t t = 0; t < devN; ++t) {
             const auto* cand = hub.device(_dataDev);
             bool any = false;
@@ -599,10 +607,12 @@ private:
         uint8_t pos = exBlockHead(buf, d->usn, d->lsn);
         uint8_t packed = 0;
         while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 38) {
+            const uint8_t senIdx = _dataSen;
             const auto& s = d->sensors[_dataSen++];
             if (!s.active) continue;
-            pos += encodeSensorValue(&buf[pos], s.id, s.type, s.value, s.decimals);
+            pos += encodeSensorValue(&buf[pos], s.id, exTypeFor(_dataDev, senIdx, s), s.value, s.decimals);
             ++packed;
+            ++_dataValsSent;
         }
         // Exhausted this device's list → next device next time (fair rotation).
         if (_dataSen >= d->sensorCount) { _dataSen = 0; _dataDev = (uint8_t)((_dataDev + 1) % devN); }
@@ -612,10 +622,36 @@ private:
         return (uint8_t)(pos + 1);
     }
 
-    uint8_t buildText(JetiTelemetryHub& hub, uint8_t* buf) {
+    // ── Device condition messages (EX Message packet, v1.07) ─────────
+    // A producer bumping a device's msg.seq (e.g. the ESC monitor on a fault
+    // CHANGE) gets the text pushed to the radio as an EX Message block with
+    // its class (2=warning, 3/4=error) — DC/DS log + popup.  Repeated
+    // kMsgRepeats times per seq; a cleared message (empty text) just resets
+    // the repeat machinery silently.
+    uint8_t buildMessage(TelemetryHub& hub, uint8_t* buf) {
+        const uint8_t devN = hub.deviceCount();
+        for (uint8_t i = 0; i < devN && i < TelemetryHub::kMaxDevices; ++i) {
+            const auto* d = hub.device(i);
+            if (!d || !d->active) continue;
+            const auto& m = d->msg;
+            if (m.seq == 0) continue;                           // never set
+            if (m.seq != _msgSeqSent[i]) {                      // new/changed
+                _msgSeqSent[i] = m.seq;
+                _msgRepeat[i]  = m.text[0] ? kMsgRepeats : 0;   // cleared → silent
+            }
+            if (!_msgRepeat[i]) continue;
+            _msgRepeat[i]--;
+            return buildExMessageBlock(buf, d->usn, d->lsn,
+                                       /*msgType=*/(uint8_t)(0xE0 | i),
+                                       m.cls, m.text);
+        }
+        return 0;
+    }
+
+    uint8_t buildText(TelemetryHub& hub, uint8_t* buf) {
         uint8_t devN = hub.deviceCount();
         if (!devN) return 0;
-        const uint16_t maxSlots = (uint16_t)devN * (JetiTelemetryHub::kMaxSensorsPerDevice + 1);
+        const uint16_t maxSlots = (uint16_t)devN * (TelemetryHub::kMaxSensorsPerDevice + 1);
         for (uint16_t i = 0; i < maxSlots; ++i) {
             const auto* d = hub.device(_textDev);
             bool isName  = (d && d->active && _textSen < 0);
@@ -635,16 +671,22 @@ private:
     }
 
     sfx_peripherals::InputPort* _rxPort  = nullptr;   // IN_1, Rx side
-    sfx_peripherals::InputPort* _escPort = nullptr;   // IN_2, ESC side
-    sfx::Stream*                     _escStream = nullptr;
+    uint16_t _hubUsn = 0;
+    uint16_t _hubLsn = 0;
+    char     _hubName[16] = {};
+    std::atomic<bool> _restartReq{false};   // set on the IN_1 task, consumed on the main loop
     uint32_t _baud             = 125000;   // IN_1 baud — kept for UART re-init on loss
     uint32_t _rxBrownouts      = 0;        // IN_1 UART resets performed (diag)
     uint32_t _lastRxResetAtDead = 0;       // deadSecs at the last reset (one per crossing)
     JetiExBus                   _rxBus;
-    JetiExTelemetryMonitor      _escMon;
 
     // Two-way telemetry reply is RUNTIME-gated via `_respond` (set from the
     // attach config — see begin()'s respondTelemetry param), not a compile flag.
+    static constexpr uint8_t  kMsgRepeats        = 3;    // per-seq EX Message sends
+    uint32_t _msgSeqSent[TelemetryHub::kMaxDevices] = {};
+    uint8_t  _msgRepeat [TelemetryHub::kMaxDevices] = {};
+    // Sticky per-sensor EX width rank (0=Int14,1=Int22,2=Int30) — see exTypeFor.
+    uint8_t  _typeRank[TelemetryHub::kMaxDevices][TelemetryHub::kMaxSensorsPerDevice] = {};
     static constexpr uint8_t  kUptimeId          = 1;    // built-in HubFX-own sensor
     // Publish rate limiter.  Each reply carries ONE value (round-robin over the
     // collection), so to refresh every metric TYPE at ~kPerValueHz the emit rate
@@ -670,15 +712,8 @@ private:
     // frame (~2.5–3 ms reply, fits the master's ~4 ms slot); raise only if
     // `slotOver` stays 0 and `maxUs` has headroom.
     static constexpr uint8_t  kMaxValuesPerFrame = 4;
-    // Downstream ESC (IN_2) active master poll + autodetect (Phase 2).  The poll
-    // TX is crosstalk-windowed into IN_1's quiet slot (maybePollEsc), so the rate
-    // is bounded by the IN_1 reply cadence too.  PROBE while no ESC answers (slow,
-    // just enough to catch a hot-plug); ACTIVE once it replies; demote after
-    // kEscAbsentMs of silence.
-    static constexpr uint32_t kEscProbePollMs    = 200;  // no ESC: hot-plug probe
-    static constexpr uint32_t kEscActivePollMs   = 75;   // ESC replying: fresh telemetry
-    static constexpr uint32_t kEscAbsentMs       = 600;  // silence → demote to probe
-    static constexpr uint32_t kRxResetSecs       = 3;    // IN_1 dead this long → UART re-init (retry cadence)
+    static constexpr uint32_t kRxResetSecs       = 3;    // brownout log cadence while IN_1 is dead
+    static constexpr uint32_t kRxRestartSecs     = 15;   // dead this long → full expander restart (UART re-init), then every 15 s
     // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the
     // main loop lagged more than this since the last drain, the parsed poll is
     // too stale to answer in-window — skip (see serveTelemetry()).  Generous at
@@ -686,15 +721,6 @@ private:
     static constexpr uint32_t kReplyLagBudgetUs  = 1500;
     uint32_t _lastRespMs = 0;            // last Rx-reply time (rate limit)
 
-    // Downstream ESC (IN_2) master-poll + autodetect state (Phase 2).
-    uint8_t  _escPoll[16]        = {};   // captured Rx telemetry-request (poll template)
-    uint8_t  _escPollLen         = 0;
-    uint32_t _escLastPollMs      = 0;
-    uint32_t _escPollIntervalMs  = kEscProbePollMs;   // start in probe until a reply
-    uint32_t _escLastReplyFrames = 0;
-    uint32_t _escLastReplyMs     = 0;
-    bool     _escPresent         = false;
-    uint32_t _escPolls           = 0;    // diag — IN_2 polls issued
     bool     _respond    = false;        // two-way telemetry reply enabled (runtime, from attach cfg)
     uint32_t _lastTxLog  = 0;            // last [jexp] TX instrumentation log time
     uint8_t  _localDev   = 0xFF;         // hub index of the HubFX-own device
@@ -703,6 +729,9 @@ private:
     // update(); _maxLoopLagUs = worst seen (diag); _lateSkip = replies dropped
     // because the loop was behind (the gate firing — the gun-event signature).
     uint32_t _lastUpdateUs = 0;
+    uint32_t _lastRespCount = 0;   // respHz window baseline
+    uint32_t _dataValsSent  = 0;   // packed data values total
+    uint32_t _lastValsSent  = 0;
     uint32_t _loopLagUs    = 0;
     uint32_t _maxLoopLagUs = 0;
     uint32_t _lateSkip     = 0;
@@ -723,7 +752,6 @@ private:
     uint32_t  _lastExpire  = 0;         // 1 Hz stale-device expiry (in update)
 #if SFX_INSTRUMENTATION
     uint32_t  _lastRxLog   = 0;         // 2 s rx-health diag (in update)
-    uint32_t  _lastEscLog  = 0;         // 2 s IN_2 ESC autodetect diag (in update)
 #endif
 };
 

@@ -88,6 +88,15 @@ struct PortMapping {
     bool                       profileSet = false;
     sfx_core::ServoMotionProfile profile{};
 
+    /// esc-telemetry protocol selector (esc_protocol: key on the port entry;
+    /// defaults to 0 = kontronik).
+    uint8_t escProtocol = 0;
+    /// esc-telemetry RPM divider ×100 — computed from esc_motor_poles
+    /// (electrical rpm = shaft rpm × poles/2; Kontronik transmits electrical)
+    /// and esc_gear_ratio (gearbox): divider = poles/2 × gear.  0 = unset
+    /// (firmware default 1.00).
+    uint16_t escRpmRatioX100 = 0;
+
     // (The former `jetiDownstream` flag is gone — the IN_2 / ESC telemetry
     //  monitor is AUTODETECT now: always wired, the presence machine decides if
     //  a device is there.  See role_jeti_input_handler.cpp.)
@@ -150,20 +159,12 @@ struct HubFxConfig {
         char codecSupply[8] = "12v";          ///< 12v | 15v | 20v | 24v
     } audio;
 
-    /// Master enable matrix.  Each flag is the kill-switch for one
-    /// effect family; setting it false overrides whatever the matching
-    /// sub-file says about its own enabled state.  The runtime-
-    /// capability walker on `BoardServer` picks these up via each
-    /// service's `enabled()` accessor so the host's CLI / Studio view
-    /// of which features are live tracks the YAML.
-    struct FeaturesBlock {
-        bool alerts        = true;
-        bool enginefx      = false;
-        bool landingLights = true;
-        bool lightfx       = true;
-        bool gears         = true;
-        bool gunfx         = false;
-    } features;
+    // NOTE (2026-07-26): the `features:` master-enable matrix was RETIRED.
+    // Each effect's enable now lives ONLY in its own sub-config (enginefx.yaml
+    // `enabled:` …), applied by that store's callback — a fresh board boots
+    // inert because each sub-config defaults `enabled: false`.  hubfx.yaml is
+    // pure port/input/audio mapping; a `features:` key in an OLD file just
+    // parses to nothing (no schema binding) and is ignored.
 
     /// Port → role mapping.  Populated by the YAML's `ports:` sequence;
     /// each entry attaches one `RoleKind` variant to one hub-local port.
@@ -255,6 +256,20 @@ inline void parseServoProfile(const TNode* item, PortMapping& m) {
 /// Accept both snake_case (`led_animator`) and kebab-case
 /// (`led-animator`) — kebab is what `RoleKind::getName()` returns; snake
 /// matches the rest of the YAML convention.  Unknown ⇒ `None` + WARN.
+/// esc-telemetry stream selector.  Unknown / missing / retired names
+/// (incl. the removed "jeti-exbus" downstream-marker mode) fall back to
+/// kontronik — an esc-telemetry port ALWAYS binds a native decoder.
+inline uint8_t escProtocolFromName(const char* name) {
+    if (!name || !name[0]) return 0;                 // default kontronik
+    if (std::strcmp(name, "kontronik") == 0)     return 0;
+    if (std::strcmp(name, "scorpion") == 0)      return 1;
+    if (std::strcmp(name, "hobbywing-v4") == 0 ||
+        std::strcmp(name, "hobbywing_v4") == 0)  return 2;
+    if (std::strcmp(name, "hobbywing-v5") == 0 ||
+        std::strcmp(name, "hobbywing_v5") == 0)  return 3;
+    return 0;                                        // retired/unknown -> kontronik
+}
+
 inline uint8_t hubfxRoleKindFromName(const char* name) {
     if (!name || !name[0])                                return RoleKind::None;
     if (std::strcmp(name, "none")              == 0)      return RoleKind::None;
@@ -267,7 +282,9 @@ inline uint8_t hubfxRoleKindFromName(const char* name) {
     if (std::strcmp(name, "jeti_ex_input")     == 0 ||
         std::strcmp(name, "jeti-ex-input")     == 0)      return RoleKind::JetiExInput;
     if (std::strcmp(name, "jeti_ex_telemetry") == 0 ||
-        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::JetiExTelemetry;
+        std::strcmp(name, "jeti-ex-telemetry") == 0)      return RoleKind::EscTelemetry;  // legacy name
+    if (std::strcmp(name, "esc_telemetry") == 0 ||
+        std::strcmp(name, "esc-telemetry") == 0)           return RoleKind::EscTelemetry;
     if (std::strcmp(name, "led_animator")      == 0 ||
         std::strcmp(name, "led-animator")      == 0)      return RoleKind::LedAnimator;
     if (std::strcmp(name, "dc_motor")          == 0 ||
@@ -286,7 +303,6 @@ namespace hubfx_config_schema {
 using namespace sfx;
 
 using Aud   = HubFxConfig::AudioBlock;
-using Feat  = HubFxConfig::FeaturesBlock;
 using Telem = HubFxConfig::TelemetryBlock;
 
 inline const auto fields = schema<HubFxConfig>(
@@ -295,14 +311,8 @@ inline const auto fields = schema<HubFxConfig>(
         prop<&Aud::codecSupply>("codec_supply", "12v")
     ),
 
-    group<&HubFxConfig::features>("features",
-        prop<&Feat::alerts>       ("alerts",         true),
-        prop<&Feat::enginefx>     ("enginefx",       false),
-        prop<&Feat::landingLights>("landing_lights", true),
-        prop<&Feat::lightfx>      ("lightfx",        true),
-        prop<&Feat::gears>        ("gears",          true),
-        prop<&Feat::gunfx>        ("gunfx",          false)
-    ),
+    // (`features:` group retired 2026-07-26 — effect enable lives in each
+    // effect's own sub-config; an old file's `features:` key parses to nothing.)
 
     group<&HubFxConfig::telemetry>("telemetry",
         prop<&Telem::inputs>    ("inputs",      false),
@@ -351,6 +361,22 @@ struct HubFxConfigSchema {
                 if (lbl && lbl[0]) std::strncpy(m.label, lbl, sizeof(m.label) - 1);
                 // Rule 42 storage — servo motion profile per port.
                 parseServoProfile(item, m);
+                m.escProtocol = escProtocolFromName(
+                    item->template childAs<const char*>("esc_protocol", ""));
+                {
+                    // RPM scaling: divider = (motor poles / 2) × gear ratio.
+                    float polePairs = 1.0f, gear = 1.0f;
+                    const int32_t poles = item->template childAs<int32_t>("esc_motor_poles", 0);
+                    if (poles >= 2 && poles <= 100) polePairs = (float)poles / 2.0f;
+                    const char* gs = item->template childAs<const char*>("esc_gear_ratio", "");
+                    if (gs && gs[0]) {
+                        const float g = std::strtof(gs, nullptr);
+                        if (g > 0.0f && g < 100.0f) gear = g;
+                    }
+                    const float div = polePairs * gear;
+                    if (div > 0.0f && div != 1.0f && div < 655.0f)
+                        m.escRpmRatioX100 = (uint16_t)(div * 100.0f + 0.5f);
+                }
                 d.numPorts++;
             }
         }

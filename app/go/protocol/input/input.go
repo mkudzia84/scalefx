@@ -63,7 +63,7 @@ func DecodeRouting(payload []byte) (bool, bool) {
 // TelemetrySensor is one metric in the collection.
 type TelemetrySensor struct {
 	ID       byte   `json:"id"`
-	Type     byte   `json:"type"`     // Jeti ExDataType (Int6/14/22/30)
+	Type     byte   `json:"type"`     // SensorKind (0=int, 1=gps, 2=datetime)
 	Decimals byte   `json:"decimals"` // implied decimal places
 	Active   bool   `json:"active"`
 	Value    int32  `json:"value"` // raw scaled value (apply Decimals for display)

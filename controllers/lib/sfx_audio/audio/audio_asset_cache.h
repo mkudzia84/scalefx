@@ -218,8 +218,16 @@ public:
     /// any drain-buffer to feed.  Core 0 hosts loopTask + USB CDC +
     /// SDMMC ISR — the loader fits naturally between them.  Returns
     /// false on PSRAM alloc / task create failure.
+    // Loader priority: the preload is a BACKGROUND prefetch with no
+    // real-time deadline — it must sit BELOW every latency-critical Core-0
+    // task.  The original configMAX-3 (22) outranked the jeti_in1 task (6)
+    // and starved RC decode + telemetry replies + the ESC-telemetry drain
+    // for the whole SD read burst whenever playback touched an uncached
+    // sound (bench 2026-07-15: radio blackout + ESC telemetry loss while
+    // audio played).  3 = above loopTask (1), below AudioDecoder (5) and
+    // jeti_in1 (6) — preloads just take a little longer under load.
     bool begin(int loaderCore     = 0,
-               int loaderPriority = configMAX_PRIORITIES - 3,
+               int loaderPriority = 3,
                int loaderStack    = 8192);
 
     /// Stop loader, free every asset (active handles get failed=true),

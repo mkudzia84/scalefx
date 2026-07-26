@@ -320,7 +320,10 @@ AssetEntry* AudioAssetCache::allocateEntry_locked(const char* path,
     }
 
     // PSRAM data buffer.
-    uint8_t* buf = (uint8_t*)heap_caps_malloc(totalBytes,
+    // 32-byte (cache-line) aligned: the decoders stream this buffer
+    // sequentially, so aligned starts fetch whole lines cleanly (perf
+    // audit, instructions/34).  heap_caps_free handles aligned blocks.
+    uint8_t* buf = (uint8_t*)heap_caps_aligned_alloc(32, totalBytes,
                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!buf) {
         AC_ERROR("PSRAM alloc failed for %s (%u KB)",

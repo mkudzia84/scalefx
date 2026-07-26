@@ -36,14 +36,15 @@ var Controllers = map[string]Controller{
 	// GunFx effects now live only on the HubFX master
 	// (controllers/hubfx/esp32s3/src/effects/).  lightfx + gearcontrol are
 	// thin generic-expander boards (ports + roles; the hub drives them).
-	"lightfx":     {Name: "lightfx", SubDir: "lightfx/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
-	"gearcontrol": {Name: "gearcontrol", SubDir: "gearcontrol/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
-	"hubfx":       {Name: "hubfx", SubDir: "hubfx/esp32s3", PIOEnv: "esp32s3", FwExt: "bin", Platform: PlatformESP32},
+	"lightfx":       {Name: "lightfx", SubDir: "lightfx/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
+	"gearcontrol":   {Name: "gearcontrol", SubDir: "gearcontrol/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
+	"portexpander":  {Name: "portexpander", SubDir: "portexpander/pico", PIOEnv: "pico", FwExt: "uf2", Platform: PlatformPico},
+	"hubfx":         {Name: "hubfx", SubDir: "hubfx/esp32s3", PIOEnv: "esp32s3", FwExt: "bin", Platform: PlatformESP32},
 }
 
 // ControllerNames returns sorted controller names.
 func ControllerNames() []string {
-	return []string{"lightfx", "gearcontrol", "hubfx"}
+	return []string{"lightfx", "gearcontrol", "portexpander", "hubfx"}
 }
 
 // IsESP32 returns true if the controller uses esptool flashing.

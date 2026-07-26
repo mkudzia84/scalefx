@@ -9,7 +9,7 @@ import { EventsOn } from '../../wailsjs/runtime/runtime'
 
 export interface TelemetrySensor {
     id: number
-    type: number       // Jeti ExDataType (Int6/14/22/30)
+    type: number       // SensorKind (0=int, 1=gps, 2=datetime)
     decimals: number
     active: boolean
     value: number      // raw scaled value (divide by 10^decimals for display)

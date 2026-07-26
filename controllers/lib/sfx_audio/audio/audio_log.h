@@ -22,6 +22,19 @@
 #define MIXER_LOG(fmt, ...) \
     do { DiagLog::instance().info("[Mixer] " fmt, ##__VA_ARGS__); } while(0)
 
+// Command-plumbing TRACE (queue mechanics, per-command dispatch) — compiled
+// out by default: at ~6 lines per play/stop these flooded the diag ring, and
+// each DiagLog line costs a ~2 KB-deep call on the emitting task.  Enable
+// with -DAUDIO_LOG_TRACE=1 only when debugging the mixer command queue.
+#ifndef AUDIO_LOG_TRACE
+#define AUDIO_LOG_TRACE 0
+#endif
+#if AUDIO_LOG_TRACE
+#define MIXER_TRACE(fmt, ...) MIXER_LOG(fmt, ##__VA_ARGS__)
+#else
+#define MIXER_TRACE(fmt, ...) do {} while (0)
+#endif
+
 #define MIXER_WARN(fmt, ...) \
     do { DiagLog::instance().warn("[Mixer] " fmt, ##__VA_ARGS__); } while(0)
 

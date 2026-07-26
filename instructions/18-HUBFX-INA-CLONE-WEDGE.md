@@ -2,6 +2,15 @@
 
 > **Status:** debugging gotcha &middot; **Read when:** the PCA9685 LED driver goes silent at boot, or an I²C chip wedges another chip on the shared bus.
 > **TL;DR:** A counterfeit INA226 @ 0x40 corrupts the PCA9685 @ 0x70 when written to; `INA226::begin()` now refuses any chip failing the canonical TI MFG/DIE ID check, so it never writes to a clone.
+>
+> ⚠️ **2026-07-02 RE-INTERPRETATION (rev B netlist + bench probe):** the
+> "clone" was almost certainly never a counterfeit chip. The PCA9685's
+> **hardware address is 0x40** (all six A-pins grounded; the firmware's
+> 0x70 is only its default-enabled all-call alias) — so 0x40 hosts TWO
+> chips, and every symptom below is an address collision, not a bad part.
+> See [§Re-interpretation](#re-interpretation-2026-07-02--it-was-never-a-clone)
+> at the end. The ID-gate fix stands either way — it's exactly what keeps
+> 0x40 unwritten.
 
 Investigation log + fix for the bring-up issue where the PCA9685 LED driver
 @ I²C `0x70` on HubFX would consistently go silent during `board.begin()` and
@@ -301,3 +310,42 @@ re-add. The signatures to look for, in order:
 The bisection breadcrumbs were removed from the sketch after the fix
 landed to keep the production boot clean; the instrumentation pattern
 is preserved in this document.
+
+## Re-interpretation (2026-07-02) — it was never a clone
+
+While pinning down the **rev B** (pcb-nextver) Telesis netlist, the PCA9685's
+address strapping finally got derived from first principles: the HVQFN-28's
+A0..A5 pins (26, 27, 28, 1, 2, 21 under the confirmed package rotation —
+SCL=23 / SDA=24 / VDD=25 / VSS=11 / LED0-7=3-10 all match) are **all
+grounded**. All-A-low puts the PCA9685's hardware address at `1000000b` =
+**0x40**. The `0x70` the firmware has always used is the chip's **all-call
+alias** (ALLCALLADR `0xE0`>>1, MODE1 ALLCALL default-enabled) — nobody ever
+had a reason to ask what the real address was.
+
+That means 0x40 hosted **two chips** — the (genuine) INA226 U43 *and* the
+PCA9685 — and re-explains every observation in this file:
+
+| Original observation | Actual mechanism |
+|---|---|
+| "Clone" at 0x40 with impossible IDs `mfg=0x0001 die=0x0020`, identical on **every** board | Two chips answering a read at once — SDA wire-ANDs both bit streams into garbage. Deterministic garbage, hence the identical "fingerprint" across boards (looked like a batch-level substitution). |
+| Writing CONFIG `0x8000` to "the clone" wedges the PCA at 0x70 | The write **is** to the PCA — 0x40 is its hardware address. INA register 0x00 (CONFIG) aliases PCA register 0x00 (**MODE1**); config bytes flip MODE1's sticky EXTCLK bit (PWM dead until SWRST) and/or clear ALLCALL (chip vanishes from 0x70). |
+| Gen-call SWRST recovers it | SWRST is precisely the EXTCLK/MODE1 antidote. |
+| Reads of 0xFE/0xFF are "safe" | Reads corrupt data, never state — open-drain contention is electrically harmless. |
+
+**Bench confirmation (rev B, 2026-07-02, `tests/hw/i2c_probe`):** scan shows
+`0x40` ACKing with non-canonical IDs (the collision), `0x41` a canonical TI
+INA226 (U44 battery monitor), `0x4C` TAS5825P, `0x70` PCA all-call — on a
+board whose netlist proves both chips strap to 0x40. Same signature as
+rev A's "clone".
+
+**Consequences:**
+- The canonical-ID gate in `INA226::begin()` remains the correct and
+  load-bearing defence — it is what guarantees no write ever reaches 0x40.
+- Rev B firmware drives only U44 (`kInaAddrs = {0x41}`, battery telemetry);
+  U43 (expander-rail monitor) is dead silicon until the address collision is
+  fixed.
+- **REV C hardware fix:** strap the PCA9685 out of the INA address range
+  (e.g. A2 → 3V3 = 0x44) and/or restrap U43 (A0 → SDA = 0x42). Rev B rework
+  alternative: lift U43 pin 2 (A0), jumper to SDA → 0x42.
+- The rev A "replace U43 with a genuine TI part" advice (PINOUT.md, 99-HW-TODO)
+  is moot — replacing the chip can't fix an address collision.

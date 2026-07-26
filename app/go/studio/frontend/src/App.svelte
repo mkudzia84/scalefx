@@ -11,7 +11,6 @@
     import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
     import MotorCalibrationDialog from './lib/dialogs/MotorCalibrationDialog.svelte'
     import ConfigWizard from './lib/dialogs/ConfigWizard.svelte'
-    import { installWizardAutoOffer } from './lib/wizard'
     import MainLayout from './lib/layout/MainLayout.svelte'
     import {
         boardState, connectPopupOpen, showAboutDialog, showConsole,
@@ -49,8 +48,10 @@
         installDeviceModelBridge()
         installInputValuesBridge()
         installEngineStateBridge()
-        // Setup Wizard: offer it on connect to a fresh (un-set-up) HubFX.
-        installWizardAutoOffer()
+        // Setup Wizard is available on demand from the toolbar (the ✨ button).
+        // It is NOT auto-offered on connect — a fresh board opens straight to
+        // the normal tabs + ports; an uninvited full-screen modal read as a
+        // freeze (covered the ports, blocked tab-switching) — 2026-07-25.
         try { await loadCatalogs() } catch { /* app still starting */ }
 
         // Rule 46 — register every config source at app startup so the
@@ -226,4 +227,5 @@
         height: 100vh;
         overflow: hidden;
     }
+
 </style>

@@ -107,9 +107,20 @@ Mp3DecoderLease Mp3DecoderPool::acquire() {
             MP3POOL_ERROR("MP3InitDecoder failed (out of internal SRAM?)");
             return Mp3DecoderLease{};
         }
+        // PCM scratch lives in PSRAM (perf audit, instructions/34): the
+        // decoder writes each output sample exactly once, sequentially, and
+        // the drain-copy reads it once — bandwidth-trivial on octal PSRAM.
+        // Frees ~4.6 KB of internal SRAM per active MP3 slot (~28 KB at
+        // full 6-channel fan-out).  The decoder CONTEXT stays internal
+        // (MP3InitDecoder mallocs it; the decode hot path hits it per
+        // sample).  Internal fallback keeps PSRAM-less boards working.
         victim->pcm = (int16_t*)heap_caps_malloc(
             kMp3PcmScratchWords * sizeof(int16_t),
-            MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!victim->pcm)
+            victim->pcm = (int16_t*)heap_caps_malloc(
+                kMp3PcmScratchWords * sizeof(int16_t),
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
         if (!victim->pcm) {
             MP3FreeDecoder(static_cast<HMP3Decoder>(victim->decoder));
             victim->decoder = nullptr;

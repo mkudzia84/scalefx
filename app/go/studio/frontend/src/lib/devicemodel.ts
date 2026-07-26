@@ -9,10 +9,11 @@
 
 import { writable, derived, get } from 'svelte/store'
 import { connectionInfo } from './stores'
+import { diag } from './diag'
 import {
     RefreshDeviceModel, DeviceModelSnapshot,
     AttachRole, DetachRole, SetPortName,
-    SetInputProtocol, SetInputChannelCount, SetChannelFunction,
+    SetInputProtocol, SetInputEscProtocol, SetInputEscRpmScaling, SetInputChannelCount, SetChannelFunction,
     LoadHubConfig, SaveHubConfig, RemoveExpanderConfig,
 } from '../../wailsjs/go/main/App'
 import { EventsOn } from '../../wailsjs/runtime/runtime'
@@ -27,13 +28,13 @@ export const portKindName: Record<number, string> = {
 
 export const RoleKind = {
     None: 0x00, ServoActuator: 0x01, RcPwmInput: 0x02, SbusInput: 0x03,
-    JetiExInput: 0x04, JetiExTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
+    JetiExInput: 0x04, EscTelemetry: 0x05, LedAnimator: 0x10, DcMotor: 0x11,
     Heater: 0x12, BiDcMotor: 0x20,
 } as const
 
 export const roleKindName: Record<number, string> = {
     0x00: 'none', 0x01: 'servo-actuator', 0x02: 'rc-pwm-input',
-    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'jeti-ex-telemetry',
+    0x03: 'sbus-input', 0x04: 'jeti-ex-input', 0x05: 'esc-telemetry',
     0x10: 'led-animator', 0x11: 'dc-motor', 0x12: 'heater', 0x20: 'bi-dc-motor',
 }
 
@@ -111,9 +112,17 @@ export interface ChannelMap { channel: number; function: string }
 export interface InputPortConfig {
     port: PortRef
     protocol: string
+    /** ESC stream selector when protocol === 'esc-telemetry'. */
+    escProtocol?: string
+    // RPM scaling: motor pole count (electrical rpm = shaft rpm × poles/2)
+    // + gearbox ratio.  The firmware divides by (poles/2 × gear) at publish;
+    // absent = as transmitted (1:1).
+    escMotorPoles?: number
+    escGearRatio?: number
     channelCount: number
     channels: ChannelMap[]
 }
+export interface EscProtocolDef { id: string; label: string; wire: number }
 export interface ChannelFunctionDef { id: string; label: string; group: string }
 export interface InputProtocolDef {
     id: string; label: string; roleKind: number; implemented: boolean; maxChannels: number
@@ -127,26 +136,44 @@ export interface DeviceModelSnapshotT {
     inputs: InputPortConfig[]
     channelFunctions: ChannelFunctionDef[]
     inputProtocols: InputProtocolDef[]
+    escProtocols: EscProtocolDef[]
 }
 
 const empty: DeviceModelSnapshotT = {
     ports: [], domains: [], issues: [], roleCatalog: [],
-    inputs: [], channelFunctions: [], inputProtocols: [],
+    inputs: [], channelFunctions: [], inputProtocols: [], escProtocols: [],
 }
 
-/** normalize guarantees every array field is non-null.  Go marshals an
- *  empty nil slice as JSON `null`; iterating that (`for..of null`) throws
- *  and would break Svelte reactivity, so we coerce on every ingest. */
+/** normalize guarantees every array field is non-null — INCLUDING nested
+ *  arrays.  Go marshals an empty nil slice as JSON `null`; iterating that
+ *  (`for..of null` / `{#each null}`) throws inside a store subscriber or a
+ *  component render, which can break the whole Svelte tree SILENTLY (the
+ *  blank "no ports / hanging UI" state — no error ever reaches
+ *  window.onerror when the throw happens inside a swallowed dispatch).
+ *  Coerce every level on every ingest so a malformed snapshot can never
+ *  take the UI down. */
 function normalize(snap: unknown): DeviceModelSnapshotT {
     const s = (snap ?? {}) as Partial<DeviceModelSnapshotT>
+    const arr = <T>(v: T[] | null | undefined): T[] => (Array.isArray(v) ? v : [])
     return {
-        ports: s.ports ?? [],
-        domains: s.domains ?? [],
-        issues: s.issues ?? [],
-        roleCatalog: s.roleCatalog ?? [],
-        inputs: s.inputs ?? [],
-        channelFunctions: s.channelFunctions ?? [],
-        inputProtocols: s.inputProtocols ?? [],
+        ports: arr(s.ports).map(p => ({
+            ...p,
+            caps:         arr(p?.caps),
+            allowedRoles: arr(p?.allowedRoles),
+        })),
+        domains: arr(s.domains).map(d => ({
+            ...d,
+            slots: arr((d as any)?.slots),
+        })),
+        issues: arr(s.issues),
+        roleCatalog: arr(s.roleCatalog),
+        inputs: arr(s.inputs).map(c => ({
+            ...c,
+            channels: arr(c?.channels),
+        })),
+        channelFunctions: arr(s.channelFunctions),
+        inputProtocols: arr(s.inputProtocols),
+        escProtocols: arr(s.escProtocols),
     }
 }
 
@@ -248,6 +275,18 @@ export function installDeviceModelBridge() {
     if (bridged) return
     bridged = true
     EventsOn('devicemodel:changed', (snap: DeviceModelSnapshotT) => {
+        // Guard against the empty-overwrite race: event delivery is not
+        // ordered against RPC returns, so a stale empty snapshot can land
+        // AFTER refresh() populated the store and blank the UI (the
+        // fresh-board "frozen" Studio, 2026-07-02).  A real teardown goes
+        // through resetDeviceModel() on disconnect, never through an
+        // empty broadcast while connected.
+        const incoming = snap?.ports?.length ?? 0
+        const cur = get(deviceModel)
+        if (incoming === 0 && cur.ports.length > 0 && get(connectionInfo).connected) {
+            diag.warn('FE.DM', `ignoring empty devicemodel:changed (store has ${cur.ports.length} ports)`)
+            return
+        }
         deviceModel.set(normalize(snap))
     })
 }
@@ -255,6 +294,7 @@ export function installDeviceModelBridge() {
 /** refresh re-fetches the topology from the hub and rebuilds the model. */
 export async function refresh(): Promise<void> {
     const snap = await RefreshDeviceModel()
+    diag.info('FE.DM', `refresh: ${snap?.ports?.length ?? 0} port(s), ${snap?.domains?.length ?? 0} domain(s) in snapshot`)
     deviceModel.set(normalize(snap))
 }
 
@@ -382,6 +422,18 @@ export async function removeAbandonedBoard(guid: string): Promise<void> {
 
 // ─── Input config ─────────────────────────────────────────────────────
 
+export async function setInputEscProtocol(p: PortRef, escProto: string): Promise<void> {
+    const snap = await SetInputEscProtocol(p.guid, p.kind, p.index, escProto)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // esc_protocol persists into /hubfx.yaml ports[]
+}
+
+export async function setInputEscRpmScaling(p: PortRef, motorPoles: number, gearRatio: number): Promise<void> {
+    const snap = await SetInputEscRpmScaling(p.guid, p.kind, p.index, motorPoles, gearRatio)
+    deviceModel.set(normalize(snap))
+    markHubDirty()    // esc_motor_poles / esc_gear_ratio persist into /hubfx.yaml ports[]
+}
+
 export async function setInputProtocol(p: PortRef, protocol: string): Promise<void> {
     const snap = await SetInputProtocol(p.guid, p.kind, p.index, protocol)
     deviceModel.set(normalize(snap))
@@ -484,13 +536,13 @@ export function boardLabel(guid: string): string {
 
 const KIND_LABEL: Record<string, string> = {
     hubfx: 'HubFX', lightfx: 'LightFX', gunfx: 'GunFX',
-    gearcontrol: 'GearControl', noop: 'NoOp',
+    gearcontrol: 'GearControl', portexpander: 'PortExpander', noop: 'NoOp',
 }
 
 // Device-name prefixes that don't equal the kind string (the firmware uses
-// "GearCtrl" but the kind is "gearcontrol").  Mirrors Go
-// devicemodel.BoardKindFromName — keep the two in lock-step.
-const KIND_ALIAS: Record<string, string> = { gearctrl: 'gearcontrol' }
+// "GearCtrl" but the kind is "gearcontrol", "PortExp" for "portexpander").
+// Mirrors Go devicemodel.BoardKindFromName — keep the two in lock-step.
+const KIND_ALIAS: Record<string, string> = { gearctrl: 'gearcontrol', portexp: 'portexpander' }
 
 export function boardKindOf(name: string): string {
     const n = (name || '').toLowerCase()

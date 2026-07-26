@@ -38,7 +38,7 @@
 #include "../roles/rc_pwm_input_role.h"
 #include "../roles/sbus_input_role.h"
 #include "../roles/jeti_ex_input_role.h"
-#include "../roles/jeti_ex_telemetry_role.h"
+#include "../roles/esc_telemetry_role.h"
 
 namespace sfx_core {
 
@@ -73,7 +73,7 @@ struct InputBinding {
                               RcPwmInputRole,
                               SbusInputRole,
                               JetiExInputRole,
-                              JetiExTelemetryRole>;
+                              EscTelemetryRole>;
     Role role;
 
     bool occupied() const { return port != nullptr; }

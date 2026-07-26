@@ -36,6 +36,7 @@ type DeviceModelSnapshot struct {
 	Inputs           []devicemodel.InputPortConfig    `json:"inputs"`
 	ChannelFunctions []devicemodel.ChannelFunctionDef `json:"channelFunctions"`
 	InputProtocols   []devicemodel.InputProtocolDef   `json:"inputProtocols"`
+	EscProtocols     []devicemodel.EscProtocolDef     `json:"escProtocols"`
 }
 
 // RoleKindInfo is a (id, wire-name, friendly-label) tuple for role UIs.
@@ -101,6 +102,12 @@ func (a *App) RefreshDeviceModel() (DeviceModelSnapshot, error) {
 		a.diag.Warn("DM", "role list failed (continuing without roles): %v", err)
 		boardRoles = nil
 	}
+	nPorts := 0
+	for _, b := range boardPorts {
+		nPorts += len(b.Ports.Servos) + len(b.Ports.Pwms) + len(b.Ports.HBridges) + len(b.Ports.Inputs)
+	}
+	a.diag.Info("DM", "refresh: %d board(s), %d port(s), %d role-board(s) from hub",
+		len(boardPorts), nPorts, len(boardRoles))
 
 	a.dmMu.Lock()
 	prevClaims := []devicemodel.Claim(nil)
@@ -187,6 +194,7 @@ func (a *App) deviceModelSnapshot() DeviceModelSnapshot {
 		Inputs:           []devicemodel.InputPortConfig{},
 		ChannelFunctions: devicemodel.ChannelFunctions(),
 		InputProtocols:   devicemodel.InputProtocols(),
+		EscProtocols:     devicemodel.EscProtocols(),
 	}
 	a.dmMu.Lock()
 	defer a.dmMu.Unlock()
@@ -381,16 +389,22 @@ func (a *App) ServoSetTarget(guid string, index uint8, targetUs uint16) error {
 // left empty (role defaults); per-role config comes from the functional
 // tabs / config files.
 func (a *App) AttachRole(guid string, kind, index, roleKind byte) (DeviceModelSnapshot, error) {
+	return a.attachRoleCfg(guid, kind, index, roleKind, nil)
+}
+
+// attachRoleCfg — AttachRole with role-specific config bytes (esc-telemetry
+// protocol selector, future baud overrides).
+func (a *App) attachRoleCfg(guid string, kind, index, roleKind byte, cfg []byte) (DeviceModelSnapshot, error) {
 	defer a.diag.Around("AttachRole",
 		map[string]any{"guid": guid, "kind": kind, "idx": index, "role": roles.KindName(roleKind)})()
-	a.diag.Info("DM", "AttachRole %s → %s/%s%d",
-		roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index)
+	a.diag.Info("DM", "AttachRole %s → %s/%s%d cfg=%d B",
+		roles.KindName(roleKind), guidOrHub(guid), ports.KindName(kind), index, len(cfg))
 	c := a.snapshotClient()
 	if c == nil {
 		a.diag.Error("DM", "AttachRole: not connected")
 		return DeviceModelSnapshot{}, fmt.Errorf("not connected")
 	}
-	if err := c.Topology.AttachRole(guid, kind, index, roleKind, nil); err != nil {
+	if err := c.Topology.AttachRole(guid, kind, index, roleKind, cfg); err != nil {
 		a.diag.Error("DM", "AttachRole %s failed: %v", roles.KindName(roleKind), err)
 		return a.deviceModelSnapshot(), fmt.Errorf("attach %s: %w", roles.KindName(roleKind), err)
 	}
@@ -448,6 +462,19 @@ func (a *App) DetachRole(guid string, kind, index byte) (DeviceModelSnapshot, er
 
 func (a *App) emitDeviceModelChanged() {
 	if a.ctx == nil {
+		return
+	}
+	// While CONNECTED with no model built yet, an empty broadcast can only
+	// overwrite a populated frontend store — Wails event delivery is not
+	// ordered against RPC returns, so an early empty emit can land AFTER
+	// the refresh's 20-port snapshot and blank the whole UI (the
+	// fresh-board "frozen/empty Studio" race, 2026-07-02).  The refresh
+	// that builds the model emits again, so skipping here loses nothing.
+	a.dmMu.Lock()
+	noModel := a.dm == nil
+	a.dmMu.Unlock()
+	if noModel && a.snapshotClient() != nil {
+		a.diag.Warn("DM", "suppressing empty devicemodel:changed broadcast (connected, no model built yet)")
 		return
 	}
 	wailsRT.EventsEmit(a.ctx, "devicemodel:changed", a.deviceModelSnapshot())

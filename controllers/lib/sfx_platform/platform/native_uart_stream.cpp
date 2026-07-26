@@ -37,11 +37,17 @@ bool NativeUartStream::beginConfig(uart_port_t port,
 
     // Driver install first — sizes the RX / TX ring buffers in internal
     // SRAM (ISR-safe).  Pass 0 as the event-queue length; we poll, no
-    // event task needed.
+    // event task needed.  ESP_INTR_FLAG_IRAM (with CONFIG_UART_ISR_IN_IRAM)
+    // keeps the RX ISR runnable while the flash/PSRAM cache is saturated —
+    // without it, Core-0 MP3-decode bursts delayed the ISR past the 128 B
+    // FIFO horizon (~10 ms @125k) and dropped bytes in 1-2 s windows (the
+    // audio-correlated NOISY bursts; bench 2026-07-15, speaker-disconnect
+    // test exonerated the amplifier).
     esp_err_t err = uart_driver_install(_port,
                                         (int)rxBufBytes,
                                         (int)txBufBytes,
-                                        0, nullptr, 0);
+                                        0, nullptr,
+                                        ESP_INTR_FLAG_IRAM);
     if (err != ESP_OK) return false;
 
     err = uart_param_config(_port, &cfg);

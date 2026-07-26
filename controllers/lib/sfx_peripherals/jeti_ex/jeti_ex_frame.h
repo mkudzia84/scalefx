@@ -13,7 +13,7 @@
  *   - CRC16 = reflected CCITT 0x8408 over bytes [0..len-3], LSB then MSB.
  *
  * Replaces the byte-identical IDLE→READ_TYPE→READ_LENGTH→READ_BODY state
- * machines that JetiExBus and JetiExTelemetryMonitor each used to hand-roll.
+ * machine that JetiExBus used to hand-roll.
  */
 
 #ifndef SFX_JETI_EX_FRAME_H
@@ -73,6 +73,26 @@ public:
             }
             break;
         case READ_TYPE:                       // byte 1 = packet type (0x01/0x03)
+            // VALIDATE the type byte — the spec allows only 0x01 (slave may
+            // answer) and 0x03 (no answer).  Without this check, a stray
+            // header-valued byte after an RX gap started a bogus frame whose
+            // "length" was a channel-value byte (e.g. 0x2E = 46), and the
+            // parser swallowed that many bytes — INCLUDING complete valid
+            // polls — turning a single lost frame into a seconds-long
+            // channel/telemetry blackout (bench 2026-07-15, failed-frame
+            // dumps: gap → 3E + frame tail + eaten 3D-01 poll).  With the
+            // check, a bad type re-syncs immediately (the byte itself may be
+            // a fresh header).
+            if (b != 0x01 && b != 0x03) {
+                _errors++;
+                if (b == START_ADDR0 || b == START_ADDR1 ||
+                    (_acceptSlave && b == RESPONSE_HEADER)) {
+                    _buf[0] = b; _idx = 1;    // stay in READ_TYPE
+                } else {
+                    _state = IDLE;
+                }
+                break;
+            }
             _buf[1] = b; _idx = 2; _state = READ_LENGTH;
             break;
         case READ_LENGTH:                     // byte 2 = total length
@@ -92,13 +112,36 @@ public:
     uint32_t frames()  const { return _frames; }
     uint32_t errors()  const { return _errors; }
 
+#if SFX_INSTRUMENTATION
+    /// Copy-and-clear the FIRST CRC-failed frame of the current burst —
+    /// bench ground truth for corruption analysis (missing bytes = ISR/ring
+    /// drop, bit garbage = electrical, plausible-but-shifted = framing).
+    uint8_t takeFailedFrame(uint8_t* out, uint8_t cap) {
+        const uint8_t n = (_failLen < cap) ? _failLen : cap;
+        for (uint8_t i = 0; i < n; ++i) out[i] = _failBuf[i];
+        _failLen = 0;
+        return n;
+    }
+#endif
+
 private:
     void finish() {
-        if (_len < MIN_FRAME_SIZE) { _errors++; return; }
+        if (_len < MIN_FRAME_SIZE) { _errors++; snapFail(); return; }
         const uint16_t rx = (uint16_t)(_buf[_len - 2] | (_buf[_len - 1] << 8));
-        if (crc16_ccitt(_buf, _len - 2) != rx) { _errors++; return; }
+        if (crc16_ccitt(_buf, _len - 2) != rx) { _errors++; snapFail(); return; }
         _frames++;
         if (_onFrame) _onFrame(_buf, _len);
+    }
+
+    void snapFail() {
+#if SFX_INSTRUMENTATION
+        // Keep the FIRST failed frame of a burst (no per-frame churn): it
+        // shows how the corruption STARTS, which is the diagnostic part.
+        if (_failLen == 0) {
+            _failLen = _len;
+            for (uint8_t i = 0; i < _len && i < sizeof(_failBuf); ++i) _failBuf[i] = _buf[i];
+        }
+#endif
     }
 
     enum State : uint8_t { IDLE, READ_TYPE, READ_LENGTH, READ_BODY };
@@ -108,6 +151,10 @@ private:
     uint8_t  _idx = 0, _len = 0;
     FrameCallback _onFrame;
     uint32_t _rxBytes = 0, _frames = 0, _errors = 0;
+#if SFX_INSTRUMENTATION
+    uint8_t  _failBuf[MAX_FRAME_SIZE] = {};
+    uint8_t  _failLen = 0;
+#endif
 };
 
 }  // namespace JetiEx

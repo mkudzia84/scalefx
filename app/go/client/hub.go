@@ -44,11 +44,12 @@ type Identity struct {
 type BoardKind string
 
 const (
-	BoardHubFX       BoardKind = "hubfx"
-	BoardLightFX     BoardKind = "lightfx"
-	BoardGunFX       BoardKind = "gunfx"
-	BoardGearControl BoardKind = "gearcontrol"
-	BoardUnknown     BoardKind = ""
+	BoardHubFX        BoardKind = "hubfx"
+	BoardLightFX      BoardKind = "lightfx"
+	BoardGunFX        BoardKind = "gunfx"
+	BoardGearControl  BoardKind = "gearcontrol"
+	BoardPortExpander BoardKind = "portexpander"
+	BoardUnknown      BoardKind = ""
 )
 
 // Kind returns the BoardKind inferred from the device-name prefix.
@@ -67,6 +68,11 @@ func (i Identity) Kind() BoardKind {
 	case strings.HasPrefix(i.DeviceName, "GearControl"),
 		strings.HasPrefix(i.DeviceName, "GearCtrl"):
 		return BoardGearControl
+	// Firmware emits the short prefix "PortExp" (kName in
+	// portexpander_pico.ino), e.g. "PortExp-8A2F" — accept both forms.
+	case strings.HasPrefix(i.DeviceName, "PortExpander"),
+		strings.HasPrefix(i.DeviceName, "PortExp"):
+		return BoardPortExpander
 	}
 	return BoardUnknown
 }

@@ -7,6 +7,336 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.41.0 — 2026-07-26
+
+The effect-enable rationalization: the `/hubfx.yaml` `features:` master-enable
+matrix is RETIRED — each effect's enable lives ONLY in its own sub-config
+(`/enginefx.yaml` `enabled:` …), and hubfx.yaml is pure port/input/audio
+mapping again.  Plus the fresh-board Studio "hanging UI" fixes and the
+no-signal input-broadcast throttle.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.41.0 | ESP32-S3 | `hubfx-v2.41.0` |
+
+### Breaking ⚠️
+- **`/hubfx.yaml` `features:` removed** (MINOR bump — additive-tolerant: an
+  old file's `features:` key parses to nothing and is ignored).  Effect enable
+  is each sub-config's own `enabled:` flag; the firmware no longer overrides
+  it.  Rationale: Studio re-uploading hubfx.yaml on every effect toggle could
+  collide with audio playback (Rule 54 upload exclusivity) and wedged the
+  flash — toggling an effect now touches ONLY that effect's file.
+
+### New Features
+- **All effects default OFF** (firmware struct+schema, seed `minimal.yaml`,
+  Studio Go DTO defaults, frontend drafts) — a freshly-flashed board boots
+  inert; the operator opts each effect in from its panel.
+- **No-signal input-broadcast throttle** (2.40.1): an input role with no valid
+  signal (RX unplugged) broadcasts at a 4 Hz heartbeat instead of 50 Hz junk
+  frames; full rate resumes the instant the signal returns (hot-plug safe).
+  Applies to PPM / SBUS / Jeti EX via the shared `InputBroadcaster`.
+- ESC-telemetry role label corrected to **"ESC Telemetry"** (was the stale
+  "Jeti EX Telemetry"); telemetry type (Kontronik/Scorpion/Hobbywing) is
+  selectable inline on the input card AND in the PCB-diagram port popover.
+- Input-role split: on a 2-input board IN2 offers only ESC Telemetry, IN1
+  only the RC-channel protocols.
+
+### Bug Fixes (Studio)
+- **Fresh-board "hanging UI" root-caused + fixed** (GUI-verified via
+  screenshots + synthetic input): the Setup Wizard no longer auto-opens as a
+  click-swallowing modal (toolbar-only + Escape closes); the Connect dialog
+  cannot be dismissed while disconnected (dismissing it left a dead blank UI).
+- Robustness: deep device-model normalize (nested `caps`/`allowedRoles`/
+  `channels`/`slots` null-guards), FE.CLICK click-path tracer, early
+  mount-time error capture (main.ts), telemetry input card layout de-squished.
+- PCB overlays: HubFX rev-B input headers now INP/TEL at their real top-center
+  position (was rev-A right-column IN1/IN2); GearControl IN + servo positions
+  corrected; PortExpander overlay added.
+
+---
+
+## PortExpander 1.0.0-rc1 — 2026-07-25
+
+First release candidate for the new **PortExpander** generic-expander board —
+an RP2040 thin expander exposing 8 servo + 5 H-bridge ports to the HubFX
+master (the largest expander port surface to date; GearControl is 7+3).
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| PortExpander (expander) | 1.0.0-rc1 | RP2040 | `portexpander-v1.0.0-rc1` |
+
+### New Features
+- **New board firmware** (`controllers/portexpander/pico/`), mirroring the
+  GearControl thin-expander architecture (`BoardOf<>` + auto policies; roles
+  attached by the hub at runtime, Rule 58): 8 × ServoActuator-capable servo
+  headers (GP14–21) + 5 × BiDcMotor-capable motor drivers.
+- Motor drivers are **PWM+DIR** topology → `PwmDirHBridgePort` (brake falls
+  back to coast), unlike GearControl's dual-PWM bridges.
+- Per-motor **INA226 current/voltage monitors** on I²C0 (GP4/5), addresses
+  decoded from the netlist strapping: 0x40/0x45/0x44/0x41/0x42 for MOT1–5.
+- USB identity `2E8A:0183` ("ScaleFX PortExpander"); device name prefix
+  `PortExp-<guid>`.
+- Recognition landed across the stack in the same change: HubFX
+  `ExpanderKind::PortExpander` + PID classification, Go protocol/client/
+  devicemodel mirrors, CLI controller registry (`scalefx-flash build|flash
+  portexpander`), and Studio (board naming, Firmware tab, PCB overlay with
+  the expander_top render).
+
+### Internal
+- Pin map decoded from `instructions/schematics/expander.tel` — the netlist
+  references QFN-56 **package pins**, not GPIOs (SDA=U1.6→GP4, SCL=U1.7→GP5
+  confirmed the mapping).  L_CH1/L_CH2/POWER LEDs are passive (no firmware
+  driver); LED1/LED2 (GP25/24) are the standard indicator pair.
+- Known-open before 1.0.0 final: shunt value assumed 5 mΩ (verify against
+  BOM); HubFX must be reflashed with the PID-classification build to label
+  the board on its USB host ports; bench pass on motors + current sense.
+
+---
+
+## 2.39.0 — 2026-07-15
+
+The input-signal saga: RC blackouts during audio playback root-caused to FIVE
+stacked causes and fixed; the legacy Jeti EX-Bus downstream slave mode removed;
+RPM scaling by motor poles + gear ratio.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.39.0 | ESP32-S3 | `hubfx-v2.39.0` |
+
+### Bug Fixes (the input-gap stack — each necessary, none sufficient alone)
+- **asset_loader priority 22 → 3** (Core 0): the SD→PSRAM preload outranked the
+  RC input task and starved it for whole read bursts.
+- **UART ISRs into IRAM** (`ESP_INTR_FLAG_IRAM` + `CONFIG_UART_ISR_IN_IRAM`):
+  MP3-decode cache pressure delayed the flash-resident RX ISR past the 128 B
+  FIFO horizon (~10 ms @125k) — real byte loss in 1–2 s windows.
+- **MP3 decoder task → Core 1 @ prio 22**: the decoder's initial-prefetch
+  sprint (flat-out decode on every source open = every engine transition)
+  broke reception even with the IRAM ISR.  The historical "decoder on Core 1
+  = 10× underruns" was a priority mistake (it was tried at prio 5, starving
+  BELOW the producer/consumer pair), not a core problem.
+- **EX frame parser validates the type byte** (0x01/0x03 only): a stray
+  0x3E after a gap or echo leak seeded a bogus frame whose "length" was a
+  channel-value byte, swallowing valid polls — one glitch became a
+  seconds-long channel/telemetry blackout.
+- **TX self-echo tail drained deterministically**: flushRx() ran before the
+  echo's last bytes physically landed (echoShort ≈ 100 % of replies), leaking
+  bytes into the parser; now a bounded ≤500 µs wait inside the master's quiet
+  window drives the leak to zero.
+- **Failsafe debounce** (TriggerInput): signal-loss behaviours (force_low/…)
+  engage only after 500 ms of sustained loss — a single bad frame no longer
+  commands "engine off" (Jeti receivers themselves hold ~1 s).
+- ESC-telemetry raw-UART RX ring 1024 → 4096 B (~1 s of stream headroom).
+- Studio: a topology refresh racing the /hubfx.yaml hydration could invent a
+  default ESC stream selector and PERSIST it on Apply, silently overwriting
+  the operator's choice (the kontronik→jeti-exbus flip) — defaults are no
+  longer invented.
+- Reply-gate de-beat: the 12 ms floor against the ~11.6 ms poll period
+  skipped almost every other poll; a 3 ms early margin lifts replies from
+  ~48 Hz to ~65 Hz (per-sensor refresh up ~35 %).
+
+### New Features
+- **RPM scaling by Motor poles + Gear ratio** (Telemetry sub-tab, per
+  esc-telemetry port): published RPM = transmitted ÷ (poles/2 × gear) —
+  Kontronik transmits ELECTRICAL rpm.  Persisted as `esc_motor_poles` +
+  `esc_gear_ratio`; one combined ×100 divider on the wire (unchanged).
+- Reply-rate instrumentation: the 2 s `[jexp] TX` line now reports measured
+  `respHz` + `vals/s` + the target interval; `[jexp] IN_1 failed-frame[N]`
+  hex-dumps the first CRC-failed frame per window (the tool that cracked
+  the saga).
+
+### Breaking ⚠️
+- **Jeti EX-Bus downstream slave mode REMOVED** (the IN_2 master link that
+  polled an ESC as a Jeti slave with mirrored channel frames): native ESC
+  telemetry supersedes it, its 25 ms mirror TX taxed the input task, and a
+  stale config resurrecting it caused a perf regression.  `esc_protocol:
+  jeti-exbus` (or unknown/missing values) now falls back to kontronik; the
+  Jeti input attach no longer auto-claims a second input port.
+
+### Internal
+- jeti_ex_telemetry_monitor.h deleted; expander is IN_1-only (~10 KB smaller
+  firmware).  DRAM audit: branch adds ~3 KB; the session-time drop is the
+  (pre-existing, documented) lazy MP3 decoder pool + the 32 KB DMA WAV
+  buffer.
+
+---
+
+## 2.38.1 — 2026-07-14
+
+Native ESC telemetry (Kontronik / Scorpion / Hobbywing) on the TELEM port,
+a protocol-agnostic telemetry collection, ESC fault messages on the radio,
+and RPM pole/gear scaling. Consolidates the unreleased 2.36.1–2.38.0 work.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.38.1 | ESP32-S3 | `hubfx-v2.38.1` |
+
+### New Features
+- **ESC Telemetry role (`esc-telemetry`, RoleKind 0x05):** an input port can
+  listen to an ESC's native telemetry broadcast — Kontronik KODL/KODI
+  (115200 8E1, CRC32, bench-verified on a KOLIBRI), Scorpion Tribunus
+  "Unsc Telem" (38400 8N1, CRC16-CCITT), Hobbywing Platinum V4/FlyFun
+  (19200 8N1) and Platinum V5 (115200 8N1, CRC16-MODBUS) — normalized to
+  RPM/V/I/mAh/throttle/temps/BEC/faults and published to the radio + Studio.
+  Each protocol is a decoder class behind a C++20 `EscTelemetryDecoder`
+  concept, composed by `EscTelemetryMonitorT<...>` (adding an ESC = one
+  decoder + one alias entry). Attach config: `[protocol][baudK][rpmDivider]`.
+- **Protocol-agnostic TelemetryHub** (`sfx_telemetry::TelemetryHub`, moved out
+  of `jeti_ex/`): producers publish `SensorKind` Int/Gps/DateTime values with
+  no radio knowledge; the Jeti responder picks the smallest EX wire type per
+  value at encode time (also fixes the fixed-`Int6` throttle truncation trap).
+- **ESC fault messages on the radio:** the Kontronik operation-error bits are
+  mapped from the official V5 spec (archived in `telemetry/docs/`) with
+  warning/error severities; fault CHANGES post a per-device message into the
+  hub which the responder forwards as a Jeti **EX Message** packet (v1.07,
+  class 2–4 → DC/DS log + popup, e.g. "ESC OVERTEMP +2"). The benign
+  ProgAllow bit 17 is masked (it reads constantly while idle).
+- **RPM pole/gear scaling:** Kontronik transmits ELECTRICAL rpm — Studio's
+  Telemetry sub-tab gains **Motor poles** + **Gear ratio** per esc-telemetry
+  port; the firmware divides by (poles/2 × gear) at publish
+  (`esc_motor_poles` / `esc_gear_ratio` in `/hubfx.yaml` ports[]).
+- **Studio:** ESC telemetry configuration moved to the Input & Ports →
+  Telemetry sub-tab (stream selector + RPM scaling + live streaming chip);
+  the Input panel card keeps the protocol select with a pointer. The
+  Telemetry sub-tab now shows for esc-telemetry sources too.
+- **Jeti expander robustness (2.36.1/2.36.2 work):** restart-on-attach (live
+  role moves no longer need a reboot), deferred link-loss self-restart
+  (unplugged Rx recovers on replug, 15 s watchdog), ESC channel-frame mirror
+  emulating the real master cycle on the downstream link (Kolibri needs
+  channel frames before its telemetry-reply slot opens; rev-B-only).
+- **LightFX Studio:** loading a program template on a fresh board now seeds
+  channels from unclaimed LED-animator ports (mapped + renamed) instead of a
+  half-empty program.
+
+### Bug Fixes
+- **Raw-UART listen is RX-only:** the TX pad (GPIO3 sits directly on the
+  TELEM line on rev B) idled push-pull HIGH and flattened the ESC's start
+  bits (`rxB=0`) — raw mode never attaches TX; half-duplex roles gate it
+  like JETI_EX.
+- **UART handoff on role change:** attaching a native ESC protocol makes a
+  running JetiExpander release its EX downstream port
+  (`setDownstreamPort`) — previously both drained the same UART; switching
+  back to jeti-exbus re-adopts it.
+- **Kontronik KODI is 44 bytes** (spec field sum; the header sheet's 40 only
+  covers KODL) — the info frame now decodes: device identity (KOLIBRI/
+  KOSMIK/…) + firmware version, zero CRC errors at 100 frames/s.
+- Device name refreshes on every hub push, so the identity upgrades from the
+  protocol default once the info frame lands.
+
+### Protocol Changes
+- RoleKind 0x05 renamed `jeti-ex-telemetry` → `esc-telemetry` (legacy yaml
+  names map over; zero-length attach config = the old downstream-marker
+  semantics, so existing configs keep working).
+- Telemetry-collection sensor `type` byte (0xEC) now carries the agnostic
+  `SensorKind` (0=int, 1=gps, 2=datetime) instead of the Jeti ExDataType —
+  no host code interpreted the old byte.
+- UART raw mode gains parity support (`kSerial8E1` — Kontronik).
+
+### Breaking ⚠️
+- None on the wire (Rule 11 append-only attach config; legacy names accepted).
+
+### Internal
+- Official spec PDFs archived: Kontronik Telemetrieprotokoll V5
+  (`telemetry/docs/`) + JETI EX protocol v1.07 (`jeti_ex/docs/`).
+- Bench instrumentation: `[esctelem]` 2 s health line (rxB/frames/errs +
+  raw-byte snapshot) behind `SFX_INSTRUMENTATION`.
+
+---
+
+## 2.36.0 — 2026-07-14
+
+Battery + expander-rail telemetry on rev B, enabled by the U43 address
+rework (0x40 → 0x44) that clears the historic PCA9685 collision.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.36.0 | ESP32-S3 | `hubfx-v2.36.0` |
+
+### New Features
+- **INA226 coulomb counter (generic driver capability):** `update()`
+  self-integrates consumed charge; `consumed_mAh()` / `resetConsumed_mAh()`
+  available to every board that polls an INA226.
+- **Rail telemetry on Jeti EX + Studio:** five HubFx-local sensors —
+  Batt U (V), Batt I (A), Batt used (mAh), Exp I (A), Exp used (mAh) —
+  fed at 2 Hz from the 10 Hz sense cadence; auto-discovered by the
+  transmitter and mirrored in Studio's Telemetry panel. Sensors register
+  only for monitors that came up (stock un-reworked boards show no Exp
+  rows). Undervoltage alert remains parked.
+- **U43 re-enabled @ 0x44** (`kInaAddrs = {0x41, 0x44}`) after the bench
+  restrap (lift A0) — bench-verified clash-free; PCB rev C bakes it in.
+- `tests/hw/i2c_probe` gains a clash detector (repeat-read stability of
+  the ID registers — the wire-AND signature of two chips at one address).
+
+### Breaking ⚠️
+- None.
+
+---
+
+## 2.35.1 — 2026-07-02
+
+**HubFX PCB rev B support** (branch `pcb-nextver`) + a complete
+fresh-board provisioning chain: a factory-new board now goes from blank
+silicon to a seeded, Studio-accessible config with one `scalefx-flash
+flash hubfx`. (2.35.0 — the rev B pin map — never shipped separately;
+2.35.1 folds it in with the storage self-heal.)
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.35.1 | ESP32-S3 | `hubfx-v2.35.1` |
+| ScaleFX Studio + CLI | 1.0.0 | Windows (host) | — |
+
+### New Features
+- **PCB rev B pin map** behind a compile-time `HUBFX_PCB_REV` switch
+  (rev B default; `-DHUBFX_PCB_REV=1` rebuilds for rev A). Rev B: split
+  TX/RX input headers (INP RX=GPIO2/TX=GPIO1, TELEM RX=GPIO21/TX=GPIO3,
+  2.2 kΩ bridge), servo headers SRV1..10 on the 6 V rail, status LED
+  GPIO46, 2 × INA226 rail monitors (battery @ 0x41 driven; expander-rail
+  U43 @ 0x40 disabled — see the collision note below).
+- **`EspInputPort` split TX/RX** — explicit `(rxPin, uartNum)` single-wire
+  and `(rxPin, txPin, uartNum)` constructors; the dedicated TX pad idles
+  high-Z and drives only its half-duplex reply slot.
+- **Fresh-board provisioning**: `scalefx-flash` now writes the FACTORY
+  image (bootloader + partition table + app — LittleFS region untouched,
+  existing configs survive), LittleFS self-formats/self-heals, and the
+  default `/hubfx.yaml` is seeded after a readiness check.
+- `tests/hw/i2c_probe` — minimal I²C bring-up/scan firmware with INA226
+  canonical-ID identification.
+
+### Bug Fixes — firmware
+- **LittleFS self-heal**: `FlashModule::begin()` retries through an
+  explicit format and records the error code; `FLASH_STATUS_REQ` retries
+  a failed boot-time init (the self-recovery bring_up.h always promised);
+  the boot log states WHY flash init failed.
+- **Uploads into missing directories** no longer fail with
+  `FILE_IO_ERROR`: ESP32 write-opens create the parent chain (mkdir -p)
+  — fixes applying a LightFX preset program to a fresh board; covers
+  flash AND SD.
+
+### Bug Fixes — ScaleFX Studio
+- **Fresh-board connect no longer freezes/blanks the UI**: empty
+  `devicemodel:changed` broadcasts are suppressed (Go) and ignored over a
+  populated model (frontend); a **Svelte flush watchdog** self-heals the
+  swallowed-exception scheduler wedge within 1 s and logs the culprit
+  (`FE.FLUSH`).
+- A **disabled** effect no longer gates the global Apply (fresh boards
+  showed a permanent red "resolve errors: enginefx" from the disabled
+  default draft).
+- `scalefx-flash` seeding reports WHY it skipped (flash unavailable)
+  instead of silently preserving nothing.
+
+### Hardware findings (documented, fix scheduled for PCB rev C)
+- **The rev A "counterfeit INA226 @ 0x40" was never a clone**: the
+  PCA9685's hardware address is 0x40 (all A-pins grounded; the firmware's
+  0x70 is its all-call alias) — an address collision with U43. Full
+  re-interpretation in instructions/18; findings log + rev C checklist in
+  `hardware/pcb-nextver/ISSUES.md` (also covers the C2 MLCC dead-short
+  that smoked the first rev B board, and the unprotected VBAT feed on the
+  USB1/USB4 expander ports).
+
+### Breaking ⚠️
+- None on the wire. Rev A boards must build with `-DHUBFX_PCB_REV=1`.
+
+---
+
 ## 2.34.1 — 2026-06-23
 
 Post-RC1 maintenance: a new **manual gear setup/maintenance** feature, several

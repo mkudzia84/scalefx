@@ -39,7 +39,7 @@ namespace RoleKind {
     constexpr uint8_t RcPwmInput    = 0x02;  ///< single-channel pulse capture on an input port (RC PWM)
     constexpr uint8_t SbusInput     = 0x03;  ///< Futaba SBUS receiver on an input port (UART)
     constexpr uint8_t JetiExInput   = 0x04;  ///< Jeti Duplex EX Bus on an input port (UART half-duplex)
-    constexpr uint8_t JetiExTelemetry = 0x05;  ///< Jeti EX Bus telemetry monitor on an input port — polls a downstream slave (e.g. ESC), feeds the master channel's responder (concentrator pass-through)
+    constexpr uint8_t EscTelemetry  = 0x05;  ///< native ESC telemetry on an input port — protocol selector in the attach config (kontronik / scorpion / hobbywing v4+v5)
     constexpr uint8_t LedAnimator   = 0x10;  ///< event-queue LED animation on a PWM port
     constexpr uint8_t DcMotor       = 0x11;  ///< uni-directional motor with optional stall on a PWM port
     constexpr uint8_t Heater        = 0x12;  ///< bang-bang heater on a PWM port with temp sense
@@ -54,7 +54,7 @@ namespace RoleKind {
             case RcPwmInput:    return "rc-pwm-input";
             case SbusInput:     return "sbus-input";
             case JetiExInput:   return "jeti-ex-input";
-            case JetiExTelemetry: return "jeti-ex-telemetry";
+            case EscTelemetry:  return "esc-telemetry";
             case LedAnimator:   return "led-animator";
             case DcMotor:       return "dc-motor";
             case Heater:        return "heater";

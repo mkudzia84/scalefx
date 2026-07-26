@@ -10,6 +10,7 @@
 
 import { writable, derived, get } from 'svelte/store'
 import { showConfigWizard, connectionInfo } from './stores'
+import { diag } from './diag'
 import { deviceModel } from './devicemodel'
 import { collectChannelOptions } from './channels'
 import { WIZARD_FEATURES } from './wizard-features'
@@ -49,6 +50,8 @@ export const wizardSteps = derived(
 export const wizardStep = writable(0)
 
 export function openWizard(): void {
+    diag.info('WIZ', 'opening Setup Wizard')
+    wizardOfferVisible.set(false)   // opening (toolbar or banner) retires the offer
     wizardStep.set(0)
     showConfigWizard.set(true)
 }
@@ -70,8 +73,24 @@ export function isLastStep(i: number): boolean { return i >= get(wizardSteps).le
 // ─── Auto-offer on an empty config ───────────────────────────────────
 //
 // On connect to a HubFX whose config looks "fresh" (no named RC inputs yet),
-// offer the wizard once per app session.  Dismissible — opening the modal is
-// just a suggestion, never forced.
+// offer the wizard once per app session.  The offer is a NON-BLOCKING banner
+// (`wizardOfferVisible`) — never the modal itself.  Auto-opening the modal
+// trapped users on fresh boards: it fills most of the screen, so it reads as
+// a normal config page while its full-screen backdrop silently swallows the
+// tab bar and console clicks ("Studio froze" — 2026-07-25 bench).
+
+/** True → App.svelte shows the "fresh board — run the Setup Wizard?" banner.
+ *  Cleared by clicking either banner action or by opening the wizard. */
+export const wizardOfferVisible = writable(false)
+
+export function acceptWizardOffer(): void {
+    wizardOfferVisible.set(false)
+    openWizard()
+}
+export function dismissWizardOffer(): void {
+    diag.info('WIZ', 'auto-offer dismissed')
+    wizardOfferVisible.set(false)
+}
 
 /** A board with no named RC input channels reads as un-set-up (the typical
  *  intimidating-first-config case).  Heuristic for now; refined later to also
@@ -95,7 +114,8 @@ export function installWizardAutoOffer(): void {
             if (!get(connectionInfo).connected) return
             if (isConfigEmpty()) {
                 offeredThisSession = true
-                openWizard()
+                diag.info('WIZ', 'auto-offer: config empty — showing wizard banner')
+                wizardOfferVisible.set(true)
             }
         }, 2000)
     })

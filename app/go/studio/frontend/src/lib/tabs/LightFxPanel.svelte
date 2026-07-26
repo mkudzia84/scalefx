@@ -47,7 +47,7 @@
     import { collectChannelOptions } from '../channels'
     import type { PortRefT } from '../landing'
     import { landingDraft } from '../landing'
-    import { freePortPoolFiltered } from '../components/port_pool'
+    import { freePortPool, freePortPoolFiltered } from '../components/port_pool'
     import { PreviewLightChannel, StopLightChannel,
              SelectLightFxProgram, ResetLightFxProgram, GetLightFxStatus } from '../../../wailsjs/go/main/App'
     import ChannelBandCluster from '../components/ChannelBandCluster.svelte'
@@ -624,7 +624,11 @@
     // ─── Add-template picker (collapsible) ───────────────────────────
     let addOpen = false
     function pickTemplate(name: string) {
-        addPresetToActive(name)
+        // Rule 49 pool of UNCLAIMED led-animator ports — lets the template
+        // auto-seed + map its channels (fresh board: the first template load
+        // wires and names every channel instead of arriving half-empty).
+        const ledPool = freePortPool($deviceModel.ports, $effectClaims, 'pwm', RoleKind.LedAnimator)
+        addPresetToActive(name, ledPool)
         addOpen = false
         // Select the just-added program so its editor shows on the right (the
         // reactive reconcile above seeds its selector band).

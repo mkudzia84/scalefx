@@ -110,15 +110,11 @@ type App struct {
 	// debounced ~350 ms.  Guarded by dmMu.
 	portProfiles map[devicemodel.PortRef]ServoMotionProfileDTO
 
-	// `/hubfx.yaml` top-level blocks that Studio doesn't expose in any
-	// UI yet but MUST round-trip through Save (else firmware defaults
-	// kick in and silently disable effects on every Apply — that bit
-	// us with `features.enginefx`/`features.gunfx` 2026-05-23).
-	// Populated on LoadHubConfig, emitted on SaveHubConfig.  Nil when
-	// the file had no such block; Save uses `defaultFeatures()` /
-	// equivalent so a fresh first save doesn't kill anything.
+	// `/hubfx.yaml` top-level blocks that Studio doesn't expose in any UI
+	// yet but MUST round-trip through Save (audio / telemetry).  Populated on
+	// LoadHubConfig, emitted on SaveHubConfig.  (`features:` was retired —
+	// effect enable lives in each effect's own sub-config now.)
 	hubAudio     *yamlAudio
-	hubFeatures  *yamlFeatures
 	hubTelemetry *yamlTelemetry
 
 	// Retained expander config from /hubfx.yaml's `expanders:` block —

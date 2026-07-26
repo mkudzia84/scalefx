@@ -1,0 +1,28 @@
+# hubfx_usb_probe — minimal config.
+#
+# Console = UART0 @ 115200 (IDF default) — the probe is standalone, no COBS
+# wire, so plain text logs are exactly what we want.  Critically there is NO
+# USB-Serial-JTAG console: the ESP32-S3 has ONE internal USB PHY shared by
+# USB-Serial-JTAG and USB-OTG, and a USB-Serial-JTAG console starves the
+# host stack (the 2026-06-07 lesson).
+
+# Flash — match the module (8 MB QIO) + production partition table.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# USB host: hub-chip support — the HubFX routes its host ports through a
+# downstream USB hub chip; without these the probe would never see devices
+# behind it and falsely blame hardware (match production sdkconfig).
+CONFIG_USB_HOST_HUBS_SUPPORTED=y
+CONFIG_USB_HOST_HUB_MULTI_LEVEL=y
+
+CONFIG_FREERTOS_HZ=1000
+
+# Debug logging — surface HCD/hub root-port events (connection detect,
+# reset, enumeration stages) so an electrically-dead bus is distinguishable
+# from an enumeration failure.
+CONFIG_LOG_DEFAULT_LEVEL_DEBUG=y
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y

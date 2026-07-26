@@ -6,7 +6,7 @@
 > **TL;DR:** 4.7 kΩ pull-up on the IN_1/IN_2 signal is bench-proven best; 125 k
 > baud stays; poll slaves ~10 Hz, publish per-value ~5–10 Hz (rate-limited,
 > round-robin over the collection). The telemetry collection is built on
-> `JetiTelemetryHub`.
+> `TelemetryHub`.
 
 Companion memory: `project_jeti_expander`, `reference_jeti_ex_telemetry_encoding`,
 `reference_jeti_sbus_wire`. Firmware lives in
@@ -79,16 +79,19 @@ and 250 k mode poll differently.
 
 ## 4. Telemetry collection (this branch — `jetiex-tuning`)
 
-The canonical key/value telemetry store is **`JetiTelemetryHub`**
-([jeti_telemetry_hub.h](../controllers/lib/sfx_peripherals/jeti_ex/jeti_telemetry_hub.h)):
-device (USN/LSN/name) → up to 16 sensors (id/type/decimals/value/label/unit),
+The canonical key/value telemetry store is **`TelemetryHub`**
+([telemetry_hub.h](../controllers/lib/sfx_peripherals/telemetry/telemetry_hub.h),
+`namespace sfx_telemetry` — moved out of `jeti_ex/` 2026-07-14; producers are
+protocol-agnostic and publish `SensorKind` Int/Gps/DateTime values, the Jeti
+responder picks the smallest EX wire type per value at frame-encode time):
+device (USN/LSN/name) → up to 16 sensors (id/kind/decimals/value/label/unit),
 `local` devices never expire, downstream (ESC) devices expire on staleness. Both
 hub-local metrics (`setLocalSensor`/`setLocalValue`) and actively-polled input
 telemetry (the ESC monitor) already land here.
 
 ### Landed on this branch (2026-06-13)
 
-1. **Collection** = `JetiTelemetryHub` (already a key/value store: device→sensors,
+1. **Collection** = `TelemetryHub` (already a key/value store: device→sensors,
    `local` + polled-ESC). Kept minimal local metrics (Uptime + Version) — a
    placeholder that fills out as the hubfx board gains real sensors.
 2. **Round-robin publish** — already existed (`JetiExpander::buildData` cycles
@@ -138,7 +141,7 @@ it on the bench by unplugging the Jeti with the gear enabled + the toggle on
 
 1. **Destination** — ESC telemetry → radio is Jeti-only (the responder replies to
    the radio's polls).  SBUS/PPM carry no telemetry back, so a standalone monitor
-   feeds ONLY the `JetiTelemetryHub` (Studio collection / effects / Rule-5
+   feeds ONLY the `TelemetryHub` (Studio collection / effects / Rule-5
    connection-loss) — never the pilot's radio.  *Non-goal:* radio relay on non-Jeti.
 2. **Poll template** — we poll the ESC by replaying a REAL Jeti telemetry-request
    captured from IN_1 (`captureEscPoll`).  No Jeti on IN_1 ⇒ nothing to capture ⇒
@@ -152,7 +155,7 @@ it on the bench by unplugging the Jeti with the gear enabled + the toggle on
 Extract the ESC guts out of `JetiExpander` into a reusable, board-unique
 `EscTelemetryMonitorT<TPoll, TWindow>` parameterised on two concepts; the
 JetiExpander and a new standalone ServicePolicy each instantiate it with their
-own policy models.  Shared sink stays `JetiTelemetryHub` (singleton, unchanged).
+own policy models.  Shared sink stays `TelemetryHub` (singleton, unchanged).
 
 ```cpp
 // What frame to send the ESC to elicit a reply.
@@ -167,7 +170,7 @@ template <typename T> concept TxWindow = requires(T& w, uint32_t nowUs) {
 template <EscPollSource TPoll, TxWindow TWindow>
 class EscTelemetryMonitorT {           // board-unique; owns InputPort* + decoder + presence machine
     void tick(uint32_t now) {
-        _decoder.update(now);                       // bounded drain → JetiTelemetryHub (reuse JetiExTelemetryMonitor)
+        _decoder.update(now);                       // bounded drain → TelemetryHub (reuse JetiExTelemetryMonitor)
         updatePresence(now);                        // probe 200ms ⇄ active 75ms (reuse current FSM)
         if (now - _lastPollMs < _pollIntervalMs) return;
         if (!_window.canTxNow(SFX_MICROS())) return;        // crosstalk guard

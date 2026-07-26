@@ -111,11 +111,21 @@ public:
     /**
      * @brief Initialize LittleFS flash file system
      * @return true on success
+     *
+     * Idempotent — safe to call again after a failed boot-time attempt
+     * (the FLASH_STATUS_REQ handler uses this as the self-recovery path).
+     * On ESP32 a mount failure is retried once through an explicit
+     * `esp_littlefs_format()`.
      */
     bool begin();
 
     /// Check if flash is initialized and ready
     bool isInitialized() const { return _initialized; }
+
+    /// Platform error code from the LAST begin() attempt (0 = success).
+    /// ESP32: the esp_err_t from esp_vfs_littlefs_register / format.
+    /// Pico: -1 on LittleFS.begin() failure.  For diagnostics/logging.
+    int lastBeginError() const { return _lastBeginErr; }
 
     // ========================================================================
     // Directory Operations (thread-safe, lock acquired internally)
@@ -238,6 +248,7 @@ private:
     FlashModule();
 
     bool _initialized;
+    int  _lastBeginErr = 0;   ///< platform error from the last begin() (0 = ok)
     SfxMutex _flashMutex;
 
     // Internal recursive tree listing (caller holds lock)

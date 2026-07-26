@@ -67,6 +67,13 @@ func (a *App) ensureInputConfigs() {
 		// when the port actually has an input role attached.
 		if proto, ok := devicemodel.ProtocolByRoleKind(p.RoleKind); ok && proto != devicemodel.InputNone {
 			cfg.Protocol = proto
+			// NEVER invent an EscProtocol default here: this runs on every
+			// topology refresh, potentially BEFORE the /hubfx.yaml hydration,
+			// and a synthetic "jeti-exbus" would then be PERSISTED by the
+			// next Apply — silently overwriting the operator's real stream
+			// selection (bench 2026-07-15: a saved kontronik flipped back to
+			// jeti-exbus).  An empty value renders as the jeti-exbus fallback
+			// in the UI and is simply omitted from the yaml on save.
 		}
 	}
 }
@@ -237,11 +244,24 @@ func (a *App) SetInputProtocol(guid string, kind, index byte, protocol string) (
 		return a.deviceModelSnapshot(), fmt.Errorf("%s is not implemented yet", def.Label)
 	}
 	a.dmMu.Lock()
-	a.inputCfg(guid, kind, index).Protocol = def.ID
+	ic := a.inputCfg(guid, kind, index)
+	ic.Protocol = def.ID
+	if def.ID == devicemodel.InputEscTelem && ic.EscProtocol == "" {
+		ic.EscProtocol = "kontronik" // sensible default; sub-select refines
+	}
+	escProto := ic.EscProtocol
+	poles, gear := ic.EscMotorPoles, ic.EscGearRatio
 	a.dmMu.Unlock()
 
-	// Attach the realizing role + start broadcasting.
-	if _, err := a.AttachRole(guid, kind, index, def.RoleKind); err != nil {
+	// Attach the realizing role + start broadcasting.  esc-telemetry
+	// carries its stream selector + RPM divider in the attach config.
+	var cfg []byte
+	if def.ID == devicemodel.InputEscTelem {
+		if w, ok := devicemodel.EscProtocolWire(escProto); ok {
+			cfg = escAttachCfg(w, poles, gear)
+		}
+	}
+	if _, err := a.attachRoleCfg(guid, kind, index, def.RoleKind, cfg); err != nil {
 		a.diag.Error("INPUT", "SetInputProtocol: AttachRole failed: %v", err)
 		return a.deviceModelSnapshot(), err
 	}
@@ -373,4 +393,81 @@ func hasPrefixFold(s, prefix string) bool {
 		}
 	}
 	return true
+}
+
+// escAttachCfg builds the esc-telemetry attach config:
+// [protocol][baudKHi][baudKLo][ratioHi][ratioLo] — baud 0 = protocol default,
+// ratio = RPM divider ×100 (0 = as transmitted), computed as
+// (motor poles / 2) × gear ratio (Kontronik transmits ELECTRICAL rpm).
+func escAttachCfg(wire byte, motorPoles int, gearRatio float64) []byte {
+	polePairs := 1.0
+	if motorPoles >= 2 && motorPoles <= 100 {
+		polePairs = float64(motorPoles) / 2
+	}
+	gear := 1.0
+	if gearRatio > 0 && gearRatio < 100 {
+		gear = gearRatio
+	}
+	div := polePairs * gear
+	x100 := 0
+	if div > 0 && div != 1 && div < 655 {
+		x100 = int(div*100 + 0.5)
+	}
+	return []byte{wire, 0, 0, byte(x100 >> 8), byte(x100 & 0xFF)}
+}
+
+// SetInputEscProtocol picks the ESC telemetry stream for an input whose
+// protocol is esc-telemetry, re-attaching the role with the new selector.
+func (a *App) SetInputEscProtocol(guid string, kind, index byte, escProto string) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("SetInputEscProtocol",
+		map[string]any{"guid": guid, "idx": index, "esc": escProto})()
+	w, ok := devicemodel.EscProtocolWire(escProto)
+	if !ok {
+		return a.deviceModelSnapshot(), fmt.Errorf("unknown ESC protocol %q", escProto)
+	}
+	a.dmMu.Lock()
+	ic := a.inputCfg(guid, kind, index)
+	ic.Protocol = devicemodel.InputEscTelem
+	ic.EscProtocol = escProto
+	poles, gear := ic.EscMotorPoles, ic.EscGearRatio
+	a.dmMu.Unlock()
+	if _, err := a.attachRoleCfg(guid, kind, index, roles.KindEscTelemetry, escAttachCfg(w, poles, gear)); err != nil {
+		return a.deviceModelSnapshot(), err
+	}
+	a.emitDeviceModelChanged()
+	return a.deviceModelSnapshot(), nil
+}
+
+// SetInputEscRpmScaling sets the RPM scaling for an esc-telemetry input —
+// motor pole count (electrical rpm = shaft rpm × poles/2) and gearbox ratio —
+// and re-attaches the role so the firmware divider updates immediately.
+func (a *App) SetInputEscRpmScaling(guid string, kind, index byte, motorPoles int, gearRatio float64) (DeviceModelSnapshot, error) {
+	defer a.diag.Around("SetInputEscRpmScaling",
+		map[string]any{"guid": guid, "idx": index, "poles": motorPoles, "gear": gearRatio})()
+	if motorPoles != 0 && (motorPoles < 2 || motorPoles > 100 || motorPoles%2 != 0) {
+		return a.deviceModelSnapshot(), fmt.Errorf("motor poles %d invalid (even, 2–100)", motorPoles)
+	}
+	if gearRatio < 0 || gearRatio >= 100 {
+		return a.deviceModelSnapshot(), fmt.Errorf("gear ratio %.2f out of range (0–100)", gearRatio)
+	}
+	a.dmMu.Lock()
+	ic := a.inputCfg(guid, kind, index)
+	ic.Protocol = devicemodel.InputEscTelem
+	ic.EscMotorPoles = motorPoles
+	ic.EscGearRatio = gearRatio
+	escProto := ic.EscProtocol
+	if escProto == "" {
+		escProto = "kontronik"
+		ic.EscProtocol = escProto
+	}
+	a.dmMu.Unlock()
+	w, ok := devicemodel.EscProtocolWire(escProto)
+	if !ok {
+		return a.deviceModelSnapshot(), fmt.Errorf("unknown ESC protocol %q", escProto)
+	}
+	if _, err := a.attachRoleCfg(guid, kind, index, roles.KindEscTelemetry, escAttachCfg(w, motorPoles, gearRatio)); err != nil {
+		return a.deviceModelSnapshot(), err
+	}
+	a.emitDeviceModelChanged()
+	return a.deviceModelSnapshot(), nil
 }

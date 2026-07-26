@@ -118,8 +118,10 @@ void SbusInputRole::tick() {
     _decoder.update();
 #endif
 
-    // Local effect feed + (when subscribed) wire broadcast — same cadence.
-    if (_onBroadcast && _bcast.due(SFX_MILLIS()))
+    // Local effect feed + (when subscribed) wire broadcast — full cadence
+    // while the signal is valid; a slow heartbeat while it's lost so a
+    // subscribed host isn't flooded with NO-SIGNAL frames (hot-plug safe).
+    if (_onBroadcast && _bcast.dueGated(SFX_MILLIS(), valid()))
         _onBroadcast(channelCount(), valid(), failsafe(), frameLost());
 }
 

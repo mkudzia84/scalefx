@@ -100,7 +100,7 @@ type ProgramFileInfo struct {
 func defaultLightFxConfig() LightFxConfigDTO {
 	return LightFxConfigDTO{
 		SchemaVersion:       1,
-		Enabled:             true,
+		Enabled:             false, // effects default OFF (a fresh board is inert)
 		MasterBrightnessPct: 100,
 		Programs:            []string{},
 	}

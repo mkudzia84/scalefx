@@ -43,7 +43,7 @@
 #include "../../topology/topology_service.h"      // TopologyService concept
 #include "trigger_input.h"
 #include "input_protocol.h"                        // InputRoutingPacket + TelemetryPacket
-#include <jeti_ex/jeti_telemetry_hub.h>            // the telemetry collection (item 4)
+#include <telemetry/telemetry_hub.h>               // the telemetry collection (item 4)
 
 namespace hubfx::effects::input {
 
@@ -189,7 +189,7 @@ private:
                               uint8_t evtPortKind, uint8_t evtPortIdx,
                               const char* evtGuid);
 
-    // Serialize the telemetry collection (JetiTelemetryHub) into `buf` for
+    // Serialize the telemetry collection (TelemetryHub) into `buf` for
     // TELEMETRY_RESP — bounded to `cap`, truncating devices/sensors that don't
     // fit.  Returns bytes written.  (item 4)
     size_t buildTelemetrySnapshot(uint8_t* buf, size_t cap) const;

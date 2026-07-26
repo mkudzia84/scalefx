@@ -29,7 +29,10 @@ channel empty means manual control only.
 
 | Setting | What it does | Default |
 |---|---|---|
-| Protocol | Input decoding mode for the receiver link, limited to the roles this port can host (`PPM` / `SBUS` / `Jeti EX Input`). | operator picks |
+| Protocol | Input decoding mode for this port, limited to the roles it can host (`PPM` / `SBUS` / `Jeti EX Input` / `ESC Telemetry`). | operator picks |
+| ESC (Telemetry sub-tab, per esc-telemetry port) | Which ESC's native telemetry stream the port listens to: `Kontronik (Kolibri/Kosmik/JIVE Pro)`, `Scorpion Tribunus (Unsc Telem)`, `Hobbywing Platinum V4 / FlyFun`, or `Hobbywing Platinum V5`. The ESC's sensors (RPM, voltage, current, used mAh, throttle, temperatures, BEC, faults) appear on the Telemetry tab and are served to the Jeti radio automatically; ESC fault bits are also pushed to the radio as warning/error messages. Configured on the Input & Ports → Telemetry sub-tab. | `Kontronik` |
+| Motor poles (Telemetry sub-tab, per esc-telemetry port) | The motor's magnet/pole count (even, 2–100). Kontronik ESCs transmit ELECTRICAL rpm = shaft rpm × poles/2, so the published RPM divides by the pole pairs. An outrunner's pole count is its magnet count (e.g. 10). | `2` (no correction) |
+| Gear ratio (Telemetry sub-tab, per esc-telemetry port) | Gearbox ratio motor:output (0.01–99). Published RPM = transmitted ÷ (poles/2 × gear ratio) — the output-shaft (head/prop) speed reaches the radio and the Telemetry tab. | `1` (direct drive) |
 | Channel count | How many channels are decoded from this input (capped at the protocol's max). "Autodetect" sets it from the live signal. | from signal |
 | Channel function | Names a channel so effects can reference it by name (defined in the Input & Ports `inputs[]` block). | unset |
 | Port role | The hardware function attached to an output port: `ServoActuator`, `LedAnimator`, `DcMotor`, `BiDcMotor` (H-bridge), `Heater`, or the input roles. Output pickers only list ports with the role the effect needs. | unset |
@@ -147,6 +150,13 @@ The Travel summary shows max − min µs and the time to cross it at the chosen 
 |---|---|---|
 | Name | Channel name that programs reference. | empty |
 | Port | An unclaimed PWM port with the led-animator role. | unassigned |
+
+Adding a program from **+ Template…** auto-creates any channels the
+template references that don't exist yet, mapping each onto the next
+unclaimed led-animator port and naming it after the template's channel
+(e.g. "Red beacon"). Existing channels are never changed; if there are
+more template channels than free ports, the extras are created with no
+port and the Channels card shows a yellow warning until one is picked.
 
 ### Program selector (an RC stick picks the active program)
 | Setting | What it does | Default |

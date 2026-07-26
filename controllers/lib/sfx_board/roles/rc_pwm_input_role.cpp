@@ -42,8 +42,11 @@ void RcPwmInputRole::tick() {
         for (uint8_t i = 0; i < n; i++) _channels[i] = frame[i];
     }
 
-    // Local effect feed + (when subscribed) wire broadcast — same cadence.
-    if (_onBroadcast && _bcast.due(SFX_MILLIS())) _onBroadcast(_count, _valid);
+    // Local effect feed + (when subscribed) wire broadcast — full cadence
+    // while the signal is valid; a slow heartbeat while it's lost (no RX /
+    // junk) so a subscribed host isn't flooded with NO-SIGNAL frames.  Full
+    // rate resumes the instant the RX is (re)connected.
+    if (_onBroadcast && _bcast.dueGated(SFX_MILLIS(), _valid)) _onBroadcast(_count, _valid);
 }
 
 }  // namespace sfx_core

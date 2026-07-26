@@ -866,8 +866,18 @@ private:
         std::atomic<TaskHandle_t> _decoderTaskHandle{nullptr};
         std::atomic<bool>  _decoderRunning{false};
         std::atomic<bool>  _decoderExited{false};
-        int                _decoderCore      = 0;
-        int                _decoderPriority  = 5;     // > Arduino loop (1), < producer (configMAX-2)
+        // Core 1, priority just below the producer (23) / consumer (24).
+        // The decoder's INITIAL-PREFETCH sprint (flat-out decode on every
+        // source open) on Core 0 corrupted IN_1 reception even with the UART
+        // ISR in IRAM (2026-07-15: rapid engine start/stop cycles = repeated
+        // prefetch bursts = NOISY windows; steady decode was fine).  On
+        // Core 1 the sprint is harmless — producer/consumer sleep most of
+        // each I2S period, and at prio 22 the decoder fills their idle gaps
+        // instead of starving under them (the historical "10x underruns"
+        // move used prio 5 on Core 1, i.e. BELOW the pair — that was the
+        // mistake, not the core).
+        int                _decoderCore      = 1;
+        int                _decoderPriority  = configMAX_PRIORITIES - 3;   // 22: below producer/consumer
         int                _decoderStackSize = 6144;  // libhelix scratch + per-batch float scratch
         static constexpr uint32_t kDecoderTickMs = 5;
     private:

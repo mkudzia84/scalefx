@@ -3,10 +3,13 @@
  *
  *  libhelix-mp3 keeps ~9 KB of decoder state per instance.  At
  *  AUDIO_MAX_CHANNELS=6 concurrent MP3 sources, 6 × 9 = 54 KB of
- *  decoder context plus 6 × 4.6 KB of PCM scratch (one decoded frame
- *  = 1152 stereo samples × 2 bytes/sample × 2 channels).  All of it
- *  in internal SRAM (decoder context can't live in PSRAM — the
- *  decoder hot path touches every sample).
+ *  decoder context (internal SRAM — the decode hot path touches it per
+ *  sample, so it can't live in PSRAM) plus 6 × 4.6 KB of PCM scratch,
+ *  which DOES live in PSRAM (written once sequentially per decoded
+ *  frame, read once by the drain copy — perf audit, instructions/34).
+ *  A pool CAP below 6 was audited and rejected: every mixer channel
+ *  has an owner (Alert/EngineA+B/GunA+B/Gear, audio_layout.h), so a
+ *  cap would fail a legitimate all-effects moment.
  *
  *  Lazy allocation:
  *      Slots are constructed on first `acquire()` and stay alive for

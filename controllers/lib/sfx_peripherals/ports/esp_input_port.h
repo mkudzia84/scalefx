@@ -1,7 +1,20 @@
 /*
  * esp_input_port.h — ESP32-S3 implementation of `InputPort`.
  *
- * Wraps one GPIO + one ESP32 UART peripheral.  Modes:
+ * Wraps one RX GPIO + one ESP32 UART peripheral, plus an OPTIONAL
+ * dedicated TX GPIO for boards that split the half-duplex line:
+ *
+ *   - Single-wire boards (HubFX rev A): one header pin carries RX and
+ *     TX.  Construct with (rxPin, uartNum); the TX slot is driven onto
+ *     the SAME pin via the GPIO matrix (txEnable/Disable).
+ *   - Split TX/RX boards (HubFX rev B INP/TELEM headers): the header
+ *     line sits DIRECTLY on the TX GPIO and reaches the RX GPIO through
+ *     a series resistor (2.2 kΩ bridge), so RX listens continuously
+ *     while TX stays high-Z except during its reply slot.  Construct
+ *     with (rxPin, txPin, uartNum); txEnable()/txDisable() then attach/
+ *     detach the UART TX signal on the dedicated pin instead.
+ *
+ * Modes:
  *   - PULSE      : native RMT pulse capture via the RMT PpmDecoder (`_ppm`)
  *   - SBUS       : `HardwareSerial.begin(100000, SERIAL_8E2, RX, -1, invert=true)`
  *   - JETI_EX    : `HardwareSerial.begin(baud, SERIAL_8N1, RX, RX)` +
@@ -42,15 +55,37 @@ namespace sfx_peripherals {
 
 class EspInputPort final : public InputPort {
 public:
-    /// @param gpioPin GPIO carrying the input signal.
+    /// Single-wire port: one pad carries RX and the slot-gated TX.
+    /// @param rxPin   GPIO carrying the input signal.
     /// @param uartNum UART peripheral (1 or 2; UART0 is the console).
-    EspInputPort(int gpioPin, uint8_t uartNum)
-        : _pin(gpioPin), _uartNum(uartNum) {}
+    EspInputPort(int rxPin, uint8_t uartNum)
+        : _rxPin(rxPin), _txPin(-1), _uartNum(uartNum) {}
+
+    /// Split TX/RX port: the header line sits on @p txPin and reaches
+    /// @p rxPin through a series bridge resistor.
+    /// @param rxPin   GPIO carrying the input signal (listens continuously).
+    /// @param txPin   Dedicated TX GPIO directly on the header line —
+    ///                idles high-Z, drives only its reply slot.
+    /// @param uartNum UART peripheral (1 or 2; UART0 is the console).
+    EspInputPort(int rxPin, int txPin, uint8_t uartNum)
+        : _rxPin(rxPin), _txPin(txPin), _uartNum(uartNum) {}
 
     bool begin() override {
         // No peripheral claim yet — mode-specific configure*() does it.
-        // We just sanity-check the args.
-        return _pin >= 0 && (_uartNum == 1 || _uartNum == 2);
+        // We just sanity-check the args.  A dedicated TX pin sits DIRECTLY
+        // on the shared header line — park it high-Z NOW so it can't fight
+        // the external device before the first txEnable().
+        if (_txPin >= 0) {
+            gpio_set_direction((gpio_num_t)_txPin, GPIO_MODE_INPUT);
+            // Idle the shared line PULLED UP, not floating: an open-collector
+            // slave (Jeti one-wire style — bench: Kontronik Kolibri) can only
+            // pull LOW; without a line pull-up its reply highs float and decode
+            // is luck (rev B PCBs carry NO external pull-up on INP/TELEM — the
+            // internal ~45 k here is the firmware-side stopgap; a 4.7-10 k on
+            // the line is the proper hardware fix, REV C).
+            gpio_set_pull_mode((gpio_num_t)_txPin, GPIO_PULLUP_ONLY);
+        }
+        return _rxPin >= 0 && (_uartNum == 1 || _uartNum == 2);
     }
 
     // ── Mode-switch helpers ──────────────────────────────────────────
@@ -60,7 +95,7 @@ public:
         // A plain single-channel RC PWM decodes as a 1-channel frame
         // (its ~18 ms inter-pulse gap exceeds the PPM sync threshold).
         teardownActive();
-        const bool ok = _ppm.begin(_pin);
+        const bool ok = _ppm.begin(_rxPin);
         _mode = ok ? Mode::PULSE : Mode::IDLE;
         return ok;
     }
@@ -77,7 +112,7 @@ public:
         cfg.stop_bits  = UART_STOP_BITS_2;
         cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
         cfg.source_clk = UART_SCLK_DEFAULT;
-        _uart.beginConfig(uartPort(), _pin, /*tx=*/-1, cfg,
+        _uart.beginConfig(uartPort(), _rxPin, /*tx=*/-1, cfg,
                           UART_SIGNAL_RXD_INV, /*rs485=*/false, /*rxBuf=*/1024);
         _mode = Mode::SBUS;
         return true;
@@ -108,30 +143,50 @@ public:
         cfg.source_clk = UART_SCLK_DEFAULT;
         // tx=-1, NO rs485 mode — half-duplex TX is driven manually via the
         // GPIO matrix in txEnable()/txDisable() (see the comment above).
-        _uart.beginConfig(uartPort(), _pin, /*tx=*/-1, cfg,
+        _uart.beginConfig(uartPort(), _rxPin, /*tx=*/-1, cfg,
                           /*invert=*/0, /*rs485=*/false, /*rxBuf=*/1024);
+        // Belt-and-braces line bias for open-collector slaves: pull-up on the
+        // RX pad (through the bridge on split-pin boards) AND on the parked
+        // TX pad (directly on the line) — see begin().
+        gpio_set_pull_mode((gpio_num_t)_rxPin, GPIO_PULLUP_ONLY);
+        if (_txPin >= 0) gpio_set_pull_mode((gpio_num_t)_txPin, GPIO_PULLUP_ONLY);
         _mode = Mode::JETI_EX;
         return true;
     }
 
     bool configureUartRaw(uint32_t baud,
-                          uint32_t /*serialConfig*/,
+                          uint32_t serialConfig,
                           bool     invert,
                           bool     halfDuplex) override {
-        // Raw passthrough for future CRSF / DSM roles (none wired yet).
-        // Framing defaults to 8N1; per-protocol parity/stop mapping lands
-        // when a raw-UART role actually ships.
+        // Raw passthrough — ESC telemetry streams (Kontronik 8E1, the rest
+        // 8N1) and future CRSF / DSM roles.  `serialConfig` = kSerial8N1 /
+        // kSerial8E1 (input_port.h).
         teardownActive();
         uart_config_t cfg = {};
         cfg.baud_rate  = (int)baud;
         cfg.data_bits  = UART_DATA_8_BITS;
-        cfg.parity     = UART_PARITY_DISABLE;
+        cfg.parity     = (serialConfig == kSerial8E1) ? UART_PARITY_EVEN
+                                                      : UART_PARITY_DISABLE;
         cfg.stop_bits  = UART_STOP_BITS_1;
         cfg.flow_ctrl  = UART_HW_FLOWCTRL_DISABLE;
         cfg.source_clk = UART_SCLK_DEFAULT;
-        const int txPin = halfDuplex ? _pin : -1;
-        _uart.beginConfig(uartPort(), _pin, txPin, cfg,
-                          invert ? UART_SIGNAL_RXD_INV : 0, halfDuplex, /*rxBuf=*/1024);
+        // TX routing: raw mode NEVER attaches TX permanently.  On a split-pin
+        // board the TX pad sits DIRECTLY on the shared line (rev B: GPIO3 on
+        // TELEM) and UART TX idles push-pull HIGH — a permanently-attached TX
+        // fights any external push-pull transmitter and flattens its start
+        // bits (bench 2026-07-14: native Kontronik listen read rxB=0 until
+        // this was made RX-only).  A raw role that needs to reply gates the
+        // slot with txEnable()/txDisable() exactly like JETI_EX (halfDuplex);
+        // single-wire boards keep the legacy rs485-flag path on _rxPin.
+        const bool splitPins = (_txPin >= 0);
+        const int  txPin     = splitPins ? -1
+                                         : (halfDuplex ? _rxPin : -1);
+        // 4 KB RX ring = ~1 s of a 4 kB/s ESC stream — rides out main-loop /
+        // task stalls (audio bursts, config applies) without dropping bytes.
+        _uart.beginConfig(uartPort(), _rxPin, txPin, cfg,
+                          invert ? UART_SIGNAL_RXD_INV : 0,
+                          halfDuplex && !splitPins, /*rxBuf=*/4096);
+        _rawHalfDuplex = halfDuplex && splitPins;
         _mode = Mode::UART_RAW;
         return true;
     }
@@ -187,25 +242,41 @@ public:
         }
     }
 
-    // ── Half-duplex TX control (JETI_EX) ─────────────────────────────
-    // Per-slot route: raise OE + route the UART TX onto the pad for the reply,
-    // then route the pad-out back to the GPIO simple-output and drop OE → high-Z
-    // RX.  gpio_set_direction touches only OE/IE so the matrix RX input (set by
-    // begin) is never disturbed (Arduino pinMode would tear it down → no signal).
+    // ── Half-duplex TX control (JETI_EX / raw half-duplex) ───────────
+    // Per-slot route: raise OE + route the UART TX onto the drive pad for the
+    // reply, then route the pad-out back to the GPIO simple-output and drop
+    // OE → high-Z.  Single-wire boards drive _rxPin itself (INPUT_OUTPUT so the
+    // matrix RX input set by begin stays alive — Arduino pinMode would tear it
+    // down → no signal); split TX/RX boards drive the dedicated _txPin (plain
+    // OUTPUT — RX lives on its own pin and is never disturbed).
     void txEnable() override {
-        if (_mode != Mode::JETI_EX) return;
-        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT_OUTPUT);  // drive + keep RX alive
-        esp_rom_gpio_connect_out_signal(_pin, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
+        if (!txSlotAllowed()) return;
+        const int tp = txDrivePin();
+        gpio_set_direction((gpio_num_t)tp,
+                           tp == _rxPin ? GPIO_MODE_INPUT_OUTPUT : GPIO_MODE_OUTPUT);
+        esp_rom_gpio_connect_out_signal(tp, txSignalIdx(), /*invert=*/false, /*oen_invert=*/false);
     }
     void txDisable() override {
-        if (_mode != Mode::JETI_EX) return;
-        esp_rom_gpio_connect_out_signal(_pin, SIG_GPIO_OUT_IDX, /*invert=*/false, /*oen_invert=*/false);
-        gpio_set_direction((gpio_num_t)_pin, GPIO_MODE_INPUT);         // high-Z; matrix RX intact
+        if (!txSlotAllowed()) return;
+        const int tp = txDrivePin();
+        esp_rom_gpio_connect_out_signal(tp, SIG_GPIO_OUT_IDX, /*invert=*/false, /*oen_invert=*/false);
+        gpio_set_direction((gpio_num_t)tp, GPIO_MODE_INPUT);   // release the line; matrix RX intact
+        gpio_set_pull_mode((gpio_num_t)tp, GPIO_PULLUP_ONLY);  // idle PULLED UP (open-collector slaves)
     }
 
 private:
     uart_port_t uartPort() const {
         return (_uartNum == 1) ? UART_NUM_1 : UART_NUM_2;
+    }
+
+    /// Pad the TX slot drives: the dedicated TX pin when present, else the
+    /// shared single-wire pin.
+    int txDrivePin() const { return (_txPin >= 0) ? _txPin : _rxPin; }
+
+    /// Modes whose reply slot is gated manually via txEnable()/txDisable().
+    bool txSlotAllowed() const {
+        return _mode == Mode::JETI_EX ||
+               (_mode == Mode::UART_RAW && _rawHalfDuplex);
     }
 
     /// UART TX peripheral-output signal index for the GPIO matrix.
@@ -227,8 +298,10 @@ private:
         }
     }
 
-    int               _pin;
+    int               _rxPin;
+    int               _txPin;     ///< dedicated TX pad (-1 = single-wire on _rxPin)
     uint8_t           _uartNum;   ///< 1 or 2
+    bool              _rawHalfDuplex = false;  ///< UART_RAW slot-gated TX (split pins)
     PpmDecoder        _ppm;       ///< RMT multi-channel PPM capture (PULSE mode)
     Mode              _mode = Mode::IDLE;
     sfx::NativeUartStream _uart;  ///< native UART (SBUS/Jeti/raw modes)

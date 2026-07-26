@@ -25,6 +25,13 @@ namespace sfx_core {
 
 class InputBroadcaster {
 public:
+    /// Emit spacing while the input signal is INVALID (no RX / junk).  A slow
+    /// heartbeat instead of the full cadence: it still refreshes a subscribed
+    /// host's NO-SIGNAL indicator and still drives failsafe, but does NOT
+    /// flood the wire (and the host's live-view / diagnostic log) with 50 Hz
+    /// empty frames when nothing is plugged into the input.  4 Hz.
+    static constexpr uint32_t kSignalLostHeartbeatMs = 250;
+
     /// Host subscribe/unsubscribe to the WIRE broadcast.  hz!=0 = subscribe,
     /// hz==0 = unsubscribe.  Does NOT change the local feed cadence — effects
     /// keep getting channels regardless.
@@ -39,10 +46,23 @@ public:
 
     /// True at most once per cadence interval — drives the role's emit.  The
     /// emit always feeds effects locally; the wire half checks wireEnabled().
-    bool due(uint32_t nowMs) {
-        if (nowMs - _lastMs < _intervalMs) return false;
+    /// `minIntervalMs` (when larger than the normal cadence) throttles THIS
+    /// call — used to slow the emit to a heartbeat while the signal is lost;
+    /// it never speeds the emit up, so a subscribed host still gets the full
+    /// rate the instant the signal returns.
+    bool due(uint32_t nowMs, uint32_t minIntervalMs = 0) {
+        const uint32_t interval = (minIntervalMs > _intervalMs) ? minIntervalMs : _intervalMs;
+        if (nowMs - _lastMs < interval) return false;
         _lastMs = nowMs;
         return true;
+    }
+
+    /// Cadence gate that auto-throttles to `kSignalLostHeartbeatMs` while the
+    /// signal is invalid, so an unplugged input doesn't flood a subscribed
+    /// host.  Full cadence resumes the instant `signalValid` goes true again
+    /// (hot-plug: reconnect the RX and the live view springs back to 50 Hz).
+    bool dueGated(uint32_t nowMs, bool signalValid) {
+        return due(nowMs, signalValid ? 0 : kSignalLostHeartbeatMs);
     }
 
 private:

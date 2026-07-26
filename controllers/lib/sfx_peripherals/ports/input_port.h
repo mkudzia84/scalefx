@@ -25,6 +25,12 @@
 
 namespace sfx_peripherals {
 
+/// `serialConfig` values for InputPort::configureUartRaw — the frame format.
+/// (Only the parity variants any shipped protocol needs; extend as needed.)
+constexpr uint32_t kSerial8N1 = 0;   ///< 8 data bits, no parity, 1 stop
+constexpr uint32_t kSerial8E1 = 1;   ///< 8 data bits, EVEN parity, 1 stop (Kontronik)
+
+
 class InputPort {
 public:
     /// Runtime mode — selected by the attached role.

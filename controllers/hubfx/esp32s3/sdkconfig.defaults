@@ -1758,7 +1758,13 @@ CONFIG_RMT_OBJ_CACHE_SAFE=y
 #
 # ESP-Driver:UART Configurations
 #
-# CONFIG_UART_ISR_IN_IRAM is not set
+# UART ISR in IRAM — the RC/telemetry UARTs (IN_1 EX Bus @125k, IN_2 ESC
+# @115k2) share Core 0 with the MP3 decoder; with the ISR in flash, decode
+# bursts stall the cache long enough to overflow the 128 B RX FIFO and
+# corrupt whole 1-2 s windows of frames (bench 2026-07-15: NOISY bursts,
+# audio-correlated, volume/SD/USB independent).  IRAM makes the ISR
+# cache-independent.
+CONFIG_UART_ISR_IN_IRAM=y
 # end of ESP-Driver:UART Configurations
 
 #

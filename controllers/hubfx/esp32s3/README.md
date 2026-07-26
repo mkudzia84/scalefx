@@ -19,7 +19,7 @@ Every HubFX subsystem is composed into the `BoardOf<...>` pack and working:
 | Subsystem | Status |
 | --------- | ------ |
 | Core protocol (`BoardServicePolicy`: INIT / STATUS / KEEPALIVE / IDENTIFY / I2C_SCAN / DIAG_HISTORY) | wired |
-| Indicator LEDs (`IndicatorServicePolicy`) | wired (onboard GPIO48 only) |
+| Indicator LEDs (`IndicatorServicePolicy`) | wired (onboard LED only — GPIO46 rev B / GPIO48 rev A, `HUBFX_PCB_REV`) |
 | DiagLog over UART | wired |
 | Hub-local ports + roles (`PortServicePolicy` / `RoleServicePolicy`) | wired |
 | Audio mixer + I²S output (`AudioService`, TAS5825P, dual-core) | wired |

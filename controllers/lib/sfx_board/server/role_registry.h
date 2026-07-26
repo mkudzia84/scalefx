@@ -38,7 +38,7 @@ inline constexpr uint8_t roleKindFor() {
     else if constexpr (std::is_same_v<TRole, RcPwmInputRole>)      return RoleKind::RcPwmInput;
     else if constexpr (std::is_same_v<TRole, SbusInputRole>)       return RoleKind::SbusInput;
     else if constexpr (std::is_same_v<TRole, JetiExInputRole>)     return RoleKind::JetiExInput;
-    else if constexpr (std::is_same_v<TRole, JetiExTelemetryRole>) return RoleKind::JetiExTelemetry;
+    else if constexpr (std::is_same_v<TRole, EscTelemetryRole>) return RoleKind::EscTelemetry;
     else if constexpr (std::is_same_v<TRole, LedAnimator>)         return RoleKind::LedAnimator;
     else if constexpr (std::is_same_v<TRole, DcMotorRole>)         return RoleKind::DcMotor;
     else if constexpr (std::is_same_v<TRole, HeaterRole>)          return RoleKind::Heater;

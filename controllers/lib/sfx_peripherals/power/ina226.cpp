@@ -180,11 +180,24 @@ void INA226::setCalibration(float shuntResistance_ohms, float maxCurrent_A) {
 
 void INA226::update() {
     if (!_available) return;
-    
+
     _busVoltage_mV = readBusVoltage_mV();
     _shuntVoltage_uV = readShuntVoltage_uV();
     _current_mA = readCurrent_mA();
     _power_mW = readPower_mW();
+
+    // Coulomb counter — integrate consumed charge across update() calls
+    // (mAh += mA * dt_ms / 3.6e6).  The chip's hardware averaging smooths
+    // sub-interval spikes, so caller cadence (~10 Hz on HubFX) is plenty.
+    // dt is clamped: a stalled caller (e.g. upload exclusivity parking the
+    // main loop) must not integrate one stale sample over minutes.
+    const uint32_t now = SFX_MILLIS();
+    if (_lastUpdateMs != 0) {
+        uint32_t dt = now - _lastUpdateMs;
+        if (dt > 1000) dt = 1000;
+        _consumed_mAh += _current_mA * (float)dt / 3600000.0f;
+    }
+    _lastUpdateMs = now;
 }
 
 float INA226::readBusVoltage_mV() {

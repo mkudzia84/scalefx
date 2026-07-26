@@ -189,7 +189,7 @@ public:
      *
      * When set, a telemetry request invokes this hook instead of the internal
      * sensor-table responder — the JetiExpander serves MULTI-DEVICE from the
-     * shared JetiTelemetryHub through it (each device with its own USN/LSN so
+     * shared TelemetryHub through it (each device with its own USN/LSN so
      * the radio shows them separately).  The handler builds an EX data block
      * and calls sendTelemetry().
      */
@@ -251,6 +251,9 @@ public:
     /// Total bytes seen on the UART. Diagnoses wrong-baud (bytes climb but
     /// frames/CRC stay at 0) vs no-wire (zero bytes) — see input_monitor rig.
     uint32_t rxByteCount() const { return _parser.rxBytes(); }
+#if SFX_INSTRUMENTATION
+    uint8_t  takeFailedFrame(uint8_t* out, uint8_t cap) { return _parser.takeFailedFrame(out, cap); }
+#endif
 
     // Two-way (half-duplex reply) instrumentation — verify TX/RX switching drops
     // + issues on the shared single-wire line.  Surfaced via the [jexp] TX diag

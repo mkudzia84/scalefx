@@ -188,6 +188,25 @@ NativeFile NativeFile::openReadFile(const char* basePath, const char* path) {
     return f;
 }
 
+// mkdir -p for a file's parent chain: creates every missing directory
+// between basePath and the final path segment.  POSIX mkdir routes to
+// esp_littlefs / VFS-FAT; EEXIST is fine.  Unlike the Arduino LittleFS
+// wrapper (Pico), the ESP32 POSIX fopen does NOT auto-create parents —
+// without this, uploading to a not-yet-existing directory (e.g.
+// /lightfx/programs/x.yaml on a fresh board) fails with FILE_IO_ERROR
+// (found 2026-07-02 applying a lightfx preset to a wiped board).
+static void ensureParentDirs(const char* full, const char* basePath) {
+    char dir[192];
+    snprintf(dir, sizeof(dir), "%s", full);
+    const size_t baseLen = strlen(basePath);
+    for (size_t i = baseLen + 1; dir[i] != '\0'; ++i) {
+        if (dir[i] != '/') continue;
+        dir[i] = '\0';
+        mkdir(dir, 0775);   // EEXIST is fine — only care that it exists after
+        dir[i] = '/';
+    }
+}
+
 NativeFile NativeFile::openWriteFile(const char* basePath, const char* path,
                                      bool truncate) {
     NativeFile f;
@@ -207,6 +226,13 @@ NativeFile NativeFile::openWriteFile(const char* basePath, const char* path,
     } else {
         fp = fopen(full, "rb+");
         if (!fp) fp = fopen(full, "wb+");
+    }
+    if (!fp) {
+        // Missing parent directory is the common cause — create the chain
+        // and retry once (mkdir -p semantics for uploads).  The file can't
+        // exist if fopen failed above, so create-mode is right either way.
+        ensureParentDirs(full, basePath);
+        fp = fopen(full, "wb+");
     }
     if (!fp) return f;
 

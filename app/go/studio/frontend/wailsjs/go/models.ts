@@ -173,9 +173,28 @@ export namespace devicemodel {
 		    return a;
 		}
 	}
+	export class EscProtocolDef {
+	    id: string;
+	    label: string;
+	    wire: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new EscProtocolDef(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.label = source["label"];
+	        this.wire = source["wire"];
+	    }
+	}
 	export class InputPortConfig {
 	    port: PortRef;
 	    protocol: string;
+	    escProtocol?: string;
+	    escMotorPoles?: number;
+	    escGearRatio?: number;
 	    channelCount: number;
 	    channels: ChannelMap[];
 	
@@ -187,6 +206,9 @@ export namespace devicemodel {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.port = this.convertValues(source["port"], PortRef);
 	        this.protocol = source["protocol"];
+	        this.escProtocol = source["escProtocol"];
+	        this.escMotorPoles = source["escMotorPoles"];
+	        this.escGearRatio = source["escGearRatio"];
 	        this.channelCount = source["channelCount"];
 	        this.channels = this.convertValues(source["channels"], ChannelMap);
 	    }
@@ -1043,6 +1065,7 @@ export namespace main {
 	    inputs: devicemodel.InputPortConfig[];
 	    channelFunctions: devicemodel.ChannelFunctionDef[];
 	    inputProtocols: devicemodel.InputProtocolDef[];
+	    escProtocols: devicemodel.EscProtocolDef[];
 	
 	    static createFrom(source: any = {}) {
 	        return new DeviceModelSnapshot(source);
@@ -1058,6 +1081,7 @@ export namespace main {
 	        this.inputs = this.convertValues(source["inputs"], devicemodel.InputPortConfig);
 	        this.channelFunctions = this.convertValues(source["channelFunctions"], devicemodel.ChannelFunctionDef);
 	        this.inputProtocols = this.convertValues(source["inputProtocols"], devicemodel.InputProtocolDef);
+	        this.escProtocols = this.convertValues(source["escProtocols"], devicemodel.EscProtocolDef);
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {

@@ -124,6 +124,7 @@ constexpr uint16_t USB_VID_RASPBERRY_PI = 0x2E8A;
 constexpr uint16_t USB_PID_GUNFX        = 0x0180;
 constexpr uint16_t USB_PID_LIGHTFX      = 0x0181;
 constexpr uint16_t USB_PID_GEARCONTROL  = 0x0182;
+constexpr uint16_t USB_PID_PORTEXPANDER = 0x0183;
 
 /// Default Arduino-Pico CDC PID (earlephilhower core, before tusb_config.h override)
 constexpr uint16_t USB_PID_PICO_DEFAULT = 0x000A;
@@ -144,6 +145,7 @@ inline const char* knownDeviceName(uint16_t vid, uint16_t pid) {
             case USB_PID_GUNFX:       return "GunFX";
             case USB_PID_LIGHTFX:     return "LightFX";
             case USB_PID_GEARCONTROL: return "GearControl";
+            case USB_PID_PORTEXPANDER: return "PortExpander";
             case USB_PID_PICO_DEFAULT: return "Pico (default PID)";
             default:                  return nullptr;
         }

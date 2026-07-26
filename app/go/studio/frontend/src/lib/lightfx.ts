@@ -21,6 +21,7 @@
 import { writable, derived, get, type Readable } from 'svelte/store'
 import type { DirtySource } from './dirty-registry'
 import type { PortRefT } from './landing'
+import type { Port } from './devicemodel'
 import {
     GetLightFxConfig,
     GetLightFxProgramStructured,
@@ -109,7 +110,7 @@ const defaultSelector: ProgramSelectorT = {
 }
 const defaultLightFx: LightFxConfigT = {
     schemaVersion: 2,          // bump from 1: signals `channels[]` block present
-    enabled: true,
+    enabled: false,            // effects default OFF (a fresh board is inert)
     masterBrightnessPct: 100,
     channels: [],
     activePrograms: [],
@@ -161,7 +162,7 @@ function normaliseLightFx(c: any): Pick<LightFxConfigT,
     & { _paths: string[] } {
     return {
         schemaVersion:       c?.schemaVersion ?? 1,
-        enabled:             c?.enabled ?? true,
+        enabled:             c?.enabled ?? false,   // absent /lightfx.yaml ⇒ OFF
         masterBrightnessPct: c?.masterBrightnessPct ?? 100,
         _paths:              Array.isArray(c?.programs) ? c.programs as string[] : [],
         // channels[] is new (schemaVersion 2).  May be absent on legacy
@@ -360,17 +361,63 @@ export async function deletePreset(name: string): Promise<void> {
 
 // ─── Active-list mutators (draft only) ───────────────────────────────
 
+/** Seed the instance channel pool for a template's tracks.  Every track
+ *  channel-name missing from `channels[]` becomes a NEW channel, auto-
+ *  mapped onto the next free led-animator port from `ledPool` (in pool
+ *  order) — so loading the first template onto a fresh board wires AND
+ *  names its channels in one step instead of arriving half-empty with an
+ *  empty Channels card.  Existing channels are never touched (their name
+ *  wins; their port stays); when the pool runs dry the remaining channels
+ *  are created port-less — the Channels card shows the Rule 39 yellow and
+ *  the operator picks ports manually.  Pure — unit-tested without stores. */
+export function seedChannelsForProgram(
+    channels: readonly LightFxChannelT[],
+    program:  ProgramT,
+    ledPool:  readonly Port[],
+): LightFxChannelT[] {
+    const have = new Set(channels.map(ch => ch.name))
+    const wanted: string[] = []
+    for (const t of program.tracks) {
+        const n = (t.channel ?? '').trim()
+        if (n && !have.has(n) && !wanted.includes(n)) wanted.push(n)
+    }
+    if (wanted.length === 0) return [...channels]
+    // The caller's pool is already unclaimed-only ($effectClaims covers
+    // ports held by existing channels) — filter defensively anyway so a
+    // stale pool can never double-assign.
+    const used = new Set(channels.filter(ch => ch.port).map(ch =>
+        `${ch.port!.guid}|${ch.port!.kind}|${ch.port!.idx}`))
+    const free = ledPool.filter(p => !used.has(`${p.ref.guid}|${p.kindName}|${p.ref.index}`))
+    let i = 0
+    const added = wanted.map(name => {
+        const p = free[i++]
+        return {
+            ...defaultChannel(name),
+            port: p
+                ? { board: '', guid: p.ref.guid, kind: p.kindName, idx: p.ref.index } as PortRefT
+                : null,
+        }
+    })
+    return [...channels, ...added]
+}
+
 /** Add a template to the active list — clones the template program
  *  into a new active slot keyed by the template name.  Idempotent on
  *  name: adding the same template twice does nothing.  To get two
- *  copies, Save-As the first one to a fresh name then add again. */
-export function addPresetToActive(templateName: string): void {
+ *  copies, Save-As the first one to a fresh name then add again.
+ *
+ *  `ledPool` (Rule 49: the caller's unclaimed led-animator ports —
+ *  the panel computes it from $deviceModel + $effectClaims) lets the
+ *  template auto-seed + map any channels its tracks reference that
+ *  don't exist in the instance pool yet — see seedChannelsForProgram. */
+export function addPresetToActive(templateName: string, ledPool: readonly Port[] = []): void {
     const tmpl = get(presetLibrary).find(e => e.name === templateName)
     if (!tmpl) return
     lightfxDraft.update(c => {
         if (c.activePrograms.some(a => a.name === templateName)) return c
         return {
             ...c,
+            channels: seedChannelsForProgram(c.channels, tmpl.program, ledPool),
             activePrograms: [...c.activePrograms, {
                 name: templateName,
                 program: structuredClone(tmpl.program),

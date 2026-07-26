@@ -91,8 +91,20 @@ bool FlashModule::begin() {
     // ESP_OK on first mount; ESP_ERR_INVALID_STATE if already mounted —
     // treat that as success (idempotent begin).
     bool ok = (err == ESP_OK) || (err == ESP_ERR_INVALID_STATE);
+    if (!ok) {
+        // Fresh-silicon fallback: format_if_mount_failed covers a corrupt
+        // superblock, but a register that failed outright (e.g. an
+        // interrupted first-boot format) can leave the partition in a
+        // state mount+auto-format won't recover.  Force a clean format
+        // and re-register once before giving up.
+        (void)esp_littlefs_format(kFlashPartition);
+        err = esp_vfs_littlefs_register(&conf);
+        ok  = (err == ESP_OK) || (err == ESP_ERR_INVALID_STATE);
+    }
+    _lastBeginErr = ok ? 0 : (int)err;
 #else
     bool ok = LittleFS.begin();
+    _lastBeginErr = ok ? 0 : -1;
 #endif
     unlock();
 

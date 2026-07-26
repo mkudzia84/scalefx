@@ -10,6 +10,7 @@
 #include <serial/roles.h>          // RolePacket
 #include <serial/wire.h>           // SfxWire
 #include <serial/core/core.h>      // SerialError / PortError / RoleError
+#include <serial/diag_log.h>       // SFX_LOG_* (attach/restart diagnostics)
 
 #if SFX_PLATFORM_ESP32
 #  include <jeti_ex/jeti_expander.h>   // board-unique JetiExpander (Core-0 task)
@@ -40,33 +41,28 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
     if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
 
 #if SFX_PLATFORM_ESP32
-    // Start the board-unique JetiExpander on BOTH Jeti links: this port (IN_1,
-    // Rx side, we are slave) + the other input port (IN_2, downstream ESC side,
-    // we are master) if the board declares one.  The expander (a Core-0 task)
-    // owns the UART I/O for both; the roles are thin handles, so they never
-    // double-drive the UART.  Protocol-gated: only JetiEX attach starts it.
-    sfx_peripherals::InputPort* escPort   = nullptr;
-    InputBinding*               escBind   = nullptr;
-    uint8_t                     escIdx    = 0xFF;
-    for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
-        if (i == portIdx) continue;
-        auto* ob = _reg->inputAt(i);
-        if (ob && ob->port) { escPort = ob->port; escBind = ob; escIdx = i; break; }
+    // Start the board-unique JetiExpander on THIS port (IN_1, Rx side).  The
+    // expander (a Core-0 task) owns the UART I/O; the role is a thin handle.
+    // Protocol-gated: only a JetiEX attach starts it.  (The former IN_2
+    // downstream EX-Bus pairing — auto-claiming a second input as the ESC
+    // master link — was REMOVED 2026-07-15; ESC telemetry is the native
+    // esc-telemetry role now.)
+    //
+    // Re-attach (config-reload / live role edit) with the expander already
+    // running: begin() is a no-op while _running, which silently kept the
+    // expander on the OLD port when the operator moved the Jeti input role
+    // (the 2026-07-14 role-swap incident needed a reboot).  End it first so
+    // every attach deterministically (re)starts on the port being attached.
+    if (JetiEx::JetiExpander::instance().running()) {
+        SFX_LOG_WARN("[jexp] input role re-attached while running — restarting on input[%u]",
+                     (unsigned)portIdx);
+        JetiEx::JetiExpander::instance().end();
     }
-    JetiEx::JetiExpander::instance().begin(b.port, escPort,
+    if (!JetiEx::JetiExpander::instance().begin(b.port,
                                            /*usn=*/0xA400, /*lsn=*/0x0100, "HubFx", baud,
-                                           /*respondTelemetry=*/respond);
-
-    // Reflect the IN_1→IN_2 pairing in the registry: stamp the downstream port
-    // with the JetiExTelemetry role so topology (and thus the Studio diagram)
-    // shows IN_2 as the expander's telemetry link — regardless of whether the
-    // operator set IN_1 via Studio or /hubfx.yaml.  The expander owns the UART;
-    // this role is just the marker.  (Idempotent — skip if already telemetry.)
-    if (escBind && escIdx != 0xFF &&
-        !std::holds_alternative<JetiExTelemetryRole>(escBind->role)) {
-        auto& tr = escBind->role.emplace<JetiExTelemetryRole>();
-        tr.bind(escBind->port, baud);
-        tr.setPortIdx(escIdx);
+                                           /*respondTelemetry=*/respond)) {
+        SFX_LOG_ERROR("[jexp] begin FAILED on input[%u] — Jeti input dead until "
+                      "the role is re-applied or the board reboots", (unsigned)portIdx);
     }
 #endif
 
@@ -92,26 +88,6 @@ bool JetiInputHandler::attachInput(InputBinding& b, uint8_t portIdx,
     return true;
 }
 
-bool JetiInputHandler::attachTelemetry(InputBinding& b, uint8_t portIdx,
-                                       const uint8_t* cfg, size_t cfgLen) {
-    auto& role = b.role.emplace<JetiExTelemetryRole>();
-    // Optional config: [broadcastHz:u8][baudHi:u8][baudLo:u8] — same encoding
-    // as the Jeti EX input role; 0 = default 125 000.
-    uint32_t baud = 125000;
-    if (cfgLen >= 3) {
-        const uint16_t kbaud = ((uint16_t)cfg[1] << 8) | cfg[2];
-        if (kbaud == 250) baud = 250000;
-        else if (kbaud == 125 || kbaud == 0) baud = 125000;
-        else baud = (uint32_t)kbaud * 1000;
-    }
-    if (!role.bind(b.port, baud)) { b.role.emplace<std::monostate>(); return false; }
-    role.setPortIdx(portIdx);   // for the SFX_INSTRUMENTATION [jtelem] diag log
-    // Monitor-only this phase: the role decodes downstream telemetry into the
-    // shared JetiTelemetryHub; the master channel's responder (phase 2) serves
-    // it to the Rx.  No wire broadcast — health is visible via the gated
-    // [jtelem] log on the diag stream.
-    return true;
-}
 
 void JetiInputHandler::handleGetFrameReq(const uint8_t* p, size_t len) {
     if (len < 1) { _ctx->sendNack(SerialError::MISSING_PARAMETER); return; }

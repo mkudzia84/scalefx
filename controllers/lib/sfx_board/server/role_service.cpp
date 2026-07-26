@@ -17,6 +17,11 @@
 #include <cstring>
 #include <variant>
 
+#if SFX_PLATFORM_ESP32
+#  include <jeti_ex/jeti_expander.h>   // torn down when the Jeti input role detaches
+#endif
+
+
 namespace sfx_core {
 
 // ── Top-level dispatch ──────────────────────────────────────────────
@@ -197,7 +202,27 @@ uint8_t RoleServicePolicy::applyAttach(uint8_t portKind, uint8_t portIdx,
                 case RoleKind::RcPwmInput:  ok = _rcpwm.attach(*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::SbusInput:   ok = _sbus.attach (*b, portIdx, cfg, cfgLen); break;
                 case RoleKind::JetiExInput: ok = _jeti.attachInput(*b, portIdx, cfg, cfgLen); break;
-                case RoleKind::JetiExTelemetry: ok = _jeti.attachTelemetry(*b, portIdx, cfg, cfgLen); break;
+                case RoleKind::EscTelemetry: {
+                    // [protocol:u8][baudKHi:u8][baudKLo:u8][ratioHi:u8][ratioLo:u8]
+                    // (Rule 11 append-only) — zero-length / unknown protocol
+                    // defaults to Kontronik (the jeti-exbus downstream marker
+                    // mode was REMOVED 2026-07-15).  ratio = RPM divider ×100
+                    // (pole pairs × gearbox); 0 = 1.00.
+                    const uint8_t proto = (cfgLen >= 1) ? cfg[0] : 0 /*kontronik*/;
+                    uint32_t baud = 0;
+                    if (cfgLen >= 3) baud = (uint32_t)(((uint16_t)cfg[1] << 8) | cfg[2]) * 1000u;
+                    uint16_t ratioX100 = 0;
+                    if (cfgLen >= 5) ratioX100 = (uint16_t)(((uint16_t)cfg[3] << 8) | cfg[4]);
+                    auto& er = b->role.emplace<EscTelemetryRole>();
+                    if (!er.bind(b->port, proto, baud, ratioX100)) {
+                        b->role.emplace<std::monostate>();
+                        ok = false;
+                    } else {
+                        er.setPortIdx(portIdx);
+                        ok = true;
+                    }
+                    break;
+                }
                 default: return RoleError::ROLE_KIND_NOT_SUPPORTED;
             }
             break;
@@ -282,17 +307,10 @@ void RoleServicePolicy::handleDetach(const uint8_t* p, size_t len) {
             auto* b = _reg->inputAt(portIdx);
             if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
 #if SFX_PLATFORM_ESP32
-            // The JetiExpander owns BOTH Jeti links; detaching the Rx (IN_1)
-            // role tears it down (end() releases both ports) AND clears the
-            // paired downstream telemetry marker so IN_2 reverts to no role.
+            // Detaching the Rx (IN_1) role tears the JetiExpander down —
+            // it owns only IN_1 now (the downstream pairing was removed).
             if (std::holds_alternative<JetiExInputRole>(b->role)) {
                 JetiEx::JetiExpander::instance().end();
-                for (uint8_t i = 0; i < _reg->numInputPorts(); ++i) {
-                    if (i == portIdx) continue;
-                    auto* ob = _reg->inputAt(i);
-                    if (ob && std::holds_alternative<JetiExTelemetryRole>(ob->role))
-                        ob->role.emplace<std::monostate>();
-                }
             }
 #endif
             // Release the peripheral the previous role had claimed.
