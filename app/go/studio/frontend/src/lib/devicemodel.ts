@@ -144,20 +144,36 @@ const empty: DeviceModelSnapshotT = {
     inputs: [], channelFunctions: [], inputProtocols: [], escProtocols: [],
 }
 
-/** normalize guarantees every array field is non-null.  Go marshals an
- *  empty nil slice as JSON `null`; iterating that (`for..of null`) throws
- *  and would break Svelte reactivity, so we coerce on every ingest. */
+/** normalize guarantees every array field is non-null — INCLUDING nested
+ *  arrays.  Go marshals an empty nil slice as JSON `null`; iterating that
+ *  (`for..of null` / `{#each null}`) throws inside a store subscriber or a
+ *  component render, which can break the whole Svelte tree SILENTLY (the
+ *  blank "no ports / hanging UI" state — no error ever reaches
+ *  window.onerror when the throw happens inside a swallowed dispatch).
+ *  Coerce every level on every ingest so a malformed snapshot can never
+ *  take the UI down. */
 function normalize(snap: unknown): DeviceModelSnapshotT {
     const s = (snap ?? {}) as Partial<DeviceModelSnapshotT>
+    const arr = <T>(v: T[] | null | undefined): T[] => (Array.isArray(v) ? v : [])
     return {
-        ports: s.ports ?? [],
-        domains: s.domains ?? [],
-        issues: s.issues ?? [],
-        roleCatalog: s.roleCatalog ?? [],
-        inputs: s.inputs ?? [],
-        channelFunctions: s.channelFunctions ?? [],
-        inputProtocols: s.inputProtocols ?? [],
-        escProtocols: s.escProtocols ?? [],
+        ports: arr(s.ports).map(p => ({
+            ...p,
+            caps:         arr(p?.caps),
+            allowedRoles: arr(p?.allowedRoles),
+        })),
+        domains: arr(s.domains).map(d => ({
+            ...d,
+            slots: arr((d as any)?.slots),
+        })),
+        issues: arr(s.issues),
+        roleCatalog: arr(s.roleCatalog),
+        inputs: arr(s.inputs).map(c => ({
+            ...c,
+            channels: arr(c?.channels),
+        })),
+        channelFunctions: arr(s.channelFunctions),
+        inputProtocols: arr(s.inputProtocols),
+        escProtocols: arr(s.escProtocols),
     }
 }
 
@@ -520,13 +536,13 @@ export function boardLabel(guid: string): string {
 
 const KIND_LABEL: Record<string, string> = {
     hubfx: 'HubFX', lightfx: 'LightFX', gunfx: 'GunFX',
-    gearcontrol: 'GearControl', noop: 'NoOp',
+    gearcontrol: 'GearControl', portexpander: 'PortExpander', noop: 'NoOp',
 }
 
 // Device-name prefixes that don't equal the kind string (the firmware uses
-// "GearCtrl" but the kind is "gearcontrol").  Mirrors Go
-// devicemodel.BoardKindFromName — keep the two in lock-step.
-const KIND_ALIAS: Record<string, string> = { gearctrl: 'gearcontrol' }
+// "GearCtrl" but the kind is "gearcontrol", "PortExp" for "portexpander").
+// Mirrors Go devicemodel.BoardKindFromName — keep the two in lock-step.
+const KIND_ALIAS: Record<string, string> = { gearctrl: 'gearcontrol', portexp: 'portexpander' }
 
 export function boardKindOf(name: string): string {
     const n = (name || '').toLowerCase()

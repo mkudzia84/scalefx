@@ -110,7 +110,7 @@ const defaultSelector: ProgramSelectorT = {
 }
 const defaultLightFx: LightFxConfigT = {
     schemaVersion: 2,          // bump from 1: signals `channels[]` block present
-    enabled: true,
+    enabled: false,            // effects default OFF (a fresh board is inert)
     masterBrightnessPct: 100,
     channels: [],
     activePrograms: [],
@@ -162,7 +162,7 @@ function normaliseLightFx(c: any): Pick<LightFxConfigT,
     & { _paths: string[] } {
     return {
         schemaVersion:       c?.schemaVersion ?? 1,
-        enabled:             c?.enabled ?? true,
+        enabled:             c?.enabled ?? false,   // absent /lightfx.yaml ⇒ OFF
         masterBrightnessPct: c?.masterBrightnessPct ?? 100,
         _paths:              Array.isArray(c?.programs) ? c.programs as string[] : [],
         // channels[] is new (schemaVersion 2).  May be absent on legacy

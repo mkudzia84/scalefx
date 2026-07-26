@@ -7,6 +7,92 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.41.0 — 2026-07-26
+
+The effect-enable rationalization: the `/hubfx.yaml` `features:` master-enable
+matrix is RETIRED — each effect's enable lives ONLY in its own sub-config
+(`/enginefx.yaml` `enabled:` …), and hubfx.yaml is pure port/input/audio
+mapping again.  Plus the fresh-board Studio "hanging UI" fixes and the
+no-signal input-broadcast throttle.
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.41.0 | ESP32-S3 | `hubfx-v2.41.0` |
+
+### Breaking ⚠️
+- **`/hubfx.yaml` `features:` removed** (MINOR bump — additive-tolerant: an
+  old file's `features:` key parses to nothing and is ignored).  Effect enable
+  is each sub-config's own `enabled:` flag; the firmware no longer overrides
+  it.  Rationale: Studio re-uploading hubfx.yaml on every effect toggle could
+  collide with audio playback (Rule 54 upload exclusivity) and wedged the
+  flash — toggling an effect now touches ONLY that effect's file.
+
+### New Features
+- **All effects default OFF** (firmware struct+schema, seed `minimal.yaml`,
+  Studio Go DTO defaults, frontend drafts) — a freshly-flashed board boots
+  inert; the operator opts each effect in from its panel.
+- **No-signal input-broadcast throttle** (2.40.1): an input role with no valid
+  signal (RX unplugged) broadcasts at a 4 Hz heartbeat instead of 50 Hz junk
+  frames; full rate resumes the instant the signal returns (hot-plug safe).
+  Applies to PPM / SBUS / Jeti EX via the shared `InputBroadcaster`.
+- ESC-telemetry role label corrected to **"ESC Telemetry"** (was the stale
+  "Jeti EX Telemetry"); telemetry type (Kontronik/Scorpion/Hobbywing) is
+  selectable inline on the input card AND in the PCB-diagram port popover.
+- Input-role split: on a 2-input board IN2 offers only ESC Telemetry, IN1
+  only the RC-channel protocols.
+
+### Bug Fixes (Studio)
+- **Fresh-board "hanging UI" root-caused + fixed** (GUI-verified via
+  screenshots + synthetic input): the Setup Wizard no longer auto-opens as a
+  click-swallowing modal (toolbar-only + Escape closes); the Connect dialog
+  cannot be dismissed while disconnected (dismissing it left a dead blank UI).
+- Robustness: deep device-model normalize (nested `caps`/`allowedRoles`/
+  `channels`/`slots` null-guards), FE.CLICK click-path tracer, early
+  mount-time error capture (main.ts), telemetry input card layout de-squished.
+- PCB overlays: HubFX rev-B input headers now INP/TEL at their real top-center
+  position (was rev-A right-column IN1/IN2); GearControl IN + servo positions
+  corrected; PortExpander overlay added.
+
+---
+
+## PortExpander 1.0.0-rc1 — 2026-07-25
+
+First release candidate for the new **PortExpander** generic-expander board —
+an RP2040 thin expander exposing 8 servo + 5 H-bridge ports to the HubFX
+master (the largest expander port surface to date; GearControl is 7+3).
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| PortExpander (expander) | 1.0.0-rc1 | RP2040 | `portexpander-v1.0.0-rc1` |
+
+### New Features
+- **New board firmware** (`controllers/portexpander/pico/`), mirroring the
+  GearControl thin-expander architecture (`BoardOf<>` + auto policies; roles
+  attached by the hub at runtime, Rule 58): 8 × ServoActuator-capable servo
+  headers (GP14–21) + 5 × BiDcMotor-capable motor drivers.
+- Motor drivers are **PWM+DIR** topology → `PwmDirHBridgePort` (brake falls
+  back to coast), unlike GearControl's dual-PWM bridges.
+- Per-motor **INA226 current/voltage monitors** on I²C0 (GP4/5), addresses
+  decoded from the netlist strapping: 0x40/0x45/0x44/0x41/0x42 for MOT1–5.
+- USB identity `2E8A:0183` ("ScaleFX PortExpander"); device name prefix
+  `PortExp-<guid>`.
+- Recognition landed across the stack in the same change: HubFX
+  `ExpanderKind::PortExpander` + PID classification, Go protocol/client/
+  devicemodel mirrors, CLI controller registry (`scalefx-flash build|flash
+  portexpander`), and Studio (board naming, Firmware tab, PCB overlay with
+  the expander_top render).
+
+### Internal
+- Pin map decoded from `instructions/schematics/expander.tel` — the netlist
+  references QFN-56 **package pins**, not GPIOs (SDA=U1.6→GP4, SCL=U1.7→GP5
+  confirmed the mapping).  L_CH1/L_CH2/POWER LEDs are passive (no firmware
+  driver); LED1/LED2 (GP25/24) are the standard indicator pair.
+- Known-open before 1.0.0 final: shunt value assumed 5 mΩ (verify against
+  BOM); HubFX must be reflashed with the PID-classification build to label
+  the board on its USB host ports; bench pass on motors + current sense.
+
+---
+
 ## 2.39.0 — 2026-07-15
 
 The input-signal saga: RC blackouts during audio playback root-caused to FIVE

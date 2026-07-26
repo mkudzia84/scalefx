@@ -23,7 +23,15 @@
     $: if ($wizardStep >= $wizardSteps.length) gotoStep($wizardSteps.length - 1)
     $: step = Math.min($wizardStep, $wizardSteps.length - 1)
     $: current = $wizardSteps[step]
+
+    // Escape always closes — a full-screen modal must never trap the UI
+    // (changes aren't applied until the review step, so closing is safe).
+    function onKeydown(e: KeyboardEvent): void {
+        if ($showConfigWizard && e.key === 'Escape') closeWizard()
+    }
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 {#if $showConfigWizard}
 <!-- svelte-ignore a11y-click-events-have-key-events -->

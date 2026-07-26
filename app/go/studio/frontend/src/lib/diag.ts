@@ -152,6 +152,30 @@ export function installDiagBridge() {
     //    `LogFrontend` call would throw. We catch above; nothing else
     //    to do here.
 
+    // 6) Click tracer (2026-07-26 "hanging UI" hunt): log every click at the
+    //    CAPTURE phase with a compact CSS path of the real target.  When the
+    //    UI "hangs" (tabs don't respond), this shows whether the click even
+    //    reaches the control or an invisible overlay swallows it — and it
+    //    keeps working even when Svelte's update pipeline is wedged, because
+    //    it's a plain DOM listener.  User-driven → negligible volume.
+    const cssPath = (el: Element | null): string => {
+        const parts: string[] = []
+        for (let n = el, i = 0; n && i < 5; n = n.parentElement, i++) {
+            let s = n.tagName.toLowerCase()
+            if (n.id) s += `#${n.id}`
+            else if (typeof n.className === 'string' && n.className.trim())
+                s += '.' + n.className.trim().split(/\s+/).slice(0, 3).join('.')
+            parts.unshift(s)
+        }
+        return parts.join(' > ')
+    }
+    document.addEventListener('click', (ev) => {
+        send('debug', 'FE.CLICK', cssPath(ev.target as Element), {
+            x: ev.clientX, y: ev.clientY,
+            top: cssPath(document.elementFromPoint(ev.clientX, ev.clientY)),
+        })
+    }, { capture: true, passive: true })
+
     diag.info('FE', 'diagnostic bridge installed', {
         userAgent: navigator.userAgent,
         viewport: `${window.innerWidth}x${window.innerHeight}`,

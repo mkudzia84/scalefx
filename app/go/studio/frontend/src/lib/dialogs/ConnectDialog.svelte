@@ -72,6 +72,13 @@
         connecting = false
     }
 
+    // The dialog can only be dismissed once a board is CONNECTED — there is
+    // nothing usable behind it without a connection (an empty device model
+    // renders as a blank "stuck" UI with no ports).  Not-connected ⇒ Escape /
+    // backdrop-click / ✕ do nothing; the only way forward is to Connect.  When
+    // already connected (re-opened to switch ports) closing works normally.
+    $: canDismiss = !!$connectionInfo.connected
+
     function handleKeydown(e: KeyboardEvent) {
         if (e.key === 'Enter' && selectedPort && !connecting) doConnect()
         if (e.key === 'Escape') dismiss()
@@ -82,6 +89,7 @@
     const onClickConnect = () => { void doConnect() }
 
     function dismiss() {
+        if (!canDismiss) return
         $connectPopupOpen = false
     }
 </script>
@@ -90,7 +98,9 @@
 
 <div class="connect-overlay" on:click|self={dismiss}>
     <div class="connect-card">
-        <button class="close-btn" on:click={dismiss} title="Close">✕</button>
+        {#if canDismiss}
+            <button class="close-btn" on:click={dismiss} title="Close">✕</button>
+        {/if}
         <div class="connect-header">
             <img class="connect-logo" src={logoUrl} alt="ScaleFX" />
             <p class="connect-subtitle">Select a board to connect</p>

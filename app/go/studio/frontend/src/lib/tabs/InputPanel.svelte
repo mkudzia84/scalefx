@@ -6,8 +6,8 @@
     import { onMount, onDestroy } from 'svelte'
     import {
         deviceModel, liveChannels, setInputProtocol, setInputChannelCount,
-        setChannelFunction, liveChannelKey, usToPct, boardDisplayNames,
-        formatPortRail, RoleKind,
+        setChannelFunction, setInputEscProtocol, liveChannelKey, usToPct,
+        boardDisplayNames, formatPortRail, RoleKind,
         type InputPortConfig, type ChannelFunctionDef, type PortRef,
         type InputProtocolDef,
     } from '../devicemodel'
@@ -87,6 +87,10 @@
         busy = true; error = ''
         try { await setChannelFunction(p, ch, fn) } catch (e) { error = String(e) } finally { busy = false }
     }
+    async function onEscProto(p: PortRef, escProto: string) {
+        busy = true; error = ''
+        try { await setInputEscProtocol(p, escProto) } catch (e) { error = String(e) } finally { busy = false }
+    }
 
     // Highest channel index seen live on this port (+1), i.e. how many
     // channels the signal actually carries.  Takes the live store as a param
@@ -120,22 +124,35 @@
         return portOf(cfg.port)?.roleKind === RoleKind.EscTelemetry
             || cfg.protocol === 'esc-telemetry'
     }
-    // Display label for the selected ESC stream (falls back to the raw id).
-    function escLabel(cfg: InputPortConfig): string {
-        const id = cfg.escProtocol || 'kontronik'
-        return escProtocols.find(ep => ep.id === id)?.label ?? id
+    // Which input is the dedicated TELEMETRY monitor: on a multi-input board
+    // the HIGHEST-index input (IN_2 / UART2 on HubFX) listens to a downstream
+    // ESC's telemetry, while the primary input (IN_1 / UART1) carries the RC
+    // channels.  One radio input, one telemetry input — mirrors the wiring.
+    // A single-input board is unconstrained (it can be either).
+    function isTelemetryInput(p: PortRef): boolean {
+        const board = inputs.filter(c => c.port.guid === p.guid)
+        if (board.length < 2) return false
+        const maxIdx = Math.max(...board.map(c => c.port.index))
+        return p.index === maxIdx
     }
-    // Rule 34: the protocol picker offers ONLY protocols whose backing
-    // role is in the port's allowedRoles — a PWM-pulse-only input shows
-    // just PPM, never SBUS/Jeti.  The currently-selected protocol is kept
-    // visible even if (somehow) outside the set, so editing never blanks
-    // the field.  On a board whose input allows all RC roles every
-    // protocol shows; the filter matters for narrower ports.
+    // Rule 34: the protocol picker offers ONLY protocols valid for THIS port.
+    // Two constraints stack:
+    //   1. the port's advertised allowedRoles (a pulse-only input shows just
+    //      PPM, never SBUS/Jeti);
+    //   2. the RC-vs-telemetry split — the telemetry input (IN_2) offers only
+    //      ESC-telemetry; every other input offers only the RC-channel
+    //      protocols (PPM/SBUS/Jeti EX), so you can't accidentally pick two
+    //      radio inputs or drive channels off the telemetry port.
+    // The currently-selected protocol is always kept visible so editing never
+    // blanks the field.
     function protosFor(p: PortRef, current: string): InputProtocolDef[] {
         const allowed = new Set((portOf(p)?.allowedRoles ?? []).map(r => r.kind))
+        const telemPort = isTelemetryInput(p)
         return protocols.filter(pr => {
             if (pr.id === current) return true                  // always keep the current value
-            return pr.roleKind === undefined || allowed.size === 0 || allowed.has(pr.roleKind)
+            if (pr.roleKind !== undefined && allowed.size > 0 && !allowed.has(pr.roleKind)) return false
+            const isTelemProto = pr.roleKind === RoleKind.EscTelemetry
+            return telemPort ? isTelemProto : !isTelemProto     // RC ⇄ telemetry split
         })
     }
     // Selected protocol's channel ceiling (PPM 8, SBUS/Jeti 16). The
@@ -182,11 +199,13 @@
                               : 'No downstream telemetry — nothing replying on this port (check the ESC / wiring).'}>
                         {$escTelemetryActive ? '● active' : '○ no signal'}
                     </span>
-                    <span class="passthru-tag">{escLabel(cfg)}</span>
                 </div>
+                <!-- One control per row (this is the narrow left column — two
+                     label+select pairs on one row squish).  Labels share a
+                     fixed width so the selects line up. -->
                 <div class="form-row">
-                    <span class="field-label">Protocol</span>
-                    <select class="field-input" style="flex:0 0 150px" value={cfg.protocol} disabled={busy}
+                    <span class="field-label tl">Protocol</span>
+                    <select class="field-input" style="flex:1 1 auto; max-width:220px" value={cfg.protocol} disabled={busy}
                             title="Input decoding mode — limited to the roles this port can host"
                             on:change={(e) => onProtocol(cfg.port, selValue(e))}>
                         {#each protosFor(cfg.port, cfg.protocol) as proto}
@@ -195,8 +214,19 @@
                             </option>
                         {/each}
                     </select>
-                    <span class="hint">ESC stream &amp; RPM gear ratio are configured on the <strong>Telemetry</strong> sub-tab.</span>
                 </div>
+                <div class="form-row">
+                    <span class="field-label tl">Telemetry type</span>
+                    <select class="field-input" style="flex:1 1 auto; max-width:220px" value={cfg.escProtocol || 'kontronik'}
+                            disabled={busy}
+                            title="Which ESC's native telemetry stream this port decodes — sensors flow to the radio + the Telemetry sub-tab"
+                            on:change={(e) => onEscProto(cfg.port, selValue(e))}>
+                        {#each escProtocols as ep}
+                            <option value={ep.id}>{ep.label}</option>
+                        {/each}
+                    </select>
+                </div>
+                <p class="hint">Motor poles &amp; RPM gear ratio are on the <strong>Telemetry</strong> sub-tab.</p>
             </div>
         {:else}
         {@const det = detectedCount(cfg, $liveChannels)}
@@ -284,8 +314,11 @@
     .input-card { margin-bottom: 12px; }
     /* Telemetry pass-thru: dimmer, no channel group — it's a downstream link. */
     .input-card.passthru { border-left: 2px solid var(--accent); }
-    .input-card.passthru .board-head { margin-bottom: 0; }
-    .passthru-tag { margin-left: 6px; font-family: var(--font-mono); font-size: 10px; color: var(--accent); padding: 1px 6px; border: 1px solid var(--accent); border-radius: 3px; }
+    /* Fixed-width labels so the Protocol + Telemetry-type selects line up
+       in the narrow left column (one control per row — see markup note). */
+    .field-label.tl { flex: 0 0 auto; width: 92px; }
+    .input-card.passthru .form-row { margin-bottom: 8px; }
+    .input-card.passthru .hint { margin-top: 2px; }
     /* Live downstream-link chip — dim "no signal" by default, green when an ESC
        is replying.  margin-left:auto groups it + the pass-thru tag at the right. */
     .esc-chip { margin-left: auto; font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); padding: 1px 6px; border: 1px solid var(--border); border-radius: 3px; }

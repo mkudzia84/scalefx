@@ -9,6 +9,7 @@
 
 import hubfxTop from '../assets/pcb/hubfx_top.png'
 import gearcontrolTop from '../assets/pcb/gearcontrol_top.png'
+import expanderTop from '../assets/pcb/expander_top.png'
 import { PortKind } from './devicemodel'
 
 export interface PortMarker {
@@ -44,17 +45,19 @@ const hubMarkers: PortMarker[] = []
     const chY = [11.1, 17.2, 23.3, 29.4, 35.5, 41.7, 47.8, 53.9] // CH1..CH8
     chY.forEach((y, i) => hubMarkers.push({ kind: PortKind.Pwm, index: i, label: `CH${i + 1}`, x: 7.7, y }))
 
-    // Right column, top→bottom (12 rows).  The headers sit on a denser
-    // grid than the silkscreen labels the detector caught — ~3% apart, not
-    // ~6% — so the column is anchored at the top row and compacted.
-    const rightY = [9.2, 12.25, 15.3, 18.35, 21.4, 24.45, 27.5, 30.55, 33.6, 36.65, 39.7, 42.75]
-    for (let i = 0; i < 10; i++) {
-        const servoIdx = 9 - i                // top row = SRV10 (IN_12) … = servo[9]
-        hubMarkers.push({ kind: PortKind.Servo, index: servoIdx, label: `SRV${servoIdx + 1}`, x: 94, y: rightY[i] })
+    // Right edge servo column (rev B): SRV1 at the BOTTOM → SRV10 at the top,
+    // even ~2.7% pitch.  x≈93%.
+    const srvTopY = 15.5, srvPitch = 2.75
+    for (let servoIdx = 0; servoIdx < 10; servoIdx++) {
+        const y = srvTopY + (9 - servoIdx) * srvPitch   // SRV10 top, SRV1 bottom
+        hubMarkers.push({ kind: PortKind.Servo, index: servoIdx, label: `SRV${servoIdx + 1}`, x: 93, y })
     }
-    // IN_2 (UART2 Jeti EX Bus telemetry monitor) then IN_1 (main channel).
-    hubMarkers.push({ kind: PortKind.Input, index: 1, label: 'IN2', x: 94, y: rightY[10] })
-    hubMarkers.push({ kind: PortKind.Input, index: 0, label: 'IN1', x: 94, y: rightY[11] })
+    // Input headers sit at the TOP of the board (rev B), NOT the right column:
+    //   INP   = IN_1 (UART1) main RC / channel input   (board silkscreen "INP")
+    //   TELEM = IN_2 (UART2) telemetry monitor (ESC/Jeti EX Bus telemetry)
+    // Show the same short labels the board uses so the overlay matches the PCB.
+    hubMarkers.push({ kind: PortKind.Input, index: 0, label: 'INP', x: 40.5, y: 9 })
+    hubMarkers.push({ kind: PortKind.Input, index: 1, label: 'TEL', x: 32.5, y: 9 })
 }
 
 // Audio (speaker) outputs — top edge, L + R; informational only.
@@ -74,18 +77,54 @@ const hubInfo: InfoMarker[] = [
 // informational marker, not a port.
 const gearMarkers: PortMarker[] = []
 {
+    // 3 H-bridge motor screw terminals (J6/J10/J11), bottom-left, y≈69%.
     const hbX = [16.2, 30.3, 44.3]
-    hbX.forEach((x, i) => gearMarkers.push({ kind: PortKind.HBridge, index: i, label: `HB${i + 1}`, x, y: 69.5 }))
-    const srvX = [53.8, 58.1, 62.4, 66.7, 70.9, 75.1, 79.4]
-    srvX.forEach((x, i) => gearMarkers.push({ kind: PortKind.Servo, index: i, label: `SRV${i + 1}`, x, y: 72.5 }))
+    hbX.forEach((x, i) => gearMarkers.push({ kind: PortKind.HBridge, index: i, label: `HB${i + 1}`, x, y: 69 }))
+    // Servo headers bottom-right.  NOTE: the current PCB rev has EIGHT physical
+    // headers (Servo1..Servo8) on a ~5.6% pitch from x≈53% to x≈92%, but the
+    // GearControl firmware only exposes SEVEN servo ports — so we mark the
+    // first seven headers (Servo1..Servo7); the 8th header is unmapped until
+    // the firmware grows an 8th servo port.
+    const srvX = [53.0, 58.6, 64.1, 69.7, 75.3, 80.9, 86.4]
+    srvX.forEach((x, i) => gearMarkers.push({ kind: PortKind.Servo, index: i, label: `SRV${i + 1}`, x, y: 72 }))
 }
 const gearInfo: InfoMarker[] = [
-    { label: 'IN', x: 40.5, y: 11.5, title: 'RC input header (board-local — not driven by the hub)' },
+    // Large white RC-input header, top-left of the board (board-local — the
+    // hub drives gear state over the wire, not through this header).
+    { label: 'IN', x: 22, y: 9, title: 'RC input header (board-local — not driven by the hub)' },
+]
+
+// ─── PortExpander (768×418 top view) — eyeballed positions ────────────
+// Coordinates are estimated from the render, not measured (no
+// tools/analyze_expander.go yet) — refine when the analyzer is run.
+// Board surface: 8 servo headers (Servo1..8, bottom row), 5 H-bridge
+// motor outputs (CN3/CN4/CN5 white connectors top-left + 2 more
+// bottom-left).  HB index ↔ connector mapping is PROVISIONAL pending
+// netlist verification against the schematic.
+// CH1/CH2 (top middle) are reserved board-local inputs, not
+// hub-addressable ports — informational markers only.
+const expanderMarkers: PortMarker[] = []
+{
+    // HB1..HB3 = CN3/CN4/CN5 top-left; HB4/HB5 = the two bottom-left outputs.
+    expanderMarkers.push({ kind: PortKind.HBridge, index: 0, label: 'HB1', x: 42.3, y: 7.5 })
+    expanderMarkers.push({ kind: PortKind.HBridge, index: 1, label: 'HB2', x: 30.6, y: 7.5 })
+    expanderMarkers.push({ kind: PortKind.HBridge, index: 2, label: 'HB3', x: 19.5, y: 7.5 })
+    expanderMarkers.push({ kind: PortKind.HBridge, index: 3, label: 'HB4', x: 14.3, y: 88.5 })
+    expanderMarkers.push({ kind: PortKind.HBridge, index: 4, label: 'HB5', x: 24.1, y: 88.5 })
+    // Servo1..8 — bottom row, even ~4.3% pitch.
+    const srvX = [31.6, 35.9, 40.2, 44.5, 48.8, 53.1, 57.4, 61.7]
+    srvX.forEach((x, i) => expanderMarkers.push({ kind: PortKind.Servo, index: i, label: `SRV${i + 1}`, x, y: 84 }))
+}
+const expanderInfo: InfoMarker[] = [
+    { label: 'CH1', x: 55.5, y: 7.5, title: 'Reserved input channel (board-local — not driven by the hub)' },
+    { label: 'CH2', x: 63.8, y: 7.5, title: 'Reserved input channel (board-local — not driven by the hub)' },
+    { label: 'USB', x: 95.7, y: 46.5, title: 'USB-C — CDC wire to the HubFX master' },
 ]
 
 export const boardPcb: Record<string, BoardPcb> = {
     hubfx: { image: hubfxTop, markers: hubMarkers, info: hubInfo },
     gearcontrol: { image: gearcontrolTop, markers: gearMarkers, info: gearInfo },
+    portexpander: { image: expanderTop, markers: expanderMarkers, info: expanderInfo },
 }
 
 export function pcbFor(boardKind: string): BoardPcb | undefined {
