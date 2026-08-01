@@ -159,7 +159,9 @@ Firmware (see `alert_sound.h`) expects files at:
 | `engine_stop.mp3` | Spool-down sample (~34 s). |
 
 Encoded at 192 kbps (source material provided pre-encoded; still well
-within the PSRAM asset budget).
+within the PSRAM asset budget).  Normalized +8 dB on 2026-08-01 so peaks
+sit at −1…−2 dBFS like the KA50 set (the originals left 9 dB of headroom
+unused and played audibly quiet).
 
 ### `sounds/2A42/` — 2A42 30mm autocannon (KA-50, BMP-2, Mi-28)
 
