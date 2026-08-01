@@ -8,6 +8,7 @@ media/
   sounds/                              # MP3 assets — upload to /sounds/ on the board
     sys/                               # system alert chimes (/sounds/sys/*.mp3)
     KA50/                              # KA-50 Kamov turbine
+    EC665/                             # EC665 Tiger MTR390 turboshaft
     2A42/                              # 2A42 30mm autocannon
   sources/                             # archival ORIGINAL source material
     wav/                               # source WAVs (encoder input — not deployed)
@@ -148,6 +149,17 @@ Firmware (see `alert_sound.h`) expects files at:
 | `engine_start.mp3` | Spool-up sample (~91 s). |
 | `engine_loop.mp3` | Steady-running loop. |
 | `engine_stop.mp3` | Spool-down sample (~67 s). |
+
+### `sounds/EC665/` — EC665 Tiger twin-MTR390 turboshaft
+
+| File | Role |
+| --- | --- |
+| `engine_start.mp3` | Spool-up sample (~45 s). |
+| `engine_loop.mp3` | Steady-running loop (~13 s). |
+| `engine_stop.mp3` | Spool-down sample (~34 s). |
+
+Encoded at 192 kbps (source material provided pre-encoded; still well
+within the PSRAM asset budget).
 
 ### `sounds/2A42/` — 2A42 30mm autocannon (KA-50, BMP-2, Mi-28)
 
