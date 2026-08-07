@@ -81,11 +81,14 @@
                     <div class="sv"><span class="sk">stall</span>
                         {#if live}<span class="dot" class:on={live.stalled}></span><b class:warn={live.stalled}>{live.stalled ? 'STALL' : 'clear'}</b>{:else}<b>—</b>{/if}</div>
                     <div class="sv"><span class="sk">guard</span><b>{live?.guardName ?? '—'}</b></div>
+                    <div class="sv" title="Rated-voltage duty cap: |duty| ceiling = maxDuty × motor V / rail V">
+                        <span class="sk">V-cap</span>
+                        <b>{live ? (live.elementMv > 0 ? `±${live.capDuty} @ ${(live.railNowMv / 1000).toFixed(1)} V` : 'off') : '—'}</b></div>
                 </div>
 
                 <!-- ─── Drive ───────────────────────────────────────── -->
                 <div class="section-head">Drive<span class="hint">port-native duty (same scale as the strut's deploy duty)</span></div>
-                <div class="form-grid cols-2">
+                <div class="form-grid cols-3">
                     <div class="form-field">
                         <span class="field-label" title="Seek / jog duty magnitude (port-native, 0..32767)">Duty</span>
                         <input class="field-input narrow" type="number" min="0" max="32767" step="500"
@@ -97,6 +100,12 @@
                         <input class="field-input narrow" type="number" min="1" max="60" step="1"
                                value={state.timeoutS} disabled={state.busy}
                                on:change={(e) => setMotorField('timeoutS', Math.round(numValue(e)))} />
+                    </div>
+                    <div class="form-field">
+                        <span class="field-label" title="Motor rated voltage — caps the effective duty at maxDuty × this / supply rail (live per-motor voltage sense when wired), so a 6 V motor survives a 2S–6S pack. 0 = no cap (raw duty).">Motor V</span>
+                        <input class="field-input narrow" type="number" min="0" max="48" step="0.5"
+                               value={state.motorVoltageMv / 1000} disabled={state.busy}
+                               on:change={(e) => setMotorField('motorVoltageMv', Math.max(0, Math.round(numValue(e) * 1000)))} />
                     </div>
                 </div>
 

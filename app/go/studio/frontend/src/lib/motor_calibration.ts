@@ -33,6 +33,9 @@ export interface MotorCommitT {
     deployDuty:  number
     retractDuty: number
     timeoutMs:   number
+    /** Motor rated voltage (mV) — firmware caps |duty| at maxDuty × this /
+     *  rail_mV.  0 = cap off. */
+    motorVoltageMv: number
     guard: {
         mode: GuardMode
         ratioX100: number
@@ -61,6 +64,7 @@ export interface OpenMotorCalT {
     // channel's deployDuty).  Seeded from the strut.
     duty:      number
     timeoutS:  number          // per-leg seek timeout, seconds
+    motorVoltageMv: number     // rated-voltage duty cap (mV); 0 = off
 
     // Stall-guard config (live push).
     guardMode:  GuardMode
@@ -109,6 +113,7 @@ export interface OpenMotorCalArgs {
     deployDuty: number          // current strut values (seed)
     retractDuty: number
     timeoutMs: number
+    motorVoltageMv: number      // strut's rated-voltage cap (seed); 0 = off
     // The strut's SAVED stall guard (seed) so the dialog opens on the last
     // calibration; absent → LiveRatio default.  ratioX100 = ratio×100.
     guard?: { mode: GuardMode; ratioX100: number; sampleMs: number; windowMs: number; thresholdMa: number; ceilingMa: number }
@@ -127,6 +132,7 @@ export async function openMotorCalibrationFor(args: OpenMotorCalArgs): Promise<v
         guid: args.guid, portIdx: args.portIdx, label: args.label,
         duty: dutyMag,
         timeoutS: Math.max(1, Math.round((args.timeoutMs || 30000) / 1000)),
+        motorVoltageMv: args.motorVoltageMv ?? 6000,
         // Seed from the strut's SAVED guard so the dialog opens on the last
         // calibration; fall back to the LiveRatio default for an un-tuned strut.
         guardMode: g?.mode ?? 'live',
@@ -137,7 +143,8 @@ export async function openMotorCalibrationFor(args: OpenMotorCalArgs): Promise<v
         ceiling:   g?.ceilingMa ?? 0,
         move: null, calib: null,
         rowBusy: '', busy: true, error: '',
-        deployDuty: args.deployDuty, retractDuty: args.retractDuty, timeoutMs: args.timeoutMs,
+        deployDuty: args.deployDuty, retractDuty: args.retractDuty,
+        timeoutMs: args.timeoutMs,
         onCommit: args.onCommit,
     })
     try {
@@ -177,16 +184,19 @@ export async function refreshMotorStatus(): Promise<void> {
 
 function tmoMs(s: OpenMotorCalT): number { return Math.round((s.timeoutS || 20) * 1000) }
 
-/** Push the current stall-guard config to the role (live, no re-attach). */
+/** Push the current stall-guard config to the role (live, no re-attach).
+ *  Includes the rated-voltage duty cap so calibration sweeps drive the motor
+ *  exactly like a real deploy will. */
 export async function applyGuard(): Promise<void> {
     const s = get(openMotorCalibration)
     if (!s) return
+    const mv = Math.max(0, Math.round(s.motorVoltageMv))
     if (s.guardMode === 'live') {
         await GearMotorGuardLiveRatio(s.guid, s.portIdx,
             Math.round(s.ratio * 100), Math.round(s.sample), 150,
-            Math.round(s.window), 0, Math.round(s.ceiling))
+            Math.round(s.window), 0, Math.round(s.ceiling), mv)
     } else {
-        await GearMotorGuardFixed(s.guid, s.portIdx, Math.round(s.threshold), Math.round(s.window))
+        await GearMotorGuardFixed(s.guid, s.portIdx, Math.round(s.threshold), Math.round(s.window), mv)
     }
 }
 
@@ -284,6 +294,7 @@ export async function saveMotorToStrut(): Promise<void> {
         deployDuty,
         retractDuty,
         timeoutMs:   suggested > 0 ? suggested : s.timeoutMs,
+        motorVoltageMv: Math.max(0, Math.round(s.motorVoltageMv)),
         // Persist the tuned stall guard so real deploy/retract uses it (the
         // gear effect pushes it before each seek).  ratioX100 = ratio×100.
         guard: {

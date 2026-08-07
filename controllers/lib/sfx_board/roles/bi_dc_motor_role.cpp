@@ -11,10 +11,56 @@
 
 namespace sfx_core {
 
+uint16_t BiDcMotorRole::railNowMv() const {
+    if (_vSense) {
+        const int v = _vSense->voltage_mV();
+        if (v > 0) return (uint16_t)v;
+    }
+    return _portRail_mV;
+}
+
+uint16_t BiDcMotorRole::capDuty() const {
+    const uint16_t maxD = _port ? _port->maxDuty() : 0;
+    if (_element_mV == 0 || maxD == 0) return maxD;
+    const uint16_t rail = railNowMv();
+    if (rail == 0 || _element_mV >= rail) return maxD;   // unknown rail / motor rated ≥ rail
+    return (uint16_t)((uint32_t)maxD * _element_mV / rail);
+}
+
+int16_t BiDcMotorRole::applyCap(int16_t signedDuty) const {
+    if (!_port || _element_mV == 0) return signedDuty;
+    const int16_t cap = (int16_t)capDuty();
+    if (signedDuty >  cap) return  cap;
+    if (signedDuty < -cap) return -cap;
+    return signedDuty;
+}
+
+void BiDcMotorRole::refreshCap(uint32_t now) {
+    // Only the live sensor moves the rail — a declared-rail cap is applied
+    // once at command time and never drifts.
+    if (_element_mV == 0 || !_vSense || !_port) return;
+    if (now - _lastCapRefreshMs < kCapRefreshMs) return;
+    _lastCapRefreshMs = now;
+    const int16_t requested = (_seekState == SeekState::Seeking) ? _seekDuty
+                                                                 : _requestedSigned;
+    if (requested == 0) return;
+    const int16_t eff = applyCap(requested);
+    if (eff != _commandedSigned) {
+        _commandedSigned = eff;
+        _port->setSigned(eff);
+    }
+}
+
 void BiDcMotorRole::setSigned(int16_t signedDuty) {
     abortSeek();                       // explicit drive cancels any seek
-    _commandedSigned = signedDuty;
-    if (_port) _port->setSigned(signedDuty);
+    _requestedSigned = signedDuty;
+    const int16_t eff = applyCap(signedDuty);
+    if (eff != signedDuty) {
+        SFX_LOG_INFO("[bimotor] duty %d capped to %d (motor %umV on %umV rail)",
+                     (int)signedDuty, (int)eff, (unsigned)_element_mV, (unsigned)railNowMv());
+    }
+    _commandedSigned = eff;
+    if (_port) _port->setSigned(eff);
     if (signedDuty == 0) {
         _overcurrentActive   = false;
         _overcurrentStartMs  = 0;
@@ -25,6 +71,7 @@ void BiDcMotorRole::setSigned(int16_t signedDuty) {
 void BiDcMotorRole::brake() {
     abortSeek();                       // brake cancels any seek
     _commandedSigned = 0;
+    _requestedSigned = 0;
     if (_port) _port->brake();
     clearStall();
 }
@@ -32,6 +79,7 @@ void BiDcMotorRole::brake() {
 void BiDcMotorRole::coast() {
     abortSeek();                       // coast cancels any seek
     _commandedSigned = 0;
+    _requestedSigned = 0;
     if (_port) _port->coast();
     clearStall();
 }
@@ -120,11 +168,17 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
 
     _lastSeekLogMs       = now;
     _seekState           = SeekState::Seeking;
-    _commandedSigned     = signedDuty;
-    if (_port) _port->setSigned(signedDuty);   // drive directly (not via setSigned → no abort)
+    _requestedSigned     = 0;                  // seek owns the drive now
+    const int16_t eff    = applyCap(signedDuty);
+    if (eff != signedDuty) {
+        SFX_LOG_INFO("[bimotor] seek duty %d capped to %d (motor %umV on %umV rail)",
+                     (int)signedDuty, (int)eff, (unsigned)_element_mV, (unsigned)railNowMv());
+    }
+    _commandedSigned     = eff;
+    if (_port) _port->setSigned(eff);          // drive directly (not via setSigned → no abort)
 
     SFX_LOG_INFO("[bimotor] SEEK start: end=%u duty=%d timeout=%ums  guard=%s thr=%umA win=%ums%s  (I now=%dmA V=%dmV)",
-                 (unsigned)targetEnd, (int)signedDuty, (unsigned)timeout_ms,
+                 (unsigned)targetEnd, (int)eff, (unsigned)timeout_ms,
                  _guardMode == GuardMode::LiveRatio ? "live-ratio" : "fixed",
                  (unsigned)_stallThreshold_mA, (unsigned)_stallWindow_ms,
                  _iSense ? "" : "  [!! NO CURRENT SENSOR — can only time out]",
@@ -158,6 +212,7 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
                 // Confirmed stall = endstop.
                 if (_port) _port->brake();
                 _commandedSigned = 0;
+                _requestedSigned = 0;
                 _stalled         = true;
                 _seekState       = SeekState::Reached;
                 if (_targetEnd != Position::Unknown) _position = _targetEnd;
@@ -184,6 +239,9 @@ bool BiDcMotorRole::stepStallDetect(uint32_t now, uint16_t threshold_mA) {
 
 void BiDcMotorRole::tick() {
     const uint32_t now = SFX_MILLIS();
+
+    // ── Rated-voltage cap vs the live rail ────────────────────────────
+    refreshCap(now);
 
     // ── Endstop seek ──────────────────────────────────────────────────
     if (_seekState == SeekState::Seeking) {
@@ -226,6 +284,7 @@ void BiDcMotorRole::tick() {
                         else if (now - _belowFloorStartMs >= kNoLoadConfirmMs) {
                             if (_port) _port->brake();
                             _commandedSigned = 0;
+                            _requestedSigned = 0;
                             _seekState       = SeekState::TimedOut;   // latched fault
                             _position        = Position::Unknown;
                             SFX_LOG_INFO("[bimotor] NO-LOAD: I stayed <%umA for %ums under drive — "
@@ -285,6 +344,7 @@ void BiDcMotorRole::tick() {
         if (_seekDeadlineMs != 0 && (int32_t)(now - _seekDeadlineMs) >= 0) {
             if (_port) _port->brake();
             _commandedSigned = 0;
+            _requestedSigned = 0;
             _seekState       = SeekState::TimedOut;
             SFX_LOG_INFO("[bimotor] TIMEOUT after %ums — no stall detected, braked (fault latched). "
                          "Last I=%dmA; lower the ratio/threshold if the motor did reach the stop.",
@@ -317,6 +377,7 @@ void BiDcMotorRole::tick() {
                 // callback — the role must not keep driving a stalled motor.
                 if (_port) _port->brake();
                 _commandedSigned = 0;
+                _requestedSigned = 0;
                 if (_onStall) _onStall(_peakDuringWindow_mA, _stallWindow_ms);
             }
         }

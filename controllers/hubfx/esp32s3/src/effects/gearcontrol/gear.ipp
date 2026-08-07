@@ -417,10 +417,12 @@ inline void Gear::commandSeek(int16_t signedDuty) {
 inline void Gear::commandGuard() {
     if (!_send) return;
     // BIMOTOR_SET_GUARD payload (matches BiMotorRoleHandler::handleSetGuard):
-    //   [portIdx][mode][window_ms][a][b][c][d][ceiling_ma]  (all u16LE after mode)
+    //   [portIdx][mode][window_ms][a][b][c][d][ceiling_ma][element_mv]
+    //   (all u16LE after mode)
     //   mode 1 (LiveRatio): a=ratio_x100, b=sample_ms, c=inrushBlank(0=default),
     //                       d=maxTravel(0=none); mode 0 (Fixed): a=threshold_ma.
-    uint8_t payload[14];
+    //   element_mv = motor rated voltage → duty cap (0 = off).
+    uint8_t payload[16];
     payload[0] = _def.motor.portIdx;
     payload[1] = _def.guardMode;
     SfxWire::putU16LE(&payload[2], _def.guardWindowMs);
@@ -436,6 +438,7 @@ inline void Gear::commandGuard() {
         SfxWire::putU16LE(&payload[10], 0);
     }
     SfxWire::putU16LE(&payload[12], _def.guardCeilingMa);
+    SfxWire::putU16LE(&payload[14], _def.motorVoltageMv);
     _send(_sendCtx, _def.motor,
           RolePacket::BIMOTOR_SET_GUARD, payload, sizeof(payload));
 }

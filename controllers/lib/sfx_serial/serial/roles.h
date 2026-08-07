@@ -275,6 +275,21 @@ namespace RolePacket {
         ///< window_ms is the sustained-over-threshold filter, shared by
         ///< both modes (0 = leave unchanged).
         ///< [12:14] optional absolute over-current ceiling_mA (Rule 11; 0 = off).
+        ///< [14:16] optional motor rated voltage element_mV (Rule 11, 2026-08-07;
+        ///<         0 = no voltage cap).  The role CAPS every commanded |duty| at
+        ///<         maxDuty × element_mV / rail_mV so the motor's AVERAGE voltage
+        ///<         never exceeds its rating — rail is the LIVE per-port voltage
+        ///<         sense when present (battery sag auto-compensates) else the
+        ///<         attach-time port rail.  Unlike MOTOR_SET_ELEMENT (intent-%
+        ///<         scaling), a cap leaves tuned deploy/retract duties unchanged
+        ///<         until they'd over-volt the motor.  The 0x40..0x7F opcode
+        ///<         space is EXHAUSTED (0x78..0x7F = SBUS/Jeti input roles) —
+        ///<         this rides SET_GUARD instead of a new opcode by design.
+    // BIMOTOR_STATUS_RESP Rule 11 extension (2026-08-07): optional trailing
+    //   [10:12] element_mV  [12:14] railNow_mV  [14:16] capDuty
+    // after the 2026-05-24 [position:u8][guardMode:u8] extension —
+    // length 8 = original, 10 = +position/guard, 16 = +voltage-cap view.
+
     // (0x56 = SERVO_MOTION_DONE; 0x57 = ROLE_BULK_ATTACH.)
 
     // ── SBUS input role (0x78..0x7B) ──────────────────────────────────

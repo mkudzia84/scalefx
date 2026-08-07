@@ -791,8 +791,19 @@ func CmdBiMotorGetStatus(portIdx byte) []byte {
 // `windowMs == 0` leaves the existing window unchanged.
 // absMaxMa is the optional absolute over-current ceiling (LiveRatio backstop;
 // 0 = none) appended per Rule 11.
-func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d, absMaxMa uint16) []byte {
-	payload := make([]byte, 14)
+// elementMv (optional variadic; second Rule 11 append, 2026-08-07) is the
+// motor's rated voltage: the role caps |duty| at maxDuty × elementMv /
+// rail_mV — live vSense rail when present, else the declared port rail.
+// Passing it emits the 16-byte form (0 = cap OFF); omitting it emits the
+// 14-byte form which leaves the peer's element voltage UNTOUCHED — so a
+// live guard retune never clears a cap the config push installed.  Rides
+// SET_GUARD because the 0x40..0x7F role opcode space is exhausted.
+func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, d, absMaxMa uint16, elementMv ...uint16) []byte {
+	n := 14
+	if len(elementMv) > 0 {
+		n = 16
+	}
+	payload := make([]byte, n)
 	payload[0] = portIdx
 	payload[1] = byte(mode)
 	binary.LittleEndian.PutUint16(payload[2:4],  windowMs)
@@ -801,6 +812,9 @@ func CmdBiMotorSetGuard(portIdx byte, mode BiMotorGuardMode, windowMs, a, b, c, 
 	binary.LittleEndian.PutUint16(payload[8:10], c)
 	binary.LittleEndian.PutUint16(payload[10:12], d)
 	binary.LittleEndian.PutUint16(payload[12:14], absMaxMa)
+	if len(elementMv) > 0 {
+		binary.LittleEndian.PutUint16(payload[14:16], elementMv[0])
+	}
 	return protocol.BuildPacket(BiMotorSetGuard, payload, 0)
 }
 
@@ -859,7 +873,8 @@ func DecodeBiMotorEndstopEvent(p []byte) (BiMotorEndstopEvent, error) {
 }
 
 // BiMotorStatus decodes BIMOTOR_STATUS_RESP.  Position + GuardMode are
-// the Rule 11 trailing bytes; older firmwares omit them.
+// the first Rule 11 trailing bytes; ElementMv/RailNowMv/CapDuty the
+// second (voltage-cap view, 2026-08-07).  Older firmwares omit them.
 type BiMotorStatus struct {
 	Index      byte
 	SignedDuty int16
@@ -868,6 +883,9 @@ type BiMotorStatus struct {
 	Stalled    bool
 	Position   BiMotorPosition  // 0 (Unknown) when peer is pre-Rule-11
 	GuardMode  BiMotorGuardMode // 0 (Fixed) when peer is pre-Rule-11
+	ElementMv  uint16           // motor rated voltage the cap uses (0 = cap off / pre-cap peer)
+	RailNowMv  uint16           // live rail feeding the cap (vSense else declared; 0 = unknown)
+	CapDuty    uint16           // current |duty| ceiling (port maxDuty when cap off)
 }
 
 func DecodeBiMotorStatus(p []byte) (BiMotorStatus, error) {
@@ -884,6 +902,11 @@ func DecodeBiMotorStatus(p []byte) (BiMotorStatus, error) {
 	if len(p) >= 10 {
 		st.Position  = BiMotorPosition(p[8])
 		st.GuardMode = BiMotorGuardMode(p[9])
+	}
+	if len(p) >= 16 {
+		st.ElementMv = binary.LittleEndian.Uint16(p[10:12])
+		st.RailNowMv = binary.LittleEndian.Uint16(p[12:14])
+		st.CapDuty   = binary.LittleEndian.Uint16(p[14:16])
 	}
 	return st, nil
 }

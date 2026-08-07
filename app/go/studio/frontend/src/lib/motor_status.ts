@@ -19,6 +19,9 @@ export interface MotorLive {
     position:    number      // 0 unknown / 1 A / 2 B
     positionName: string
     guardName:   string
+    elementMv:   number      // rated-voltage cap (0 = off / pre-cap firmware)
+    railNowMv:   number      // rail the cap uses (live vSense else declared)
+    capDuty:     number      // current |duty| ceiling
     ts:          number       // wall-clock ms of last update (staleness)
 }
 
@@ -36,13 +39,16 @@ export async function pollMotorStatus(guid: string, idx: number): Promise<void> 
         const st = await GearMotorStatus(guid, idx) as {
             signedDuty: number; voltageMv: number; currentMa: number
             stalled: boolean; position: number; positionName: string; guardName: string
+            elementMv?: number; railNowMv?: number; capDuty?: number
         }
         motorStatus.update(m => ({
             ...m,
             [motorStatusKey(guid, idx)]: {
                 signedDuty: st.signedDuty, voltageMv: st.voltageMv, currentMa: st.currentMa,
                 stalled: st.stalled, position: st.position, positionName: st.positionName,
-                guardName: st.guardName, ts: Date.now(),
+                guardName: st.guardName,
+                elementMv: st.elementMv ?? 0, railNowMv: st.railNowMv ?? 0, capDuty: st.capDuty ?? 0,
+                ts: Date.now(),
             },
         }))
     } catch {

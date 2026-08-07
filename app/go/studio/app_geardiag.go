@@ -44,6 +44,10 @@ type DiagBiMotorStatus struct {
 	PositionNm string `json:"positionName"`
 	GuardMode  byte   `json:"guardMode"`
 	GuardNm    string `json:"guardName"`
+	// Rated-voltage duty cap view (0/0/0 on pre-cap firmware or cap off).
+	ElementMv uint16 `json:"elementMv"`
+	RailNowMv uint16 `json:"railNowMv"`
+	CapDuty   uint16 `json:"capDuty"`
 }
 
 // DiagEndstopResult is the awaited outcome of a move/seek (reached/timeout/
@@ -147,6 +151,9 @@ func (a *App) DiagBiMotorStatus(portIdx int) (DiagBiMotorStatus, error) {
 		PositionNm: st.Position.String(),
 		GuardMode:  byte(st.GuardMode),
 		GuardNm:    st.GuardMode.String(),
+		ElementMv:  st.ElementMv,
+		RailNowMv:  st.RailNowMv,
+		CapDuty:    st.CapDuty,
 	}, nil
 }
 

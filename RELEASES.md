@@ -7,6 +7,48 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.43.0 — 2026-08-07 — gear-motor rated-voltage cap
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.43.0 | ESP32-S3 | `hubfx-v2.43.0` |
+| GearControl (expander) | 1.1.0 | RP2040 | `gearcontrol-v1.1.0` |
+
+MINOR bump on both: additive Rule 11 wire fields; the cap logic lives in the
+shared `BiDcMotorRole`, so the GearControl expander must be reflashed for the
+cap to actually clamp the motor.
+
+### New Features
+- **Gear motors can declare their rated voltage** (`gears[].motor_voltage_mv`
+  in `/gearcontrol.yaml`, **default 6000 mV**; explicit `0` = cap off).  The
+  BiDcMotor role CAPS every commanded |duty| — drive, seek, move-to-end — at
+  `maxDuty × rated_mV / rail_mV`, so a 6 V retract motor survives a 2S–6S pack.
+  The rail is the LIVE per-motor INA226 voltage sense when present (re-clamped
+  ~10 Hz, so battery sag auto-compensates), else the attach-time declared port
+  rail.  A **cap, not a scale**: duties already tuned below the ceiling keep
+  their exact meaning.  Follows the GunFX `element_mv` layering (rail on the
+  port, mechanism on the role, rating in the effect config).
+- **Studio: "Motor V" field in the gear-motor calibration dialog** (seeded from
+  the strut, saved back by *Save to strut*); the live-status grid shows the
+  active cap (`V-cap ±duty @ rail V`).  The calibration guard push includes the
+  voltage so sweeps drive exactly like a real deploy.
+- **CLI**: `bimotor-guard … [motorMv]` optional trailing arg sets the cap
+  (omit = leave unchanged); `bimotor-status` renders the volt-cap line.
+
+### Protocol Changes
+- `BIMOTOR_SET_GUARD` (0x77) Rule 11 append `[14:16] element_mV` (0 = cap
+  off; 14-byte form leaves the peer's cap untouched).  Rides SET_GUARD because
+  the 0x40–0x7F role opcode space is exhausted (0x78+ = SBUS/Jeti input).
+- `BIMOTOR_STATUS_RESP` (0x6C) Rule 11 append `[10:12] element_mV [12:14]
+  railNow_mV [14:16] capDuty` (lengths 8/10/16 all valid).
+
+### Internal
+- New voice **PEWPEW** demo gun sounds (`media/sounds/PEWPEW/gun_120rpm.mp3` /
+  `gun_450rpm.mp3`) — cute TTS "pew pew" replacing the synth laser chirps;
+  cadence matches the rpm suffix.
+
+---
+
 ## 2.42.1 — 2026-08-01 — input remaps take effect on Apply
 
 | Component | Version | Platform | Tag |

@@ -18,6 +18,7 @@ namespace sfx_core {
 bool BiMotorRoleHandler::attach(HBridgeBinding& b, uint8_t portIdx,
                                 const uint8_t* cfg, size_t cfgLen) {
     auto& role = b.role.emplace<BiDcMotorRole>(b.port, b.iSense, b.vSense);
+    role.setPortRailMv(b.voltageMv);   // rated-voltage cap fallback when no vSense
 
     // Attach config layout — Rule 11 append-only.  Older masters send
     // only the first 4 bytes (Fixed-mode threshold + window); a Strategy A
@@ -96,10 +97,10 @@ void BiMotorRoleHandler::handleGetStatus(const uint8_t* p, size_t len) {
     if (!b || !b->occupied()) { _ctx->sendNack(PortError::PORT_NOT_FOUND); return; }
     auto* r = std::get_if<BiDcMotorRole>(&b->role);
     if (!r) { _ctx->sendNack(RoleError::ROLE_KIND_MISMATCH); return; }
-    // Rule 11 extension: append [position][guardMode] tail.  Older
-    // masters parse only the first 8 bytes; newer masters see the
-    // Strategy A position + active stall-detection mode.
-    uint8_t out[10];
+    // Rule 11 extensions: [8:10] position/guardMode, then the voltage-cap
+    // view at [10:12] element_mV [12:14] railNow_mV [14:16] capDuty.
+    // Older masters parse only the first 8 (or 10) bytes.
+    uint8_t out[16];
     out[0] = idx;
     SfxWire::putI16LE(&out[1], r->signedDuty());
     SfxWire::putI16LE(&out[3], r->voltage_mV());
@@ -107,6 +108,9 @@ void BiMotorRoleHandler::handleGetStatus(const uint8_t* p, size_t len) {
     out[7] = r->stalled() ? 1 : 0;
     out[8] = static_cast<uint8_t>(r->position());
     out[9] = static_cast<uint8_t>(r->guardMode());
+    SfxWire::putU16LE(&out[10], r->elementVoltageMv());
+    SfxWire::putU16LE(&out[12], r->railNowMv());
+    SfxWire::putU16LE(&out[14], r->capDuty());
     _ctx->sendRawPacket(RolePacket::BIMOTOR_STATUS_RESP, _ctx->currentTag(), out, sizeof out);
 }
 
@@ -166,6 +170,9 @@ void BiMotorRoleHandler::handleSetGuard(const uint8_t* p, size_t len) {
     // Rule 11 append: optional absolute over-current ceiling at [12:14]
     // (LiveRatio backstop; 0 = none).  Old clients omit it.
     if (len >= 14) r->setAbsoluteCeiling(SfxWire::getU16LE(&p[12]));
+    // Rule 11 append: optional motor rated voltage at [14:16] (0 = cap off).
+    // Rides SET_GUARD because the 0x40..0x7F role opcode space is exhausted.
+    if (len >= 16) r->setElementVoltage(SfxWire::getU16LE(&p[14]));
     _ctx->sendAck();
 }
 

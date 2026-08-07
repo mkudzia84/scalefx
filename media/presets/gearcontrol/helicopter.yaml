@@ -23,6 +23,12 @@
 # polarity (down vs up).  timeout_ms is the full-travel watchdog — the
 # motor runs until the INA226 reports a stall (mechanical endpoint) or
 # this elapses (→ ERROR).
+#
+# motor_voltage_mv is the motor's RATED voltage: the BiDcMotor role caps
+# the effective |duty| at maxDuty × motor_voltage_mv / rail_mV (live
+# per-motor INA226 voltage when present, else the declared port rail) so
+# a 6 V gear motor survives a 2S–6S pack.  Absent = 6000; explicit 0 =
+# no cap (raw duty).
 
 schema_version: 1
 enabled: true
@@ -34,6 +40,7 @@ gears:
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000
+    motor_voltage_mv: 6000
 
   - id: 1
     name: left_main
@@ -41,6 +48,7 @@ gears:
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000
+    motor_voltage_mv: 6000
 
   - id: 2
     name: right_main
@@ -48,3 +56,4 @@ gears:
     deploy_duty:   20000
     retract_duty: -20000
     timeout_ms:    4000
+    motor_voltage_mv: 6000
