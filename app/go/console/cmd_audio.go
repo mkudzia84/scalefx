@@ -3,6 +3,7 @@ package console
 import (
 	"encoding/hex"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -18,7 +19,7 @@ func init() {
 	register(&command{Name: "queue", Usage: "queue <ch> <path> [now|finish]", Help: "queue a follow-on sound", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdQueue})
 	register(&command{Name: "queue-clear", Usage: "queue-clear <ch|all>", Help: "clear queue on a channel", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdQueueClear})
 	register(&command{Name: "audio-status", Usage: "audio-status", Help: "raw AUDIO_STATUS_RESP payload", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdAudioStatus})
-	register(&command{Name: "codec-status", Usage: "codec-status", Help: "raw CODEC_STATUS_RESP payload", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdCodecStatus})
+	register(&command{Name: "codec-status", Usage: "codec-status [speaker_ohms]", Help: "codec state + power telemetry (watts estimated into 4Ω unless given)", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdCodecStatus})
 	register(&command{Name: "audio-preloads", Usage: "audio-preloads", Help: "PSRAM asset cache: per-path residency + owners", Category: catAudio, RequiresConn: true, RequiresCap: core.CapAudio, Run: cmdAudioPreloads})
 }
 
@@ -316,25 +317,71 @@ func percent(num, den uint32) int {
 	return p
 }
 
-func cmdCodecStatus(a *App, _ []string) error {
+func cmdCodecStatus(a *App, args []string) error {
 	if err := a.requireClient(); err != nil {
 		return err
+	}
+	// The ScaleFX speaker BOM is 4 Ω; allow an override for bench rigs.
+	ohms := 4.0
+	if len(args) > 0 {
+		v, err := strconv.ParseFloat(args[0], 64)
+		if err != nil || v <= 0 {
+			return fmt.Errorf("speaker_ohms must be a positive number, got %q", args[0])
+		}
+		ohms = v
 	}
 	s, err := a.c.Audio.CodecStatus()
 	if err != nil {
 		return err
 	}
 	Hdr("codec")
+	if s.CodecName != "" {
+		KV("model", s.CodecName)
+	}
 	KVf("type", "0x%02X", s.CodecType)
 	KV("initialised", Bool(s.Initialized))
 	KV("I²C", Bool(s.I2COk))
 	KVf("pins", "SDA=GPIO%d  SCL=GPIO%d", s.SdaPin, s.SclPin)
-	KVf("supply", "code=%d", s.SupplyVoltage)
+	if s.SupplyMode == audio.SupplyModeAuto {
+		KV("supply", "auto (PVDD-detected)")
+	} else {
+		KVf("supply", "code=%d (legacy fw)", s.SupplyMode)
+	}
 	KV("muted", Bool(s.Muted))
-	KVf("digital vol", "0x%02X", s.DigitalVol)
+	KVf("digital vol", "0x%02X (%s)", s.DigitalVol, digVolDb(s.DigitalVol))
 	KVf("device ctrl", "0x%02X", s.DeviceCtrl)
 	KVf("faults", "0x%02X", s.FaultStatus)
+	if s.HasPower {
+		die := ""
+		if s.DieId == 0x95 {
+			die = " (TAS5825M silicon)"
+		}
+		KVf("die id", "0x%02X%s", s.DieId, die)
+		KVf("PVDD rail", "%.2f V (chip ADC)", float64(s.PvddMv)/1000)
+		againDb := float64(s.AgainReg) * 0.5
+		vfs := 29.5 * math.Pow(10, -againDb/20)
+		KVf("analog gain", "-%.1f dB (full-scale %.2f Vpeak, auto)", againDb, vfs)
+		// Output estimate from the mixed-signal peak since the last
+		// query, scaled by digital + analog gain. Sine-average power
+		// into a nominal load — an estimate, not a measurement (true
+		// output I/V sense needs the M's smart-amp pipeline).
+		level := float64(s.OutPeak) / 32767
+		digDb := -0.5 * (float64(s.DigitalVol) - 0x30)
+		vpk := vfs * level * math.Pow(10, digDb/20)
+		KVf("out peak", "%.0f%% of full scale", level*100)
+		KVf("est. power", "%.1f W into %g Ω (sine avg at peak level)",
+			vpk*vpk/(2*ohms), ohms)
+	}
 	return nil
+}
+
+// digVolDb renders the DIG_VOL register (0x30 = 0 dB, −0.5 dB per count,
+// 0xFF = mute) as a human dB string.
+func digVolDb(reg byte) string {
+	if reg == 0xFF {
+		return "mute"
+	}
+	return fmt.Sprintf("%+.1f dB", -0.5*(float64(reg)-0x30))
 }
 
 // Compile-time keep-alive — hex.EncodeToString is still used elsewhere.

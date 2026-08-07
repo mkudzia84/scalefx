@@ -111,10 +111,10 @@ type App struct {
 	portProfiles map[devicemodel.PortRef]ServoMotionProfileDTO
 
 	// `/hubfx.yaml` top-level blocks that Studio doesn't expose in any UI
-	// yet but MUST round-trip through Save (audio / telemetry).  Populated on
-	// LoadHubConfig, emitted on SaveHubConfig.  (`features:` was retired —
-	// effect enable lives in each effect's own sub-config now.)
-	hubAudio     *yamlAudio
+	// yet but MUST round-trip through Save (telemetry).  Populated on
+	// LoadHubConfig, emitted on SaveHubConfig.  (`features:` and
+	// `audio.codec_supply` were retired — effect enable lives in each
+	// sub-config; the codec auto-detects its PVDD rail.)
 	hubTelemetry *yamlTelemetry
 
 	// Retained expander config from /hubfx.yaml's `expanders:` block —

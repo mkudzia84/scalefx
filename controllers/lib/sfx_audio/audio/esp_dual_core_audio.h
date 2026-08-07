@@ -18,9 +18,9 @@
  *       struct CodecAdapter<TAS5825PCodec> {
  *           static constexpr bool kHasCodec = true;
  *           static bool probe() {
- *               return TAS5825PCodec::instance().begin(Wire,
+ *               return TAS5825PCodec::instance().begin(hubI2cBus(),
  *                   Gpio::I2C_SDA, Gpio::I2C_SCL,
- *                   AUDIO_SAMPLE_RATE, Codec::SUPPLY_VOLTAGE);
+ *                   AUDIO_SAMPLE_RATE);
  *           }
  *           static bool activate() {
  *               return TAS5825PCodec::instance().activate();

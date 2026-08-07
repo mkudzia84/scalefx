@@ -151,13 +151,10 @@ inline uint8_t failsafeFromName(const char* name) {
 struct HubFxConfig {
     static constexpr uint8_t kSchemaVersion = 1;
 
-    /// System audio block — TAS5825P PVDD-rail selector.  Picked up at
-    /// boot before audio.begin() via the CodecAdapter trait.  Lives in
-    /// /hubfx.yaml (not /alerts.yaml or its own /audio.yaml) because
-    /// it's a BOARD-LEVEL hardware setting, not an effect-level one.
-    struct AudioBlock {
-        char codecSupply[8] = "12v";          ///< 12v | 15v | 20v | 24v
-    } audio;
+    // NOTE (2026-08-01): the `audio.codec_supply` PVDD selector was RETIRED —
+    // the codec drivers auto-detect the rail via the chip's own PVDD ADC at
+    // activate() and pick the analog gain to match.  A `codec_supply:` key in
+    // an old file parses to nothing and is ignored.
 
     // NOTE (2026-07-26): the `features:` master-enable matrix was RETIRED.
     // Each effect's enable now lives ONLY in its own sub-config (enginefx.yaml
@@ -302,17 +299,13 @@ namespace hubfx_config_schema {
 
 using namespace sfx;
 
-using Aud   = HubFxConfig::AudioBlock;
 using Telem = HubFxConfig::TelemetryBlock;
 
 inline const auto fields = schema<HubFxConfig>(
 
-    group<&HubFxConfig::audio>("audio",
-        prop<&Aud::codecSupply>("codec_supply", "12v")
-    ),
-
-    // (`features:` group retired 2026-07-26 — effect enable lives in each
-    // effect's own sub-config; an old file's `features:` key parses to nothing.)
+    // (`audio:` group retired 2026-08-01 — codec analog gain auto-detects
+    // from the measured PVDD rail; `features:` retired 2026-07-26. Old
+    // files' keys parse to nothing.)
 
     group<&HubFxConfig::telemetry>("telemetry",
         prop<&Telem::inputs>    ("inputs",      false),

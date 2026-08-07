@@ -7,6 +7,105 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.42.0 — 2026-08-01 — PVDD auto-gain + audio power telemetry
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.42.0 | ESP32-S3 | `hubfx-v2.42.0` |
+
+MINOR bump: additive CODEC_STATUS wire fields + a retired config key.
+
+### New Features
+- **Codec analog gain auto-detects the amp rail.**  Both TAS5825 drivers
+  measure PVDD via the chip's own ADC (0x5E) during `activate()` (in HiZ,
+  analog powered) and pick the exact −0.5 dB AGAIN step whose full-scale
+  output fits under the measured rail — e.g. a 4S pack at 14.8 V lands at
+  −6.5 dB instead of the old fixed 12v preset's −8 dB.  Implausible ADC
+  reading (< 4.5 V floor) falls back to the safe −8 dB with a WARN.
+- **Audio power telemetry** appended to `CODEC_STATUS_RESP` (Rule 11,
+  after the codec name): `pvdd_mV:u16` (live rail), `againReg:u8`
+  (auto-chosen gain step), `dieId:u8` (0x95 = TAS5825M silicon — the
+  BOM-vs-silicon check), `outPeak:u16` (mixed-output peak since last
+  query, tracked losslessly in the Core-1 consumer).  `codec-status`
+  renders rail volts, gain in dB, output level %, and an estimated
+  watts @4Ω/@8Ω (computed client-side from level × gains; a true
+  measurement needs the M's IV-sense/PPC3 pipeline — future work).
+- **Codec build flag**: `-DHUBFX_CODEC_TAS5825M` selects the M driver
+  for boards carrying M silicon; default stays P.
+
+### Bug Fixes
+- **Studio: applied light-program edits no longer revert on tab switch.**
+  `loadLightFxConfig` seeded any active program whose name matched a
+  preset-library template FROM THE TEMPLATE instead of the device file —
+  so after an Apply, remounting the Lighting tab reverted the UI to the
+  pre-edit template, and the NEXT Apply pushed that stale template back
+  to the board (silently undoing the operator's applied change, e.g.
+  freshly added light bindings).  The device file is now authoritative
+  for active programs; the library is only the fallback when the file
+  is missing from the board.
+
+### Breaking ⚠️
+- **`audio.codec_supply` retired** (config-only; wire-compatible).  The
+  key in an old `/hubfx.yaml` parses to nothing and is ignored; Studio
+  no longer round-trips the `audio:` block.  The CODEC_STATUS supply
+  byte now always reports 4 ("auto").
+
+### Internal
+- `Supply` enum / `parseSupply` / `setSupplyVoltage` deleted from both
+  drivers; presets (`minimal.yaml`, `helicopter_ka50.yaml` ×2 copies)
+  and the Studio `yamlAudio` round-trip struct dropped.
+
+---
+
+## Unreleased (pcb-nextver) — TAS5825 register-map datasheet audit
+
+No flashed release yet.  The bench boards turned out to carry TAS5825**M**
+silicon (the BOM said P), which prompted restoring the M driver — and a full
+audit of `tas5825_regs.h` against the official TI datasheet **SLASEH7H**
+(Table 9-6).  The folk map the drivers had shipped with diverged on six
+registers; audio only ever worked because the mis-aimed writes were mostly
+harmless and one of them ("CLK_SRC" at 0x33) accidentally landed on the REAL
+SAP_CTRL1 and set the required 16-bit word length.
+
+### Bug Fixes
+- **`tas5825_regs.h` rewritten to the official map** (datasheet = gold
+  standard, addresses cited per table): SAP_CTRL1 is **0x33** (was
+  mislabeled CLK_SRC; "SAP_CTRL1"=0x60 is really GPIO_CTRL), GPIO1_SEL is
+  **0x62** (0x4F is the emergency volume-ramp register), analog gain is
+  ANA_CTRL **0x53** / AGAIN **0x54** (0x46 is DSP_CTRL — the old
+  "ANALOG_CTRL=0x11" write there silently forced the DSP to 96 kHz
+  processing).
+- **DIG_VOL scale corrected** — 0x00 is **+24 dB full gain**, 0xFF is mute
+  (was inverted: `VOL_MUTE=0x00` meant `setMute()`/`setVolume(0)` would
+  command maximum gain).  `setVolume`/`setVolumeDB` formulas fixed; new
+  `volRegForDb()` helper.
+- **FS_MON code table corrected** — 48 kHz reports **0x09** (Table 9-19),
+  not 0x04 (which is 16 kHz); the fabricated 8/44.1/88.2/176.4 kHz codes
+  are gone.
+- **Fault bit decode corrected** — GLOBAL_FAULT1 is CLK=bit2 /
+  PVDD_OV=bit1 / PVDD_UV=bit0 (+OTP-CRC/BQ/EEPROM in bits 7-5); DC/OC
+  faults live in CHAN_FAULT (0x70), over-temp shutdown in GLOBAL_FAULT2.
+- **Both drivers corrected** (`tas5825_m_codec` restored + ported to
+  `SfxI2cBus`; `tas5825_p_codec` same fixes, permissive flow kept):
+  DIS_DSP held until I2S clocks are proven (per datasheet), GPIO1→FAULTZ
+  now actually output-enabled via GPIO_CTRL, DIE_ID (0x67, =0x95) identity
+  check at probe, undocumented "identity DSP coefficient" book writes
+  dropped (ROM mode + ZROM defaults are the documented pass-through).
+
+### New Features
+- **`tests/hw/tas5825m_beep`** — self-contained pure-IDF bring-up probe:
+  1 kHz beep, every register write readback-verified, FS_MON/CLKDET
+  decode, live PVDD voltage (PVDD_ADC 0x5E), fault-decoded 2 s heartbeat
+  with PLAY auto-recovery.  Hand-off zip: `tas5825m_beep_20260730.zip`.
+
+### Internal
+- HubFX still compiles the P codec (`getCodecType()` 1=M / 2=P unchanged);
+  switching to the M driver is a one-line typedef change in
+  `hubfx_esp32s3.cpp` once the beep probe confirms the silicon.  A version
+  bump lands with that switch.
+
+---
+
 ## Studio 2026-07-26 hotfix — the REAL "hanging UI" root cause
 
 No firmware change (HubFX stays 2.41.0).  The fresh-board freeze survived the

@@ -1,0 +1,16 @@
+# tas5825m_beep — minimal config.
+#
+# Console = UART0 @ 115200 (IDF default) — the probe is standalone, no COBS
+# wire, so plain text logs are exactly what we want.  NO USB-Serial-JTAG
+# console (the S3's single internal USB PHY lesson — irrelevant here since
+# this probe doesn't use USB host, but stay consistent with the house
+# pattern so a later copy-paste doesn't resurrect the bug).
+
+# Flash — match the module (8 MB QIO) + production partition table.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+CONFIG_FREERTOS_HZ=1000

@@ -50,8 +50,6 @@
  */
 class TAS5825PCodec {
 public:
-    using Supply = sfx_audio::tas5825::Supply;
-
     static TAS5825PCodec& instance() {
         static TAS5825PCodec inst;
         return inst;
@@ -64,8 +62,7 @@ public:
 
     // ─── Phase 1: pre-clock init ───────────────────────────────────────
     bool begin(sfx_peripherals::SfxI2cBus& wire, int sda, int scl,
-               uint32_t sample_rate = AUDIO_SAMPLE_RATE,
-               Supply supply        = Supply::V20);
+               uint32_t sample_rate = AUDIO_SAMPLE_RATE);
 
     // ─── Phase 2: post-clock activation ────────────────────────────────
     bool activate();
@@ -78,9 +75,8 @@ public:
     bool isInitialized() const { return initialized_; }
     const char* getModelName() const { return "TAS5825P"; }
 
-    // ─── Volume / supply ──────────────────────────────────────────────
+    // ─── Volume ───────────────────────────────────────────────────────
     void setVolumeDB(float db);
-    bool setSupplyVoltage(Supply voltage);
 
     // ─── Fault management ─────────────────────────────────────────────
     bool clearFaults();
@@ -153,12 +149,19 @@ public:
     uint8_t getCodecType() const { return 2; }   // 2 = TAS5825P (per protocol)
     bool    getMuted() const { return muted_; }
     uint8_t getVolumeRegister() const { return currentVolume_; }
-    Supply  getSupplyVoltage() const { return supply_; }
     int     getSdaPin() const { return sdaPin_; }
     int     getSclPin() const { return sclPin_; }
     uint8_t getDeviceControlRegister();
     uint8_t getFaultRegister();
     bool    testI2CConnection();
+
+    // ─── Power telemetry ──────────────────────────────────────────────
+    /// Live PVDD rail read via the chip's own ADC (0 on wire error).
+    uint32_t readPvdd_mV();
+    /// AGAIN step chosen by the PVDD auto-detect at activate().
+    uint8_t  getAgainRegister() const { return againReg_; }
+    /// DIE_ID read at probe (0x95 identifies TAS5825M silicon).
+    uint8_t  getDieId() const { return dieId_; }
 
 private:
     TAS5825PCodec();
@@ -167,19 +170,19 @@ private:
     int      sdaPin_      = -1;
     int      sclPin_      = -1;
     uint32_t sampleRate_  = 0;
-    Supply   supply_      = Supply::V20;
     bool     initialized_ = false;
     bool     muted_       = false;
     bool     hybridProOn_ = false;
     uint16_t boostMinMv_  = 0;
     uint16_t boostMaxMv_  = 0;
     uint8_t  currentVolume_ = sfx_audio::tas5825::VOL_0DB;
+    uint8_t  againReg_    = sfx_audio::tas5825::AGAIN_FALLBACK;
+    uint8_t  dieId_       = 0;
 
     bool writeRegister(uint8_t reg, uint8_t value);
     bool readRegister(uint8_t reg, uint8_t* value);
     bool selectBookPage(uint8_t book, uint8_t page);
 
-    bool initDSPCoefficients();
     bool configureAnalogGain();
 };
 

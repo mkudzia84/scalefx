@@ -18,8 +18,7 @@
 
 schema_version: 1
 
-audio:
-  codec_supply: 12v             # 3S LiPo PVDD (10–12.6 V).  12v | 15v | 20v | 24v.
+# (audio.codec_supply retired 2026-08-01 — PVDD auto-detected.)
 
 features:
   alerts:         true          # /alerts.yaml

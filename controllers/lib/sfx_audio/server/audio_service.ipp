@@ -359,25 +359,27 @@ void AudioServicePolicy<TMixer>::handleStatusReq() {
 // ============================================================================
 // CODEC_STATUS_REQ (0xAA) → CODEC_STATUS_RESP (0xAB)
 // Wire: [codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
-//       [supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+//       [supplyMode:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
 //       [codecNameLen:u8][codecName:str]
+//       + power-telemetry tail (Rule 11 append, 2026-08-01):
+//       [pvdd_mV:u16LE][againReg:u8][dieId:u8][outPeak:u16LE]
+// supplyMode always reports 4 ("auto") — the manual codec_supply config
+// was retired; the drivers auto-detect the rail via PVDD_ADC.
 // ============================================================================
 
 template <MixerLike TMixer>
 void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
     auto& codec = mixer().getCodec();
-    uint8_t buf[64];
+    uint8_t buf[80];
     size_t pos = 0;
 
-    buf[pos++] = codec.getCodecType();         // 0=simple, 1=TAS5825M
+    buf[pos++] = codec.getCodecType();         // 1=TAS5825M, 2=TAS5825P
     buf[pos++] = codec.isInitialized() ? 1 : 0;
     buf[pos++] = codec.testI2CConnection() ? 1 : 0;
     buf[pos++] = (uint8_t)(codec.getSdaPin() & 0xFF);
     buf[pos++] = (uint8_t)(codec.getSclPin() & 0xFF);
 
-    // Supply voltage enum — only meaningful for TAS5825M
-    // For simple codec: always 0
-    buf[pos++] = (uint8_t)codec.getSupplyVoltage();
+    buf[pos++] = sfx_audio::tas5825::SUPPLY_CODE_AUTO;
     buf[pos++] = codec.getMuted() ? 1 : 0;
     buf[pos++] = codec.getVolumeRegister();
     buf[pos++] = codec.getDeviceControlRegister();
@@ -392,6 +394,20 @@ void AudioServicePolicy<TMixer>::handleCodecStatusReq() {
         memcpy(&buf[pos], name, nameLen);
         pos += nameLen;
     }
+
+    // Power-telemetry tail: live PVDD (chip's own ADC), the auto-chosen
+    // analog gain step, silicon DIE_ID, and the mixed-output peak since
+    // the last query (0..32767) — the client computes a watts estimate
+    // from these plus speaker impedance.
+    uint32_t pvdd = codec.readPvdd_mV();
+    if (pvdd > 0xFFFF) pvdd = 0xFFFF;
+    buf[pos++] = (uint8_t)(pvdd & 0xFF);
+    buf[pos++] = (uint8_t)(pvdd >> 8);
+    buf[pos++] = codec.getAgainRegister();
+    buf[pos++] = codec.getDieId();
+    uint16_t peak = mixer().outputPeakSinceLastRead();
+    buf[pos++] = (uint8_t)(peak & 0xFF);
+    buf[pos++] = (uint8_t)(peak >> 8);
 
     sendRawPacket(AudioPacket::CODEC_STATUS_RESP, currentTag(), buf, pos);
 }

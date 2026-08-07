@@ -95,17 +95,12 @@ func (e *yamlExpanderEntry) expanderKind() string {
 	return ""
 }
 
-// yamlAudio / yamlTelemetry mirror the same-named blocks in
-// `hubfx_config.h::populate()` — the firmware reads them at top level.
-// (The `features:` master-enable matrix was RETIRED 2026-07-26: each
-// effect's enable now lives ONLY in its own sub-config, so hubfx.yaml is
-// pure port/input/audio mapping.  A `features:` key in an OLD file is
-// simply ignored on load — yaml.v3 drops unknown fields — and never
-// re-emitted.)
-
-type yamlAudio struct {
-	CodecSupply string `yaml:"codec_supply,omitempty"`
-}
+// yamlTelemetry mirrors the same-named block in
+// `hubfx_config.h::populate()` — the firmware reads it at top level.
+// (The `features:` master-enable matrix was RETIRED 2026-07-26 and the
+// `audio.codec_supply` selector 2026-08-01 — the codec auto-detects its
+// PVDD rail.  Either key in an OLD file is simply ignored on load —
+// yaml.v3 drops unknown fields — and never re-emitted.)
 
 type yamlTelemetry struct {
 	Inputs     bool   `yaml:"inputs"`
@@ -115,7 +110,6 @@ type yamlTelemetry struct {
 
 type hubYamlConfig struct {
 	SchemaVersion int                 `yaml:"schema_version,omitempty"`
-	Audio         *yamlAudio          `yaml:"audio,omitempty"`
 	Telemetry     *yamlTelemetry      `yaml:"telemetry,omitempty"`
 	Inputs        []yamlInputBinding  `yaml:"inputs,omitempty"`
 	Ports         []yamlPortBinding   `yaml:"ports,omitempty"`
@@ -149,10 +143,10 @@ func (a *App) LoadHubConfig() error {
 	const hubGUID = ""
 
 	a.dmMu.Lock()
-	// Capture the top-level non-overlay blocks (audio / telemetry) so Save
-	// can round-trip them.  Nil ⇒ the YAML had no such block.  (`features:`
-	// was retired — an effect's enable lives in its own sub-config now.)
-	a.hubAudio     = cfg.Audio
+	// Capture the top-level non-overlay telemetry block so Save can
+	// round-trip it.  Nil ⇒ the YAML had no such block.  (`features:` and
+	// `audio.codec_supply` were retired — effect enable lives in each
+	// sub-config; the codec auto-detects its PVDD rail.)
 	a.hubTelemetry = cfg.Telemetry
 	// ── inputs[] → channel.function ────────────────────────────────
 	for _, ib := range cfg.Inputs {
@@ -265,14 +259,11 @@ func (a *App) SaveHubConfig() error {
 	const hubGUID = ""
 
 	cfg := hubYamlConfig{SchemaVersion: 1}
-	// Round-trip the top-level blocks we don't have a UI for yet (audio /
-	// telemetry).  `features:` is intentionally NOT emitted — effect enable
-	// lives in each effect's own sub-config now, so hubfx.yaml is pure
-	// port/input/audio mapping and never churns when an effect is toggled.
+	// Round-trip the top-level telemetry block (no UI for it yet).
+	// `features:` and `audio:` are intentionally NOT emitted — effect
+	// enable lives in each effect's own sub-config, and the codec
+	// auto-detects its PVDD rail (codec_supply retired 2026-08-01).
 	a.dmMu.Lock()
-	if a.hubAudio != nil {
-		cfg.Audio = a.hubAudio
-	}
 	if a.hubTelemetry != nil {
 		cfg.Telemetry = a.hubTelemetry
 	}
