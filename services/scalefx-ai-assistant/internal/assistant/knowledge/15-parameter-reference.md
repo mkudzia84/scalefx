@@ -232,9 +232,10 @@ and tune the stall guard.
 
 | Control | What it does | Default |
 |---|---|---|
-| Live status (~2 Hz) | Shows duty, voltage, **current (mA)** (the stall-current anchor), position, and stall state while you drive. | — |
+| Live status (~2 Hz) | Shows duty, voltage, **current (mA)** (the stall-current anchor), position, stall state, and the active voltage cap (V-cap) while you drive. | — |
 | Duty | The seek/jog drive magnitude (port-native, 0…32767). | from the dialog |
 | Timeout (s) | Per-leg seek timeout; the seek aborts to TIMEOUT after this. | `30s` |
+| Motor V | The motor's RATED voltage. Firmware caps the effective duty at maxDuty × rated / supply-rail volts (using the live per-motor voltage sensor when wired, else the declared port rail) — so a 6 V gear motor survives a 2S–6S pack. `0` = no cap (raw duty). Saved to the strut as `motor_voltage_mv`. | `6 V` |
 | Calibrate (A→B sweep) | Drives to end A then end B, measuring each leg's travel-time and peak current; the full-stroke time auto-suggests the strut's travel timeout (≈ stroke × 1.5). | — |
 | To End A / To End B | Drive to one endstop (+duty / −duty) until stall or timeout. | — |
 | Stop / Manual jog | Stop hard-brakes (always available); Manual jog drives raw while held (no stall guard). | — |
@@ -293,3 +294,19 @@ paths, each with a speaker-routing choice (`Left` / `Right` / `Stereo`, default
 `Stereo`). Some audio/alert settings live in the board's config file rather than a
 Studio tab — if the operator asks about one that isn't shown in a tab, say so
 rather than guessing.
+
+The amplifier's analog gain is NOT a setting: since firmware 2.42.0 the codec
+measures its own supply rail (PVDD) at every boot and picks the gain to match —
+the old `codec_supply` config key was removed and is ignored if present in an
+old file. There is nothing to configure; changing the battery pack is enough.
+
+### Audio Power (read-only card on the Firmware tab, firmware ≥ 2.42.0)
+
+| Field | Meaning |
+| --- | --- |
+| Codec | Amplifier model driving the speakers; the die id identifies the silicon variant. |
+| PVDD rail | The amplifier supply voltage, measured live by the chip's own ADC. |
+| Analog gain | The attenuation the codec auto-picked so full-scale output fits the measured rail. |
+| Output level | Peak of the mixed audio output since the last refresh (updates ~every 2 s). |
+| Est. power | Estimated speaker power at that peak, with a `4 Ω` / `8 Ω` toggle for the speaker impedance (default 4 Ω — the ScaleFX BOM; the choice is remembered). An estimate computed from levels and gains, not a measurement — speaker impedance cannot be autodetected on this hardware. |
+| Faults | Only shown when the amplifier has latched a fault (clock / supply / over-current). |

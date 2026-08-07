@@ -3,7 +3,7 @@
 <script lang="ts">
     import { connectionInfo, firmwareTargets, firmwareRunning, firmwareLogs, boardState, connectPopupOpen, availableReleases, showFlashProgress, flashResult } from '../stores'
     import type { FirmwareTarget, ReleaseInfo } from '../stores'
-    import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo, AudioPreloads, QueryDeviceStatus } from '../../../wailsjs/go/main/App'
+    import { GetFirmwareTargets, GetReleases, FlashFromRelease, DeviceSystemInfo, AudioPreloads, QueryDeviceStatus, CodecPower } from '../../../wailsjs/go/main/App'
     import { boardKindOf } from '../devicemodel'
     import { onMount, onDestroy, tick } from 'svelte'
 
@@ -51,12 +51,38 @@
     let liveStatus: any = null
     let liveStatusTimer: any = null
 
+    // Codec power telemetry (CODEC_STATUS power tail, fw ≥ 2.42.0):
+    // measured PVDD rail, auto-chosen analog gain, output level + watts
+    // estimate.  Rides the same 2 s timer; null on older firmware /
+    // codec-less boards (card hides itself).
+    let codecPower: any = null
+
+    // Speaker impedance for the watts presentation.  NOT autodetectable
+    // on P silicon (no output current sense; the M's IV-sense could
+    // measure it once the PPC3 pipeline lands) — so a manual 4/8 Ω
+    // toggle, remembered per machine.  Backend estimates at 4 Ω;
+    // P = Vpk²/2R scales as 4/R.
+    let spkOhms = Number(localStorage.getItem('audioPower.ohms')) || 4
+    function setSpkOhms(v: number) {
+        spkOhms = v
+        localStorage.setItem('audioPower.ohms', String(v))
+    }
+    $: estWatts = codecPower
+        ? codecPower.estWatts * (codecPower.speakerOhms / spkOhms)
+        : 0
+
     async function loadLiveStatus() {
-        if (!$connectionInfo.connected) { liveStatus = null; return }
+        if (!$connectionInfo.connected) { liveStatus = null; codecPower = null; return }
         try {
             liveStatus = await QueryDeviceStatus()
         } catch {
             liveStatus = null
+        }
+        try {
+            const cp = await CodecPower()
+            codecPower = cp?.available ? cp : null
+        } catch {
+            codecPower = null
         }
     }
     function scheduleLiveStatus() {
@@ -468,6 +494,43 @@
         {/if}
     {/if}
 
+    <!-- Codec power telemetry (fw ≥ 2.42.0) — PVDD rail measured by the
+         TAS5825's own ADC, the auto-chosen analog gain, and a live
+         output-level / watts estimate.  Hidden on older firmware. -->
+    {#if $connectionInfo.connected && codecPower}
+        <section class="info-section">
+            <div class="section-header">
+                <h3><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> Audio Power</h3>
+            </div>
+            <table class="info-table">
+                <tbody>
+                    <tr><td class="label">Codec</td><td>{codecPower.model || '—'}{#if codecPower.dieId === 0x95} <span class="mem-hint">TAS5825M silicon (die 0x95)</span>{:else} <span class="mem-hint">die 0x{codecPower.dieId.toString(16).toUpperCase()}</span>{/if}</td></tr>
+                    <tr><td class="label">PVDD rail</td><td>{codecPower.pvddVolts.toFixed(2)} V <span class="mem-hint">measured by the chip's ADC</span></td></tr>
+                    <tr><td class="label">Analog gain</td><td>−{codecPower.againDb.toFixed(1)} dB <span class="mem-hint">auto — full-scale {codecPower.fullScaleVp.toFixed(1)} Vpeak</span></td></tr>
+                    <tr><td class="label">Output level</td><td>
+                        <div class="preload-bar-track" title="Peak of the mixed output since the last poll">
+                            <div class="preload-bar-fill" style="width: {Math.min(100, Math.round(codecPower.outPeakPct))}%"></div>
+                        </div>
+                        <span class="mem-hint">{codecPower.outPeakPct.toFixed(0)}% of full scale{codecPower.muted ? ' · muted' : ''}</span>
+                    </td></tr>
+                    <tr><td class="label">Est. power</td><td>
+                        {estWatts.toFixed(1)} W
+                        <div class="seg-select ohms-seg">
+                            <button class="seg" class:on={spkOhms === 4} on:click={() => setSpkOhms(4)}
+                                    title="Estimate power into 4 Ω speakers (the ScaleFX BOM default).">4 Ω</button>
+                            <button class="seg" class:on={spkOhms === 8} on:click={() => setSpkOhms(8)}
+                                    title="Estimate power into 8 Ω speakers.">8 Ω</button>
+                        </div>
+                        <span class="mem-hint">sine-average estimate at peak level — impedance can't be autodetected on this codec</span>
+                    </td></tr>
+                    {#if codecPower.faults}
+                        <tr><td class="label">Faults</td><td><span class="preload-failed">GLOBAL_FAULT1 = 0x{codecPower.faults.toString(16).toUpperCase()}</span></td></tr>
+                    {/if}
+                </tbody>
+            </table>
+        </section>
+    {/if}
+
     <!-- Audio asset preload cache (PSRAM residency view) — AUDIO boards only -->
     {#if $connectionInfo.connected && hasAudio}
         <section class="info-section">
@@ -698,6 +761,14 @@
     .firmware-tab {
         padding: 12px;   /* Rule 62 — standard tab margin */
         max-width: 760px;
+    }
+
+    /* Watts-impedance toggle sits inline in the Est. power row (layout
+       only — the .seg-select/.seg look is global, Rule 34). */
+    .ohms-seg {
+        display: inline-flex;
+        vertical-align: middle;
+        margin: 0 8px;
     }
 
     h2 {

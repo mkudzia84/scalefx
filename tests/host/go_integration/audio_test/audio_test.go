@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"scalefx/client"
+	"scalefx/protocol/audio"
 	"scalefx/protocol/core"
 	"scalefx/tests/host/ports"
 )
@@ -88,16 +89,19 @@ func TestCodecStatusReturnsState(t *testing.T) {
 	if !cs.I2COk {
 		t.Error("CodecState.I2COk = false — codec I2C is wedged")
 	}
-	// SupplyVoltage byte mirrors `audio.codec_supply` in /hubfx.yaml
-	// (12v / 24v).  A value of 0 just means the YAML used the default
-	// (the firmware constant in audio_codec.h applies).  Not an error.
-	// What we DO care about is that the field decoded into a valid byte
-	// range — the decoder shouldn't return garbage.
-	if cs.SupplyVoltage > 100 {
-		t.Errorf("SupplyVoltage = %d — out of valid range [0..100]", cs.SupplyVoltage)
+	// SupplyMode always reads 4 ("auto") since fw 2.42.0 — the manual
+	// codec_supply config was retired; the codec measures its own PVDD
+	// rail.  Older firmware sent the preset code 0..3, so accept both
+	// but flag garbage.
+	if cs.SupplyMode > audio.SupplyModeAuto {
+		t.Errorf("SupplyMode = %d — out of valid range [0..4]", cs.SupplyMode)
+	}
+	if cs.HasPower {
+		t.Logf("Codec power: PVDD=%d mV again=%d die=0x%02X peak=%d",
+			cs.PvddMv, cs.AgainReg, cs.DieId, cs.OutPeak)
 	}
 	t.Logf("Codec: type=0x%02X init=%v i2c=%v supply=%d dvol=0x%02X",
-		cs.CodecType, cs.Initialized, cs.I2COk, cs.SupplyVoltage, cs.DigitalVol)
+		cs.CodecType, cs.Initialized, cs.I2COk, cs.SupplyMode, cs.DigitalVol)
 }
 
 // ─── StopAll: should be a no-op when nothing is playing ──────────────

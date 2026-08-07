@@ -6,12 +6,27 @@
  * — HUBS_SUPPORTED is on).  A 2 s heartbeat proves the probe is alive even
  * with nothing plugged in.  Console: UART0 @ 115200, plain text.
  *
- * Interpretation:
- *   "DEVICE address=N VID=xxxx PID=xxxx"  -> USB hardware path is GOOD;
- *                                             a detection bug is in the
- *                                             production firmware.
- *   heartbeats only, no DEVICE lines       -> hardware (cable / hub chip /
- *                                             VBUS power / connector).
+ * Interpretation (2026-07-26 hub-init instrumentation):
+ *   The IDF hub driver HIDES hub-class devices from clients, so the on-board
+ *   hub chip (U41) never produces a client "DEVICE" line even when healthy.
+ *   Three signals now expose it anyway:
+ *
+ *   1. "ENUM: ..." lines — the enumeration-filter callback fires for EVERY
+ *      device the root port enumerates, U41 included.  A healthy board
+ *      prints an ENUM line with bDeviceClass=09 (hub) within ~1 s of boot.
+ *        ENUM line, class=09        -> U41 powered, strapped, linked upstream.
+ *        NO ENUM line at all        -> the ROOT port never saw a connect:
+ *                                      upstream D+/D- path (R19/R20), U41
+ *                                      AVDD, RESET_HUB, or X2 crystal dead —
+ *                                      match against ISSUES.md §6 bench plan.
+ *   2. IDF DEBUG logs from tags HUB / EXT_HUB / EXT_PORT / HCD — root-port
+ *      connect/reset, hub-descriptor parse, downstream port power/connects.
+ *   3. Heartbeat now polls usb_host_lib_info(): num_devices counts what the
+ *      host library tracks INTERNALLY (hubs included), so "devs=1" with no
+ *      client DEVICE line = hub enumerated, nothing plugged downstream.
+ *
+ *   "DEVICE address=N VID=xxxx PID=xxxx"  -> full path GOOD (a device behind
+ *                                             the hub enumerated + reported).
  *
  * Task stacks are generous (8 KB) — enumeration runs entirely on the
  * daemon task stack and 4 KB overflows on live hot-plug (2026-06-07 lore).
@@ -28,6 +43,25 @@ static const char *TAG = "usbprobe";
 
 static usb_host_client_handle_t s_client;
 static volatile int s_devices_seen = 0;
+static volatile int s_enums_seen   = 0;
+
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+// Fires for EVERY device the host stack enumerates — including the on-board
+// hub chip U41, which the hub driver hides from the client API.  This is the
+// probe's "U41 is alive" line: bDeviceClass 0x09 = hub.
+static bool enum_filter_cb(const usb_device_desc_t *desc, uint8_t *bConfigurationValue)
+{
+    s_enums_seen++;
+    const bool is_hub = (desc->bDeviceClass == 0x09);
+    ESP_LOGI(TAG, "ENUM: VID=%04x PID=%04x bcdUSB=%04x class=%02x proto=%02x maxp0=%u  (#%d)%s",
+             desc->idVendor, desc->idProduct, desc->bcdUSB,
+             desc->bDeviceClass, desc->bDeviceProtocol, desc->bMaxPacketSize0,
+             s_enums_seen,
+             is_hub ? "  <-- HUB CHIP (U41 path) DETECTED" : "");
+    (void)bConfigurationValue;   // keep the device's default configuration
+    return true;                 // never veto — we only observe
+}
+#endif
 
 static void client_event_cb(const usb_host_client_event_msg_t *msg, void *arg)
 {
@@ -77,12 +111,32 @@ void app_main(void)
     printf("\n=== hubfx_usb_probe ===\n");
     printf("USB-OTG HOST enumeration probe. Plug a board into a hub host port.\n");
 
+    // Surface the USB stack's own root-port / hub-driver diagnostics — these
+    // tags log the root-port connect edge, hub-descriptor parse and
+    // downstream port power that the client API never shows.  (Max level is
+    // DEBUG via sdkconfig; VERBOSE would need CONFIG_LOG_MAXIMUM_LEVEL bump.)
+    esp_log_level_set("HUB",      ESP_LOG_DEBUG);
+    esp_log_level_set("EXT_HUB",  ESP_LOG_DEBUG);
+    esp_log_level_set("EXT_PORT", ESP_LOG_DEBUG);
+    esp_log_level_set("HCD",      ESP_LOG_DEBUG);
+    esp_log_level_set("USBH",     ESP_LOG_DEBUG);
+    esp_log_level_set("USB HOST", ESP_LOG_DEBUG);
+
     const usb_host_config_t host_cfg = {
         .skip_phy_setup = false,
         .intr_flags = ESP_INTR_FLAG_LEVEL1,
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+        .enum_filter_cb = enum_filter_cb,
+#endif
     };
     ESP_ERROR_CHECK(usb_host_install(&host_cfg));
-    ESP_LOGI(TAG, "usb_host_install OK");
+    ESP_LOGI(TAG, "usb_host_install OK  (enum-filter %s)",
+#if CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK
+             "armed — expect an ENUM line for the U41 hub chip within ~1 s"
+#else
+             "DISABLED — rebuild with CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK"
+#endif
+    );
 
     // Root port power — some IDF versions gate VBUS on this; harmless if
     // already on.  Log the result rather than aborting (API may return
@@ -103,7 +157,16 @@ void app_main(void)
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(2000));
-        ESP_LOGI(TAG, "heartbeat uptime=%llds devices_seen=%d",
-                 esp_timer_get_time() / 1000000, s_devices_seen);
+        // usb_host_lib_info counts what the host library tracks INTERNALLY —
+        // hub devices included.  libdevs=1 with client devices_seen=0 means
+        // "U41 enumerated, nothing plugged downstream" (healthy idle board);
+        // libdevs=0 forever means the root port never saw a connect.
+        usb_host_lib_info_t info = {0};
+        esp_err_t ierr = usb_host_lib_info(&info);
+        ESP_LOGI(TAG, "heartbeat uptime=%llds client_devices=%d enums=%d libdevs=%d clients=%d%s",
+                 esp_timer_get_time() / 1000000, s_devices_seen, s_enums_seen,
+                 (ierr == ESP_OK) ? info.num_devices : -1,
+                 (ierr == ESP_OK) ? info.num_clients : -1,
+                 (s_enums_seen == 0) ? "  [no ENUM yet -> root port has never connected]" : "");
     }
 }

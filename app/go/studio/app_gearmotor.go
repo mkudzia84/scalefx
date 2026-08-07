@@ -38,6 +38,9 @@ func (a *App) GearMotorStatus(guid string, portIdx int) (DiagBiMotorStatus, erro
 		PositionNm: st.Position.String(),
 		GuardMode:  byte(st.GuardMode),
 		GuardNm:    st.GuardMode.String(),
+		ElementMv:  st.ElementMv,
+		RailNowMv:  st.RailNowMv,
+		CapDuty:    st.CapDuty,
 	}, nil
 }
 
@@ -104,10 +107,15 @@ func (a *App) GearMotorStop(guid string, portIdx int) error {
 
 // GearMotorGuardFixed retunes the stall guard to Fixed mode (|I| >= threshold
 // sustained for window).  Live push to the role — not persisted to YAML.
-func (a *App) GearMotorGuardFixed(guid string, portIdx, thresholdMa, windowMs int) error {
+// motorVoltageMv: the rated-voltage duty cap — ≥0 sets it (0 = cap off),
+// negative leaves the role's cap untouched (emits the 14-byte SET_GUARD form).
+func (a *App) GearMotorGuardFixed(guid string, portIdx, thresholdMa, windowMs, motorVoltageMv int) error {
 	c := a.snapshotClient()
 	if c == nil {
 		return fmt.Errorf("not connected")
+	}
+	if motorVoltageMv >= 0 {
+		return c.Role(guid).BiMotorSetGuardFixed(uint16(portIdx), uint16(thresholdMa), uint16(windowMs), uint16(motorVoltageMv))
 	}
 	return c.Role(guid).BiMotorSetGuardFixed(uint16(portIdx), uint16(thresholdMa), uint16(windowMs))
 }
@@ -115,10 +123,15 @@ func (a *App) GearMotorGuardFixed(guid string, portIdx, thresholdMa, windowMs in
 // GearMotorGuardLiveRatio retunes the stall guard to LiveRatio mode (auto-
 // baseline running current, trip on a ratio spike).  Recommended when the
 // motor's stall current is unknown / varies with battery voltage.  Live push.
-func (a *App) GearMotorGuardLiveRatio(guid string, portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs, absMaxMa int) error {
+// motorVoltageMv semantics as GearMotorGuardFixed.
+func (a *App) GearMotorGuardLiveRatio(guid string, portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs, absMaxMa, motorVoltageMv int) error {
 	c := a.snapshotClient()
 	if c == nil {
 		return fmt.Errorf("not connected")
+	}
+	if motorVoltageMv >= 0 {
+		return c.Role(guid).BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
+			uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs), uint16(absMaxMa), uint16(motorVoltageMv))
 	}
 	return c.Role(guid).BiMotorSetGuardLiveRatio(uint16(portIdx), uint16(ratioX100),
 		uint16(runSampleMs), uint16(inrushBlankMs), uint16(windowMs), uint16(maxTravelMs), uint16(absMaxMa))

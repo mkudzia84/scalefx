@@ -351,35 +351,71 @@ func DecodeAudioStatus(p []byte) MixerState {
 // callers that want bit-level access.
 //
 //	[codecType:u8][initialized:u8][i2cOk:u8][sdaPin:u8][sclPin:u8]
-//	[supplyVoltage:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+//	[supplyMode:u8][muted:u8][digitalVol:u8][deviceCtrl:u8][faultStatus:u8]
+//	[codecNameLen:u8][codecName:str]
+//	+ power-telemetry tail (append-only, firmware 2.42.0):
+//	[pvdd_mV:u16LE][againReg:u8][dieId:u8][outPeak:u16LE]
+//
+// SupplyMode always reads 4 ("auto") since 2.42.0 — the manual
+// codec_supply config was retired; the codec measures its own PVDD rail
+// (reported in PvddMv) and auto-picks the analog gain (AgainReg, in
+// −0.5 dB steps below the 29.5 Vpeak full-scale reference).
 type CodecState struct {
-	CodecType     byte   `json:"codecType"`
-	Initialized   bool   `json:"initialized"`
-	I2COk         bool   `json:"i2cOk"`
-	SdaPin        byte   `json:"sdaPin"`
-	SclPin        byte   `json:"sclPin"`
-	SupplyVoltage byte   `json:"supplyVoltage"`
-	Muted         bool   `json:"muted"`
-	DigitalVol    byte   `json:"digitalVol"`
-	DeviceCtrl    byte   `json:"deviceCtrl"`
-	FaultStatus   byte   `json:"faultStatus"`
-	Raw           []byte `json:"-"`
+	CodecType   byte   `json:"codecType"`
+	Initialized bool   `json:"initialized"`
+	I2COk       bool   `json:"i2cOk"`
+	SdaPin      byte   `json:"sdaPin"`
+	SclPin      byte   `json:"sclPin"`
+	SupplyMode  byte   `json:"supplyMode"`
+	Muted       bool   `json:"muted"`
+	DigitalVol  byte   `json:"digitalVol"`
+	DeviceCtrl  byte   `json:"deviceCtrl"`
+	FaultStatus byte   `json:"faultStatus"`
+	CodecName   string `json:"codecName"`
+	HasPower    bool   `json:"hasPower"` // power-telemetry tail present
+	PvddMv      uint16 `json:"pvddMv"`   // measured amp rail
+	AgainReg    byte   `json:"againReg"` // auto-chosen analog gain step
+	DieId       byte   `json:"dieId"`    // 0x95 = TAS5825M silicon
+	OutPeak     uint16 `json:"outPeak"`  // mixed-output peak since last query (0..32767)
+	Raw         []byte `json:"-"`
 }
 
-// DecodeCodecStatus parses the 10-byte CODEC_STATUS_RESP.
+// SupplyModeAuto is the only supply-mode code emitted since fw 2.42.0.
+const SupplyModeAuto byte = 4
+
+// DecodeCodecStatus parses CODEC_STATUS_RESP (fixed head + name +
+// optional power-telemetry tail; the decode is length-guarded so every
+// firmware generation parses).
 func DecodeCodecStatus(p []byte) CodecState {
 	s := CodecState{Raw: append([]byte(nil), p...)}
-	if len(p) >= 10 {
-		s.CodecType = p[0]
-		s.Initialized = p[1] != 0
-		s.I2COk = p[2] != 0
-		s.SdaPin = p[3]
-		s.SclPin = p[4]
-		s.SupplyVoltage = p[5]
-		s.Muted = p[6] != 0
-		s.DigitalVol = p[7]
-		s.DeviceCtrl = p[8]
-		s.FaultStatus = p[9]
+	if len(p) < 10 {
+		return s
+	}
+	s.CodecType = p[0]
+	s.Initialized = p[1] != 0
+	s.I2COk = p[2] != 0
+	s.SdaPin = p[3]
+	s.SclPin = p[4]
+	s.SupplyMode = p[5]
+	s.Muted = p[6] != 0
+	s.DigitalVol = p[7]
+	s.DeviceCtrl = p[8]
+	s.FaultStatus = p[9]
+	if len(p) < 11 {
+		return s
+	}
+	nameLen := int(p[10])
+	nameEnd := 11 + nameLen
+	if nameEnd > len(p) {
+		return s
+	}
+	s.CodecName = string(p[11:nameEnd])
+	if len(p) >= nameEnd+6 {
+		s.HasPower = true
+		s.PvddMv = binary.LittleEndian.Uint16(p[nameEnd:])
+		s.AgainReg = p[nameEnd+2]
+		s.DieId = p[nameEnd+3]
+		s.OutPeak = binary.LittleEndian.Uint16(p[nameEnd+4:])
 	}
 	return s
 }

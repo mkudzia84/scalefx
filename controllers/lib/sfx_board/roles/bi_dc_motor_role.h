@@ -102,9 +102,32 @@ public:
     }
 
     /// Set signed duty in port-native units (-port.maxDuty()..+port.maxDuty()).
+    /// Subject to the rated-voltage cap (see setElementVoltage).
     void setSigned(int16_t signedDuty);
     void brake();
     void coast();
+
+    /// Motor rated-voltage cap (Rule 42 — run a low-voltage motor safely on a
+    /// higher rail).  When `element_mV > 0`, every commanded |duty| — drive,
+    /// seek, moveToEnd — is CAPPED (not scaled) at
+    ///     maxDuty × element_mV / rail_mV
+    /// where rail_mV is the LIVE per-port voltage sense when present (tracks
+    /// battery sag, refreshed ~10 Hz in tick()) else the attach-time declared
+    /// port rail.  A cap, not a scale: duties already tuned below the ceiling
+    /// keep their exact meaning.  0 = cap off.  Unknown rail (no sensor, no
+    /// declared voltage) or element ≥ rail ⇒ no capping.
+    void setElementVoltage(uint16_t element_mV) { _element_mV = element_mV; }
+    void setPortRailMv(uint16_t rail_mV)        { _portRail_mV = rail_mV; }
+    uint16_t elementVoltageMv() const { return _element_mV; }
+    uint16_t portRailMv()       const { return _portRail_mV; }
+
+    /// Rail voltage the cap uses right now: live vSense if present and
+    /// reading sane, else the declared port rail (0 = unknown).
+    uint16_t railNowMv() const;
+
+    /// The current duty ceiling from the voltage cap; port maxDuty when
+    /// the cap is off / rail unknown.  0 only when no port is bound.
+    uint16_t capDuty() const;
 
     /// Fixed-threshold stall guard — trip on `|I| >= threshold_mA`
     /// sustained for `window_ms`.  Threshold 0 disables stall detection.
@@ -206,12 +229,28 @@ private:
     /// terminated this tick.
     bool stepStallDetect(uint32_t now, uint16_t threshold_mA);
 
+    /// Clamp a requested signed duty to ±capDuty().  Pass-through when the
+    /// cap is off or no port is bound.
+    int16_t applyCap(int16_t signedDuty) const;
+
+    /// Re-clamp the active drive against the LIVE rail (~10 Hz, vSense-only
+    /// — a declared rail never moves).  A sagging pack RAISES the ceiling
+    /// (larger duty needed for the same volts), a fresh pack lowers it.
+    void refreshCap(uint32_t now);
+
     sfx_peripherals::HBridgePort*   _port    = nullptr;
     sfx_peripherals::CurrentSensor* _iSense  = nullptr;
     sfx_peripherals::VoltageSensor* _vSense  = nullptr;
 
-    int16_t  _commandedSigned     = 0;
+    int16_t  _commandedSigned     = 0;   ///< effective duty at the port (post-cap)
+    int16_t  _requestedSigned     = 0;   ///< caller-requested duty (pre-cap)
     bool     _stalled             = false;
+
+    // Rated-voltage cap (0 = off) + refresh throttle.
+    uint16_t _element_mV          = 0;   ///< motor rated voltage
+    uint16_t _portRail_mV         = 0;   ///< attach-time declared rail (vSense fallback)
+    uint32_t _lastCapRefreshMs    = 0;
+    static constexpr uint32_t kCapRefreshMs = 100;
 
     // Guard config (Fixed + LiveRatio share window_ms for the
     // sustained-over-threshold filter).

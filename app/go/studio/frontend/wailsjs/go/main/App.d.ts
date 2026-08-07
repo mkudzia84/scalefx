@@ -22,6 +22,8 @@ export function BuildAndFlash(arg1:string,arg2:string,arg3:boolean,arg4:boolean,
 
 export function CheckFiles(arg1:Array<string>):Promise<Array<main.FileCheck>>;
 
+export function CodecPower():Promise<main.AudioCodecPower>;
+
 export function Connect(arg1:string):Promise<main.ConnectionInfo>;
 
 export function DeletePreset(arg1:string):Promise<void>;
@@ -112,9 +114,9 @@ export function GearEStopAll():Promise<void>;
 
 export function GearMotorCalibrate(arg1:string,arg2:number,arg3:number,arg4:number):Promise<main.DiagCalibration>;
 
-export function GearMotorGuardFixed(arg1:string,arg2:number,arg3:number,arg4:number):Promise<void>;
+export function GearMotorGuardFixed(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number):Promise<void>;
 
-export function GearMotorGuardLiveRatio(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number,arg8:number):Promise<void>;
+export function GearMotorGuardLiveRatio(arg1:string,arg2:number,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number,arg8:number,arg9:number):Promise<void>;
 
 export function GearMotorJog(arg1:string,arg2:number,arg3:number):Promise<void>;
 

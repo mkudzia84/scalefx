@@ -78,6 +78,8 @@ struct GearDef {
     uint16_t guardWindowMs   = 80;      ///< sustained-over-threshold confirm window
     uint16_t guardThresholdMa = 1000;   ///< Fixed: |I| trip threshold (mA)
     uint16_t guardCeilingMa  = 0;       ///< absolute over-current ceiling (0 = none)
+    uint16_t motorVoltageMv  = 6000;    ///< motor rated voltage — the role CAPS |duty|
+                                        ///< at maxDuty × this / rail_mV (0 = cap off)
 
     // ── Door sequencing (instructions/29) ────────────────────────────
     DoorDef  doors[2]      = {};

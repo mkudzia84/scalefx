@@ -60,6 +60,9 @@ export interface GearChannelT {
     deployDuty: number
     retractDuty: number
     timeoutMs: number
+    /** Motor rated voltage — firmware caps |duty| at maxDuty × this / rail_mV
+     *  (live per-motor vSense, else declared rail).  0 = cap off. */
+    motorVoltageMv: number
     guard: GearGuardT
     doors: GearDoorT[]
     doorMode: DoorMode
@@ -151,6 +154,7 @@ export function defaultGearChannel(id: number): GearChannelT {
         deployDuty: 20000,
         retractDuty: -20000,
         timeoutMs: 30000,
+        motorVoltageMv: 6000,
         guard: defaultGearGuard(),
         doors: [],
         doorMode: 'sync',
@@ -347,6 +351,9 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         deployDuty:  g.deployDuty ?? 20000,
         retractDuty: g.retractDuty ?? -20000,
         timeoutMs:   g.timeoutMs ?? 30000,
+        // Absent key (pre-cap file / backend omitempty) = firmware default
+        // 6000 mV; explicit 0 = cap off and survives the round-trip.
+        motorVoltageMv: g.motorVoltageMv ?? 6000,
         guard:       g.guard ? {
             mode:        g.guard.mode === 'fixed' ? 'fixed' : 'live',
             ratioX100:   g.guard.ratioX100 ?? 250,

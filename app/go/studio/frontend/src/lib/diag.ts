@@ -16,6 +16,7 @@
 //      from .svelte components (diag.info, diag.warn, …)
 
 import { LogFrontend } from '../../wailsjs/go/main/App'
+import { setStoreErrorReporter } from './safestore'
 
 type Level = 'debug' | 'info' | 'warn' | 'error'
 
@@ -62,6 +63,17 @@ export const diag = {
 export function installDiagBridge() {
     if (installed) return
     installed = true
+
+    // Store-layer guard (2026-07-26 freeze root cause): safestore.ts already
+    // prevents a throwing subscriber from poisoning the shared notify queue;
+    // this hook makes every caught throw land in the diag stream with its
+    // stack so the culprit subscriber is identifiable from the log.
+    setStoreErrorReporter((e, phase) => {
+        send('error', 'FE.STORE', `store subscriber threw during ${phase}: ${safeStringify(e)}`, {
+            phase,
+            stack: (e instanceof Error && e.stack) || null,
+        })
+    })
 
     // Svelte flush watchdog (2026-07-02 fresh-board freeze). If a component
     // update THROWS during a flush and the invoking context swallows it

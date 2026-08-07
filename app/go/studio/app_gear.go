@@ -62,6 +62,9 @@ type GearChannelDTO struct {
 	DeployDuty  int16         `yaml:"deploy_duty"              json:"deployDuty"`
 	RetractDuty int16         `yaml:"retract_duty"             json:"retractDuty"`
 	TimeoutMs   uint32        `yaml:"timeout_ms"               json:"timeoutMs"`
+	// Motor rated voltage — the role caps |duty| at maxDuty × this / rail_mV.
+	// Pointer: absent key = firmware default (6000 mV); explicit 0 = cap off.
+	MotorVoltageMv *uint16 `yaml:"motor_voltage_mv,omitempty" json:"motorVoltageMv,omitempty"`
 	Guard       *GearGuardDTO `yaml:"guard,omitempty"          json:"guard,omitempty"` // persisted stall guard (append-only)
 	Doors       []GearDoorDTO `yaml:"doors,omitempty"          json:"doors"`
 	DoorMode    string        `yaml:"door_mode"                json:"doorMode"`     // sync | delay | sequence

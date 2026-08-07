@@ -8,8 +8,8 @@
 
 schema_version: 1
 
-audio:
-  codec_supply: 12v
+# (audio.codec_supply retired 2026-08-01 — the codec measures its own
+#  PVDD rail and auto-picks the analog gain; no audio block needed.)
 
 # `ports:` omitted — falls back to "LedAnimator on every PWM port +
 # ServoActuator on every servo port", but with every effect disabled (each

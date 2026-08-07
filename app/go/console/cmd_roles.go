@@ -42,7 +42,7 @@ func init() {
 	register(&command{Name: "bimotor-move-end", Usage: "bimotor-move-end <portIdx> <a|b> [duty] [timeoutMs] [guid=XXXX]", Help: "drive a BiDcMotor (gear/door) to logical endstop A or B (A=+duty, B=-duty); outcome arrives async (subscribe). guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorMoveEnd})
 	register(&command{Name: "bimotor-seek", Usage: "bimotor-seek <portIdx> <signedDuty> [timeoutMs] [guid=XXXX]", Help: "position-agnostic seek — drive a BiDcMotor at signedDuty until stall/endstop or timeout. guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorSeek})
 	register(&command{Name: "bimotor-status", Usage: "bimotor-status <portIdx> [guid=XXXX]", Help: "verbose BiDcMotor status: duty, voltage, current, stalled, position (A/B), guard mode. guid=XXXX targets an expander", Category: catTopology, RequiresConn: true, Run: cmdBiMotorStatus})
-	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [ceilingMa]", Help: "retune the stall guard: live (trailing-min ratio, e.g. 'live 2.5') or fixed (mA). ceilingMa = absolute over-current backstop for live mode (0=off). Watch the seek trace.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
+	register(&command{Name: "bimotor-guard", Usage: "bimotor-guard <portIdx> <live|fixed> [ratioX|thresholdMa] [windowMs] [ceilingMa] [motorMv]", Help: "retune the stall guard: live (trailing-min ratio, e.g. 'live 2.5') or fixed (mA). ceilingMa = absolute over-current backstop for live mode (0=off). motorMv = motor rated voltage → duty cap (0=off; omit = leave unchanged). Watch the seek trace.", Category: catTopology, RequiresConn: true, Run: cmdBiMotorGuard})
 
 	// Direct role lifecycle — attach / inspect / detach a role on the
 	// CONNECTED board with NO hub (the GUID-addressed `role-attach` goes
@@ -778,7 +778,18 @@ func cmdBiMotorGuard(a *App, args []string) error {
 				return fmt.Errorf("ceilingMa: %w", err)
 			}
 		}
-		if err := a.roleAt(guid).BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling)); err != nil {
+		// Optional trailing motorMv → 16-byte form (sets the duty cap);
+		// omitted → 14-byte form, peer's cap untouched.
+		if len(args) >= 6 {
+			motorMv, e := strconv.Atoi(args[5])
+			if e != nil {
+				return fmt.Errorf("motorMv: %w", e)
+			}
+			err = a.roleAt(guid).BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling), uint16(motorMv))
+		} else {
+			err = a.roleAt(guid).BiMotorSetGuardLiveRatio(uint16(idx), uint16(ratioX*100), 200, 150, window, 0, uint16(ceiling))
+		}
+		if err != nil {
 			return err
 		}
 		if ceiling > 0 {
@@ -827,6 +838,14 @@ func cmdBiMotorStatus(a *App, args []string) error {
 	fmt.Fprintf(out, "  %s %s\n", cDim("stalled: "), Bool(st.Stalled))
 	fmt.Fprintf(out, "  %s %s\n", cDim("position:"), biMotorPosName(st.Position))
 	fmt.Fprintf(out, "  %s %s\n", cDim("guard:   "), cDim(st.GuardMode.String()))
+	if st.ElementMv != 0 {
+		fmt.Fprintf(out, "  %s %s mV motor on %s mV rail → cap %s\n", cDim("volt-cap:"),
+			cCyan(fmt.Sprintf("%d", st.ElementMv)),
+			cCyan(fmt.Sprintf("%d", st.RailNowMv)),
+			cCyan(fmt.Sprintf("±%d", st.CapDuty)))
+	} else {
+		fmt.Fprintf(out, "  %s %s\n", cDim("volt-cap:"), cDim("off (raw duty)"))
+	}
 	return nil
 }
 

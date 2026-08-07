@@ -1079,8 +1079,20 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
         // naturally pacing the consumer at the audio sample rate.
         uint32_t count = (avail > 512) ? 512 : avail;
         StereoFrame frames[512];
+        int32_t blockPeak = 0;
         for (uint32_t i = 0; i < count; i++) {
             frames[i] = ringBuf().read();
+            int32_t l = frames[i].left, r = frames[i].right;
+            if (l < 0) l = -l;
+            if (r < 0) r = -r;
+            if (l > blockPeak) blockPeak = l;
+            if (r > blockPeak) blockPeak = r;
+        }
+        if (blockPeak > 32767) blockPeak = 32767;
+        // Single consumer-side writer; a racing exchange(0) from the
+        // status reader can at worst drop one block's peak.
+        if ((uint16_t)blockPeak > _outPeak.load(std::memory_order_relaxed)) {
+            _outPeak.store((uint16_t)blockPeak, std::memory_order_release);
         }
         TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);

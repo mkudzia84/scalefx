@@ -100,11 +100,14 @@ func (rt *RoleTarget) BiMotorBrake(portIdx byte) error {
 func (rt *RoleTarget) BiMotorSetSigned(portIdx byte, signed int16) error {
 	return rt.send(roles.CmdBiMotorSetSigned(portIdx, signed))
 }
-func (rt *RoleTarget) BiMotorSetGuardFixed(portIdx, thresholdMa, windowMs uint16) error {
-	return rt.send(roles.CmdBiMotorSetGuard(byte(portIdx), roles.BiMotorGuardFixed, windowMs, thresholdMa, 0, 0, 0, 0))
+// The optional trailing elementMv (motor rated voltage → duty cap; 0 = cap
+// off) emits the 16-byte SET_GUARD form; omitting it leaves the peer's cap
+// untouched — see roles.CmdBiMotorSetGuard.
+func (rt *RoleTarget) BiMotorSetGuardFixed(portIdx, thresholdMa, windowMs uint16, elementMv ...uint16) error {
+	return rt.send(roles.CmdBiMotorSetGuard(byte(portIdx), roles.BiMotorGuardFixed, windowMs, thresholdMa, 0, 0, 0, 0, elementMv...))
 }
-func (rt *RoleTarget) BiMotorSetGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs, absMaxMa uint16) error {
-	return rt.send(roles.CmdBiMotorSetGuard(byte(portIdx), roles.BiMotorGuardLiveRatio, windowMs, ratioX100, runSampleMs, inrushBlankMs, maxTravelMs, absMaxMa))
+func (rt *RoleTarget) BiMotorSetGuardLiveRatio(portIdx, ratioX100, runSampleMs, inrushBlankMs, windowMs, maxTravelMs, absMaxMa uint16, elementMv ...uint16) error {
+	return rt.send(roles.CmdBiMotorSetGuard(byte(portIdx), roles.BiMotorGuardLiveRatio, windowMs, ratioX100, runSampleMs, inrushBlankMs, maxTravelMs, absMaxMa, elementMv...))
 }
 func (rt *RoleTarget) BiMotorGetStatus(portIdx byte) (roles.BiMotorStatus, error) {
 	payload, err := rt.query(roles.CmdBiMotorGetStatus(portIdx), roles.BiMotorStatusResp)

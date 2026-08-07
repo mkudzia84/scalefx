@@ -7,6 +7,206 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.43.0 — 2026-08-07 — gear-motor rated-voltage cap
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.43.0 | ESP32-S3 | `hubfx-v2.43.0` |
+| GearControl (expander) | 1.1.0 | RP2040 | `gearcontrol-v1.1.0` |
+
+MINOR bump on both: additive Rule 11 wire fields; the cap logic lives in the
+shared `BiDcMotorRole`, so the GearControl expander must be reflashed for the
+cap to actually clamp the motor.
+
+### New Features
+- **Gear motors can declare their rated voltage** (`gears[].motor_voltage_mv`
+  in `/gearcontrol.yaml`, **default 6000 mV**; explicit `0` = cap off).  The
+  BiDcMotor role CAPS every commanded |duty| — drive, seek, move-to-end — at
+  `maxDuty × rated_mV / rail_mV`, so a 6 V retract motor survives a 2S–6S pack.
+  The rail is the LIVE per-motor INA226 voltage sense when present (re-clamped
+  ~10 Hz, so battery sag auto-compensates), else the attach-time declared port
+  rail.  A **cap, not a scale**: duties already tuned below the ceiling keep
+  their exact meaning.  Follows the GunFX `element_mv` layering (rail on the
+  port, mechanism on the role, rating in the effect config).
+- **Studio: "Motor V" field in the gear-motor calibration dialog** (seeded from
+  the strut, saved back by *Save to strut*); the live-status grid shows the
+  active cap (`V-cap ±duty @ rail V`).  The calibration guard push includes the
+  voltage so sweeps drive exactly like a real deploy.
+- **CLI**: `bimotor-guard … [motorMv]` optional trailing arg sets the cap
+  (omit = leave unchanged); `bimotor-status` renders the volt-cap line.
+
+### Protocol Changes
+- `BIMOTOR_SET_GUARD` (0x77) Rule 11 append `[14:16] element_mV` (0 = cap
+  off; 14-byte form leaves the peer's cap untouched).  Rides SET_GUARD because
+  the 0x40–0x7F role opcode space is exhausted (0x78+ = SBUS/Jeti input).
+- `BIMOTOR_STATUS_RESP` (0x6C) Rule 11 append `[10:12] element_mV [12:14]
+  railNow_mV [14:16] capDuty` (lengths 8/10/16 all valid).
+
+### Internal
+- New voice **PEWPEW** demo gun sounds (`media/sounds/PEWPEW/pew_45ppm.wav` /
+  `pew_80ppm.wav`) — one cute voice pew per loop; the loop length sets the
+  fire rate (45 / 80 pews per minute).
+
+---
+
+## 2.42.1 — 2026-08-01 — input remaps take effect on Apply
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.42.1 | ESP32-S3 | `hubfx-v2.42.1` |
+
+PATCH: logic fix on top of 2.42.0.
+
+### Bug Fixes
+- **Remapping an input to a different RC channel now takes effect on the
+  Input & Ports Apply.**  Every effect resolves its input NAMES against
+  /hubfx.yaml's inputs[] at its OWN apply time (Rule 43); Studio's
+  input-mapping Apply reloads only the /hubfx.yaml store, so the
+  lightfx selector / landing / gear / engine / gun bindings all kept
+  listening on the OLD channel until that effect's config happened to
+  be re-applied (the reported symptom: light selector moved ch8 → ch10,
+  saved + shown in the UI, but only responding after an unrelated light
+  edit + Apply).  The hubfx reload callback now re-installs every
+  input-driven subscription (`reinstallInputBindings()` — watch for
+  `[config] input bindings re-resolved` in the diag log).  This also
+  closes the gunfx apply comment's known "Phase 4 polish" gap.
+
+---
+
+## 2.42.0 — 2026-08-01 — PVDD auto-gain + audio power telemetry
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.42.0 | ESP32-S3 | `hubfx-v2.42.0` |
+
+MINOR bump: additive CODEC_STATUS wire fields + a retired config key.
+
+### New Features
+- **Codec analog gain auto-detects the amp rail.**  Both TAS5825 drivers
+  measure PVDD via the chip's own ADC (0x5E) during `activate()` (in HiZ,
+  analog powered) and pick the exact −0.5 dB AGAIN step whose full-scale
+  output fits under the measured rail — e.g. a 4S pack at 14.8 V lands at
+  −6.5 dB instead of the old fixed 12v preset's −8 dB.  Implausible ADC
+  reading (< 4.5 V floor) falls back to the safe −8 dB with a WARN.
+- **Audio power telemetry** appended to `CODEC_STATUS_RESP` (Rule 11,
+  after the codec name): `pvdd_mV:u16` (live rail), `againReg:u8`
+  (auto-chosen gain step), `dieId:u8` (0x95 = TAS5825M silicon — the
+  BOM-vs-silicon check), `outPeak:u16` (mixed-output peak since last
+  query, tracked losslessly in the Core-1 consumer).  `codec-status`
+  renders rail volts, gain in dB, output level %, and an estimated
+  watts @4Ω/@8Ω (computed client-side from level × gains; a true
+  measurement needs the M's IV-sense/PPC3 pipeline — future work).
+- **Codec build flag**: `-DHUBFX_CODEC_TAS5825M` selects the M driver
+  for boards carrying M silicon; default stays P.
+
+### Bug Fixes
+- **Studio: applied light-program edits no longer revert on tab switch.**
+  `loadLightFxConfig` seeded any active program whose name matched a
+  preset-library template FROM THE TEMPLATE instead of the device file —
+  so after an Apply, remounting the Lighting tab reverted the UI to the
+  pre-edit template, and the NEXT Apply pushed that stale template back
+  to the board (silently undoing the operator's applied change, e.g.
+  freshly added light bindings).  The device file is now authoritative
+  for active programs; the library is only the fallback when the file
+  is missing from the board.
+
+### Breaking ⚠️
+- **`audio.codec_supply` retired** (config-only; wire-compatible).  The
+  key in an old `/hubfx.yaml` parses to nothing and is ignored; Studio
+  no longer round-trips the `audio:` block.  The CODEC_STATUS supply
+  byte now always reports 4 ("auto").
+
+### Internal
+- `Supply` enum / `parseSupply` / `setSupplyVoltage` deleted from both
+  drivers; presets (`minimal.yaml`, `helicopter_ka50.yaml` ×2 copies)
+  and the Studio `yamlAudio` round-trip struct dropped.
+
+---
+
+## Unreleased (pcb-nextver) — TAS5825 register-map datasheet audit
+
+No flashed release yet.  The bench boards turned out to carry TAS5825**M**
+silicon (the BOM said P), which prompted restoring the M driver — and a full
+audit of `tas5825_regs.h` against the official TI datasheet **SLASEH7H**
+(Table 9-6).  The folk map the drivers had shipped with diverged on six
+registers; audio only ever worked because the mis-aimed writes were mostly
+harmless and one of them ("CLK_SRC" at 0x33) accidentally landed on the REAL
+SAP_CTRL1 and set the required 16-bit word length.
+
+### Bug Fixes
+- **`tas5825_regs.h` rewritten to the official map** (datasheet = gold
+  standard, addresses cited per table): SAP_CTRL1 is **0x33** (was
+  mislabeled CLK_SRC; "SAP_CTRL1"=0x60 is really GPIO_CTRL), GPIO1_SEL is
+  **0x62** (0x4F is the emergency volume-ramp register), analog gain is
+  ANA_CTRL **0x53** / AGAIN **0x54** (0x46 is DSP_CTRL — the old
+  "ANALOG_CTRL=0x11" write there silently forced the DSP to 96 kHz
+  processing).
+- **DIG_VOL scale corrected** — 0x00 is **+24 dB full gain**, 0xFF is mute
+  (was inverted: `VOL_MUTE=0x00` meant `setMute()`/`setVolume(0)` would
+  command maximum gain).  `setVolume`/`setVolumeDB` formulas fixed; new
+  `volRegForDb()` helper.
+- **FS_MON code table corrected** — 48 kHz reports **0x09** (Table 9-19),
+  not 0x04 (which is 16 kHz); the fabricated 8/44.1/88.2/176.4 kHz codes
+  are gone.
+- **Fault bit decode corrected** — GLOBAL_FAULT1 is CLK=bit2 /
+  PVDD_OV=bit1 / PVDD_UV=bit0 (+OTP-CRC/BQ/EEPROM in bits 7-5); DC/OC
+  faults live in CHAN_FAULT (0x70), over-temp shutdown in GLOBAL_FAULT2.
+- **Both drivers corrected** (`tas5825_m_codec` restored + ported to
+  `SfxI2cBus`; `tas5825_p_codec` same fixes, permissive flow kept):
+  DIS_DSP held until I2S clocks are proven (per datasheet), GPIO1→FAULTZ
+  now actually output-enabled via GPIO_CTRL, DIE_ID (0x67, =0x95) identity
+  check at probe, undocumented "identity DSP coefficient" book writes
+  dropped (ROM mode + ZROM defaults are the documented pass-through).
+
+### New Features
+- **`tests/hw/tas5825m_beep`** — self-contained pure-IDF bring-up probe:
+  1 kHz beep, every register write readback-verified, FS_MON/CLKDET
+  decode, live PVDD voltage (PVDD_ADC 0x5E), fault-decoded 2 s heartbeat
+  with PLAY auto-recovery.  Hand-off zip: `tas5825m_beep_20260730.zip`.
+
+### Internal
+- HubFX still compiles the P codec (`getCodecType()` 1=M / 2=P unchanged);
+  switching to the M driver is a one-line typedef change in
+  `hubfx_esp32s3.cpp` once the beep probe confirms the silicon.  A version
+  bump lands with that switch.
+
+---
+
+## Studio 2026-07-26 hotfix — the REAL "hanging UI" root cause
+
+No firmware change (HubFX stays 2.41.0).  The fresh-board freeze survived the
+2.41.0 Studio fixes because its true cause was deeper than the wizard modal /
+connect dialog: **Svelte 3's `svelte/store` shares ONE module-level
+`subscriber_queue` across every store in the app, and a subscriber callback
+that throws mid-notification leaves that queue non-empty forever — after
+which every `set()` on ANY store silently notifies nobody.** Handlers still
+fire and no error surfaces (nothing is ever marked dirty, so the FE.FLUSH
+scheduler watchdog sees a clean queue), which is exactly the observed
+"clicks land but nothing re-renders" freeze.
+
+### Bug Fixes
+- **Trigger fixed**: `escTelemetryActive` derived read `$t.devices.some(…)`
+  while Go's `TelemetrySnapshot.Devices` is a nil slice (→ JSON `null`) on
+  any board with no ESC/Jeti device attached — it threw on the first
+  telemetry poll after every connect, freezing the whole UI.  Telemetry
+  snapshots are now normalized on ingest (`devices`/`sensors` null → `[]`)
+  and the derived is null-tolerant.
+- **Class fixed**: `svelte/store` is vite-aliased to a hardened drop-in
+  (`lib/safestore.ts`, same 3.59.2 semantics) whose notify queue try/catches
+  every subscriber and always drains — one bad subscriber can no longer mute
+  the app.  Every caught throw is reported to the diag log as `FE.STORE`
+  with phase + stack (rate-limited), so the culprit names itself.
+- Regression net: `safestore.test.ts` (queue-poisoning, derived-throw,
+  cross-store isolation) + the whole vitest suite now runs through the
+  aliased store.
+
+### Internal
+- GUI-driving harness: `winshot.ps1` gained the Alt-key foreground unlock +
+  verification (background `SetForegroundWindow` is silently blocked by the
+  OS foreground lock, so synthetic clicks landed on the wrong window).
+
+---
+
 ## 2.41.0 — 2026-07-26
 
 The effect-enable rationalization: the `/hubfx.yaml` `features:` master-enable

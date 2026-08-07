@@ -34,6 +34,9 @@
  *       deploy_duty:  20000      # signed H-bridge duty for "going down"
  *       retract_duty: -20000     # signed duty for "going up"
  *       timeout_ms:   30000      # full-travel watchdog
+ *       motor_voltage_mv: 6000   # motor rated voltage — duty capped at
+ *                                # maxDuty × this / rail_mV (0 = no cap;
+ *                                # absent = 6000)
  *       doors:                   # ≤2 ServoActuator door servos
  *         - { port: { kind: servo, idx: 0 }, open: 10000, close: 0 }
  *         - { port: { kind: servo, idx: 1 }, open: 10000, close: 0 }
@@ -183,6 +186,10 @@ struct GearControlConfigSchema {
             def.deployDuty  = (int16_t) g->template childAs<int32_t>("deploy_duty",   20000);
             def.retractDuty = (int16_t) g->template childAs<int32_t>("retract_duty", -20000);
             def.timeoutMs   = (uint32_t)g->template childAs<int32_t>("timeout_ms",    30000);
+            // Motor rated voltage — the role caps |duty| at maxDuty × this /
+            // rail_mV so a 6 V gear motor survives a 2S/6S pack.  Explicit
+            // `motor_voltage_mv: 0` disables the cap (drive at raw duty).
+            def.motorVoltageMv = (uint16_t)g->template childAs<int32_t>("motor_voltage_mv", 6000);
 
             // guard: { mode, ratio_x100, sample_ms, window_ms, threshold_ma,
             //   ceiling_ma } — persisted stall-guard calibration (Studio's

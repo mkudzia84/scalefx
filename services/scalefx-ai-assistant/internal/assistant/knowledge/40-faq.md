@@ -26,6 +26,14 @@ Flip the deploy *direction* in the gear leg settings, and make sure the servo an
 travel are calibrated. If the travel *timeout* is too short, the leg stops before
 it reaches the end.
 
+**Q: My gear motor is rated 6 V but the model runs a bigger pack — will it burn out?**
+No — set **Motor V** (the motor's rated voltage) in the strut's **Calibrate
+motor…** window. The firmware then caps the motor's effective drive at
+rated ÷ supply volts, using the live per-motor voltage reading when the board
+has one, so the motor never sees more than its rated average voltage even on a
+6S pack. The default is 6 V; set it to `0` only if you really want raw,
+uncapped drive.
+
 **Q: Can I open/close the gear doors or move the strut by hand during setup?**
 Yes. Each strut card has a **Manual / maintenance** section with Open/Close doors
 and Strut down/up buttons (plus fleet "all" buttons), so you can move the doors
@@ -64,3 +72,16 @@ service and is lightly rate-limited.
 **Q: Will the assistant answer general questions?**
 No — it only helps with ScaleFX configuration and setup. Ask it about your
 effects, channels, ports, the wizard, or the Console.
+
+**Q: How loud is my system / how many watts is the audio using?**
+The **Firmware tab** has an **Audio Power** card (firmware 2.42.0+): it shows the
+amplifier's supply voltage (measured by the chip itself), the auto-picked analog
+gain, the live output level, and an estimated wattage with a 4 Ω / 8 Ω speaker
+toggle (default 4 Ω). The wattage is an estimate from signal level and gain, not
+a current measurement, and the speaker impedance can't be autodetected — pick
+the one matching your speakers.
+
+**Q: Do I need to set the amplifier / codec supply voltage?**
+Not anymore. Since firmware 2.42.0 the codec measures its own supply rail at
+every boot and picks the analog gain to match — a bigger battery automatically
+gives you more clean output. The old `codec_supply` config key is ignored.

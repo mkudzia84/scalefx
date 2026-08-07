@@ -454,6 +454,12 @@ public:
     void resetUnderruns() { _underruns.store(0, std::memory_order_relaxed); }
     uint32_t getConsumeLoops() const { return _consumeLoops.load(std::memory_order_acquire); }
     uint32_t getConsumeFrames() const { return _consumeFrames.load(std::memory_order_acquire); }
+
+    /// Peak |sample| (0..32767) of the mixed output since the last call —
+    /// read-and-reset, feeds the CODEC_STATUS output-level/watts telemetry.
+    uint16_t outputPeakSinceLastRead() {
+        return _outPeak.exchange(0, std::memory_order_acq_rel);
+    }
     
     // Ring buffer stats
     uint32_t getRingAvailableRead() const;
@@ -893,6 +899,7 @@ private:
     std::atomic<uint32_t> _underruns{0};      // Core 1 consumer writes, Core 0 reads
     std::atomic<uint32_t> _consumeLoops{0};   // Core 1 consumer writes, Core 0 reads
     std::atomic<uint32_t> _consumeFrames{0};  // Core 1 consumer writes, Core 0 reads
+    std::atomic<uint16_t> _outPeak{0};        // Core 1 consumer writes peak; Core 0 exchange(0)s
 
     // Pace-log telemetry (Phase 7 polish, gated by SFX_AUDIO_PACE_TELEMETRY
     // in audio_config.h).  Saves ~50 bytes of DRAM atomics + the entire

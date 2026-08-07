@@ -480,9 +480,10 @@
             deployDuty: gch.deployDuty,
             retractDuty: gch.retractDuty,
             timeoutMs: gch.timeoutMs,
+            motorVoltageMv: gch.motorVoltageMv,
             guard: gch.guard,    // seed the dialog from the strut's saved guard
-            onCommit: ({ deployDuty, retractDuty, timeoutMs, guard }) => {
-                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs, guard }))
+            onCommit: ({ deployDuty, retractDuty, timeoutMs, motorVoltageMv, guard }) => {
+                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs, motorVoltageMv, guard }))
             },
         }).catch(e => { error = String(e) })
     }

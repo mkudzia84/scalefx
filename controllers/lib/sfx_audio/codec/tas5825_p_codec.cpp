@@ -2,12 +2,16 @@
  * @file tas5825_p_codec.cpp
  * @brief Implementation of the TAS5825P (Class-H + Hybrid-Pro) driver.
  *
- * Init flow mirrors tests/hw/sfx_test_p/src/sfx_test_p.ino — the
- * permissive sequence proven on the original HubFX silicon. The
- * Hybrid-Pro / boost-converter methods are stubs against the wire
- * format; the HubFX board does not have an external DC-DC on the BOM
- * so these paths are exercised only on bespoke designs that wire
- * GPIO1 → HPFB.
+ * Shared-map register addresses follow the TI TAS5825M datasheet
+ * SLASEH7H (gold standard — see tas5825_regs.h; the family shares the
+ * book-0/page-0 map). The startup flow is the P's permissive one: no
+ * FS_MON gate before HIZ → PLAY, with a DEEP_SLEEP bounce fallback.
+ *
+ * The Hybrid-Pro / boost-converter methods are stubs: their P-only
+ * register addresses are folk-cited, NOT verified against an official
+ * TAS5825P datasheet, and the HubFX BOM has no external DC-DC — they
+ * are never invoked in production. Verify against TI documentation
+ * before wiring them to real hardware.
  */
 
 #if defined(SFX_HAS_AUDIO)
@@ -27,19 +31,21 @@ constexpr uint8_t SAP_CTRL1_FOR_BIT_DEPTH =
     (AUDIO_BIT_DEPTH == 24) ? SAP_WORD_24BIT :
                               SAP_WORD_16BIT;
 
-// GPIO1_SEL bit pattern that selects HPFB on the P silicon.
-constexpr uint8_t GPIO1_SEL_HPFB  = 0x01;
-constexpr uint8_t GPIO1_SEL_FAULT = 0x0B;
+// GPIO1_SEL function code that selects HPFB on P silicon (0x01 is
+// Reserved on the M — Table 9-42).
+constexpr uint8_t GPIO_SEL_HPFB = 0x01;
 
-// Hybrid-Pro configuration register (book 0, P-only).
-// The actual register address varies between silicon revisions; the
-// commonly-cited value for TAS5825P RHB silicon is 0x4D for the
-// Hybrid-Pro target voltage.
+// Hybrid-Pro configuration registers (P-only, UNVERIFIED — no official
+// TAS5825P datasheet audited; folk-cited values for RHB silicon).
 constexpr uint8_t REG_HYBRID_PRO_TARGET = 0x4D;
 constexpr uint8_t REG_HYBRID_PRO_CTRL   = 0x4E;
-constexpr uint8_t REG_BOOST_MIN         = 0x52;  // P-specific
-constexpr uint8_t REG_BOOST_MAX         = 0x55;  // P-specific
-constexpr uint8_t REG_BOOST_FEEDBACK    = 0x6A;  // P-specific PVDD ADC
+constexpr uint8_t REG_BOOST_MIN         = 0x52;
+constexpr uint8_t REG_BOOST_MAX         = 0x55;
+constexpr uint8_t REG_BOOST_FEEDBACK    = 0x6A;
+
+// Parking value while clocks are absent: DSP held in reset + deep sleep
+// (matches the silicon reset value of DEVICE_CTRL2).
+constexpr uint8_t CTRL_PARKED = CTRL_DIS_DSP_BIT | CTRL_DEEP_SLEEP;
 
 }  // namespace
 
@@ -50,14 +56,13 @@ TAS5825PCodec::TAS5825PCodec() = default;
 // ─── Phase 1: pre-clock init (P-permissive) ──────────────────────────────
 
 bool TAS5825PCodec::begin(sfx_peripherals::SfxI2cBus& wire, int sda, int scl,
-                          uint32_t sample_rate, Supply supply) {
+                          uint32_t sample_rate) {
     bool needWireInit = (i2c_ != &wire || sdaPin_ != sda || sclPin_ != scl);
 
     i2c_       = &wire;
     sdaPin_    = sda;
     sclPin_    = scl;
     sampleRate_ = sample_rate;
-    supply_    = supply;
 
     if (needWireInit) {
         i2c_->begin(sdaPin_, sclPin_, 100000);   // native bus bring-up (100 kHz)
@@ -68,32 +73,33 @@ bool TAS5825PCodec::begin(sfx_peripherals::SfxI2cBus& wire, int sda, int scl,
 
     constexpr int PROBE_RETRIES = 3;
     constexpr int PROBE_DELAY_MS = 500;
-    uint8_t probeResult = 0;
+    bool probeOk = false;
     for (int attempt = 0; attempt < PROBE_RETRIES; attempt++) {
-        probeResult = i2c_->probe(I2C_ADDR) ? 0 : 2;
-        if (probeResult == 0) break;
+        probeOk = i2c_->probe(I2C_ADDR);
+        if (probeOk) break;
         if (attempt < PROBE_RETRIES - 1) SFX_DELAY_MS(PROBE_DELAY_MS);
     }
-    if (probeResult != 0) {
-        TAS5825_LOG("TAS5825P: probe FAILED (err %d)", probeResult);
+    if (!probeOk) {
+        TAS5825_LOG("TAS5825P: probe FAILED");
         initialized_ = false;
         return false;
     }
-    TAS5825_LOG("TAS5825P: probe OK");
 
-    // Phase 1: simple reset → DEEP_SLEEP. P silicon doesn't need the
-    // explicit fault-clear that the M does (no CDET latch on this
-    // variant).
     selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_RESET, 0x11);
+    dieId_ = 0;
+    readRegister(REG_DIE_ID, &dieId_);
+    TAS5825_LOG("TAS5825P: probe OK, DIE_ID=0x%02X%s", dieId_,
+                dieId_ == DIE_ID_TAS5825M ? " (M silicon!)" : "");
+
+    // Phase 1: full reset, park with the DSP held (reset state).
+    writeRegister(REG_RESET_CTRL, 0x11);
     SFX_DELAY_MS(5);
-    writeRegister(REG_DEVICE_CTRL, CTRL_DEEP_SLEEP);
+    writeRegister(REG_DEVICE_CTRL2, CTRL_PARKED);
     SFX_DELAY_MS(5);
 
     initialized_ = true;
     hybridProOn_ = false;
-    TAS5825_LOG("TAS5825P: phase 1 done — DEEP_SLEEP (SR=%lu, supply=%s)",
-                sampleRate_, supplyStr(supply_));
+    TAS5825_LOG("TAS5825P: phase 1 done — parked (SR=%lu)", sampleRate_);
     return true;
 }
 
@@ -111,30 +117,35 @@ bool TAS5825PCodec::activate() {
     }
     TAS5825_LOG("TAS5825P: phase 2 — configuring");
 
-    if (!configureAnalogGain()) return false;
-
+    // Serial audio port: FS/SCLK auto-detect, SAP word length matched
+    // to the I2S TX width.
     selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_CLK_SRC,    0x00);
-    writeRegister(REG_FS_RATE,    0x00);
-    writeRegister(REG_SDOUT_SEL,  0x00);
-    writeRegister(REG_SAP_CTRL1,  SAP_CTRL1_FOR_BIT_DEPTH);
-    writeRegister(REG_DSP_MISC,   0x09);
+    writeRegister(REG_SIG_CH_CTRL, 0x00);
+    writeRegister(REG_SDOUT_SEL,   0x00);
+    writeRegister(REG_SAP_CTRL1,   SAP_CTRL1_FOR_BIT_DEPTH);
 
-    if (!initDSPCoefficients()) return false;
+    // GPIO1 → FAULTZ output (Hybrid-Pro rewires it to HPFB on demand).
+    writeRegister(REG_GPIO_CTRL, GPIO1_OE);
+    writeRegister(REG_GPIO1_SEL, GPIO_SEL_FAULTZ);
 
-    selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_DIGITAL_VOL, currentVolume_);
+    writeRegister(REG_DIG_VOL, currentVolume_);
 
-    // P does not need an FS_MON gate before HIZ — the chip
-    // auto-detects sample rate during the transition. Permissive flow.
-    writeRegister(REG_DEVICE_CTRL, CTRL_HIZ);
+    // P does not need an FS_MON gate before HIZ — the chip auto-detects
+    // sample rate during the transition. Permissive flow. HIZ also
+    // releases the DSP (DIS_DSP → 0).
+    writeRegister(REG_DEVICE_CTRL2, CTRL_HIZ);
     SFX_DELAY_MS(5);
+
+    // Analog gain auto-detected from the measured PVDD rail — read in
+    // HiZ (analog powered) rather than in deep sleep where the ADC may
+    // not sample.
+    if (!configureAnalogGain()) return false;
 
     uint8_t fsMon = 0;
     readRegister(REG_FS_MON, &fsMon);
     TAS5825_LOG("TAS5825P: HIZ — FS_MON=0x%02X (%s)", fsMon, fsMonStr(fsMon));
 
-    writeRegister(REG_DEVICE_CTRL, CTRL_PLAY);
+    writeRegister(REG_DEVICE_CTRL2, CTRL_PLAY);
     SFX_DELAY_MS(5);
 
     uint8_t pwr = 0;
@@ -143,21 +154,21 @@ bool TAS5825PCodec::activate() {
     TAS5825_LOG("TAS5825P: PLAY — POWER_STATE=0x%02X FS_MON=0x%02X",
                 pwr, fsMon);
 
-    if (fsMon == 0) {
-        // Fallback that the original P-flow used: bounce through
-        // DEEP_SLEEP → PLAY directly to re-trigger auto-detect.
-        TAS5825_LOG("TAS5825P: PLL not locked via HIZ — bouncing through DEEP_SLEEP");
-        writeRegister(REG_DEVICE_CTRL, CTRL_DEEP_SLEEP);
+    if ((fsMon & 0x0F) == FS_ERROR) {
+        // Fallback the original P-flow used: bounce through DEEP_SLEEP
+        // → PLAY to re-trigger auto-detect.
+        TAS5825_LOG("TAS5825P: no FS lock via HIZ — bouncing through DEEP_SLEEP");
+        writeRegister(REG_DEVICE_CTRL2, CTRL_DEEP_SLEEP);
         SFX_DELAY_MS(5);
-        writeRegister(REG_DEVICE_CTRL, CTRL_PLAY);
+        writeRegister(REG_DEVICE_CTRL2, CTRL_PLAY);
         SFX_DELAY_MS(5);
         readRegister(REG_POWER_STATE, &pwr);
     }
 
-    writeRegister(REG_FAULT_CLEAR, 0x80);
-    bool inPlay = (pwr & 0x0F) == CTRL_PLAY;
+    writeRegister(REG_FAULT_CLEAR, FAULT_CLEAR_CMD);
+    bool inPlay = (pwr == CTRL_PLAY);
     TAS5825_LOG("TAS5825P: %s (POWER_STATE=0x%02X)",
-                inPlay ? "PLAY ✓" : "PLAY FAILED", pwr);
+                inPlay ? "PLAY OK" : "PLAY FAILED", pwr);
     return inPlay;
 }
 
@@ -167,23 +178,26 @@ void TAS5825PCodec::setVolume(float volume) {
     if (!initialized_) return;
     if (volume < 0.0f) volume = 0.0f;
     if (volume > 1.0f) volume = 1.0f;
-    currentVolume_ = static_cast<uint8_t>(volume * VOL_0DB);
-    if (currentVolume_ > VOL_0DB) currentVolume_ = VOL_0DB;
+    // [0..1] → [mute .. 0 dB], linear in dB (−0.5 dB per count above
+    // the 0x30 reference — Table 9-24; gain above 0 dB not exposed).
+    if (volume <= 0.0f) {
+        currentVolume_ = VOL_MUTE;
+    } else {
+        int v = VOL_0DB + static_cast<int>((1.0f - volume) * 206.0f + 0.5f);
+        currentVolume_ = (v > VOL_MIN) ? VOL_MIN : static_cast<uint8_t>(v);
+    }
     if (!muted_) {
         selectBookPage(BOOK_00, PAGE_00);
-        writeRegister(REG_DIGITAL_VOL, currentVolume_);
+        writeRegister(REG_DIG_VOL, currentVolume_);
     }
 }
 
 void TAS5825PCodec::setVolumeDB(float db) {
     if (!initialized_) return;
-    if (db < -100.0f) db = -100.0f;
-    if (db > 24.0f)   db = 24.0f;
-    currentVolume_ = static_cast<uint8_t>((db / 0.5f) + 48.0f);
-    if (currentVolume_ > VOL_MAX) currentVolume_ = VOL_MAX;
+    currentVolume_ = volRegForDb(db);
     if (!muted_) {
         selectBookPage(BOOK_00, PAGE_00);
-        writeRegister(REG_DIGITAL_VOL, currentVolume_);
+        writeRegister(REG_DIG_VOL, currentVolume_);
     }
 }
 
@@ -191,40 +205,20 @@ void TAS5825PCodec::setMute(bool mute) {
     if (!initialized_) return;
     muted_ = mute;
     selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_DIGITAL_VOL, mute ? VOL_MUTE : currentVolume_);
+    writeRegister(REG_DIG_VOL, mute ? VOL_MUTE : currentVolume_);
 }
 
 void TAS5825PCodec::reset() {
     if (!initialized_) return;
     selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_DEVICE_CTRL, CTRL_DEEP_SLEEP);
-    writeRegister(REG_RESET, 0x11);
+    writeRegister(REG_DEVICE_CTRL2, CTRL_PARKED);
+    writeRegister(REG_RESET_CTRL, 0x11);
     SFX_DELAY_MS(50);
     initialized_ = false;
     hybridProOn_ = false;
-    if (begin(*i2c_, sdaPin_, sclPin_, sampleRate_, supply_)) {
+    if (begin(*i2c_, sdaPin_, sclPin_, sampleRate_)) {
         activate();
     }
-}
-
-bool TAS5825PCodec::setSupplyVoltage(Supply voltage) {
-    if (!initialized_) return false;
-    if (voltage == supply_) return true;
-    selectBookPage(BOOK_00, PAGE_00);
-    writeRegister(REG_DEVICE_CTRL, CTRL_DEEP_SLEEP);
-    SFX_DELAY_MS(2);
-    supply_ = voltage;
-    if (!configureAnalogGain()) {
-        writeRegister(REG_DEVICE_CTRL, CTRL_HIZ);
-        SFX_DELAY_MS(5);
-        writeRegister(REG_DEVICE_CTRL, CTRL_PLAY);
-        return false;
-    }
-    writeRegister(REG_DEVICE_CTRL, CTRL_HIZ);
-    SFX_DELAY_MS(5);
-    writeRegister(REG_DEVICE_CTRL, CTRL_PLAY);
-    writeRegister(REG_FAULT_CLEAR, 0x80);
-    return true;
 }
 
 // ─── Fault management ─────────────────────────────────────────────────────
@@ -232,27 +226,27 @@ bool TAS5825PCodec::setSupplyVoltage(Supply voltage) {
 bool TAS5825PCodec::clearFaults() {
     if (!initialized_) return false;
     selectBookPage(BOOK_00, PAGE_00);
-    return writeRegister(REG_FAULT_CLEAR, 0x80);
+    return writeRegister(REG_FAULT_CLEAR, FAULT_CLEAR_CMD);
 }
 
 uint8_t TAS5825PCodec::readFaultRegister() {
     if (!initialized_) return 0xFF;
     selectBookPage(BOOK_00, PAGE_00);
     uint8_t v = 0;
-    readRegister(REG_GLOBAL1, &v);
+    readRegister(REG_GLOBAL_FAULT1, &v);
     return v;
 }
 
-// ─── Hybrid-Pro / boost API (P-only) ─────────────────────────────────────
+// ─── Hybrid-Pro / boost API (P-only, register addresses UNVERIFIED) ──────
 
 bool TAS5825PCodec::hybridProEnable(bool on) {
     if (!initialized_) return false;
     selectBookPage(BOOK_00, PAGE_00);
 
-    // Toggle GPIO1 between FAULT and HPFB.
-    writeRegister(REG_GPIO1_SEL, on ? GPIO1_SEL_HPFB : GPIO1_SEL_FAULT);
+    // Toggle GPIO1 between FAULTZ and HPFB (output stays enabled).
+    writeRegister(REG_GPIO_CTRL, GPIO1_OE);
+    writeRegister(REG_GPIO1_SEL, on ? GPIO_SEL_HPFB : GPIO_SEL_FAULTZ);
 
-    // Toggle the algorithm enable bit in HYBRID_PRO_CTRL.
     uint8_t ctrl = 0;
     readRegister(REG_HYBRID_PRO_CTRL, &ctrl);
     if (on) {
@@ -271,8 +265,7 @@ bool TAS5825PCodec::hybridProEnable(bool on) {
 bool TAS5825PCodec::hybridProSetTarget(uint16_t targetMv) {
     if (!initialized_ || !hybridProOn_) return false;
     selectBookPage(BOOK_00, PAGE_00);
-    // Target register is u8 in 100-mV units (clamp to 25.5 V).
-    uint16_t val = targetMv / 100;
+    uint16_t val = targetMv / 100;   // u8 in 100-mV units
     if (val > 0xFF) val = 0xFF;
     writeRegister(REG_HYBRID_PRO_TARGET, static_cast<uint8_t>(val));
     TAS5825_LOG("TAS5825P: Hybrid-Pro target = %u mV", targetMv);
@@ -305,21 +298,26 @@ void TAS5825PCodec::dumpRegisters() {
     TAS5825_LOG("─── TAS5825P register dump ───");
     selectBookPage(BOOK_00, PAGE_00);
     struct { uint8_t reg; const char* name; } regs[] = {
-        {REG_DEVICE_CTRL, "DEVICE_CTRL"},
-        {REG_POWER_STATE, "POWER_STATE"},
-        {REG_FS_MON,      "FS_MON"},
-        {REG_DIGITAL_VOL, "DIGITAL_VOL"},
-        {REG_AGAIN_R,     "AGAIN_R"},
-        {REG_GPIO1_SEL,   "GPIO1_SEL"},
-        {REG_SAP_CTRL1,   "SAP_CTRL1"},
-        {REG_GLOBAL1,     "GLOBAL1"},
-        {REG_HYBRID_PRO_CTRL,   "HPRO_CTRL"},
-        {REG_HYBRID_PRO_TARGET, "HPRO_TARGET"},
+        {REG_DEVICE_CTRL2,  "DEVICE_CTRL2"},
+        {REG_POWER_STATE,   "POWER_STATE"},
+        {REG_FS_MON,        "FS_MON"},
+        {REG_CLKDET_STATUS, "CLKDET_STAT"},
+        {REG_SAP_CTRL1,     "SAP_CTRL1"},
+        {REG_DIG_VOL,       "DIG_VOL"},
+        {REG_AGAIN,         "AGAIN"},
+        {REG_PVDD_ADC,      "PVDD_ADC"},
+        {REG_GPIO_CTRL,     "GPIO_CTRL"},
+        {REG_GPIO1_SEL,     "GPIO1_SEL"},
+        {REG_DIE_ID,        "DIE_ID"},
+        {REG_CHAN_FAULT,    "CHAN_FAULT"},
+        {REG_GLOBAL_FAULT1, "GLOBAL_FAULT1"},
+        {REG_GLOBAL_FAULT2, "GLOBAL_FAULT2"},
+        {REG_WARNING,       "WARNING"},
     };
     for (const auto& r : regs) {
         uint8_t v = 0;
         if (readRegister(r.reg, &v)) {
-            TAS5825_LOG("  0x%02X %-12s : 0x%02X", r.reg, r.name, v);
+            TAS5825_LOG("  0x%02X %-13s : 0x%02X", r.reg, r.name, v);
         }
     }
 }
@@ -328,16 +326,12 @@ uint8_t TAS5825PCodec::getDeviceControlRegister() {
     if (!initialized_) return 0xFF;
     selectBookPage(BOOK_00, PAGE_00);
     uint8_t v = 0;
-    readRegister(REG_DEVICE_CTRL, &v);
+    readRegister(REG_DEVICE_CTRL2, &v);
     return v;
 }
 
 uint8_t TAS5825PCodec::getFaultRegister() {
-    if (!initialized_) return 0xFF;
-    selectBookPage(BOOK_00, PAGE_00);
-    uint8_t v = 0;
-    readRegister(REG_FAULT_CLEAR, &v);
-    return v;
+    return readFaultRegister();
 }
 
 bool TAS5825PCodec::testI2CConnection() {
@@ -363,26 +357,37 @@ bool TAS5825PCodec::selectBookPage(uint8_t book, uint8_t page) {
     return true;
 }
 
-bool TAS5825PCodec::initDSPCoefficients() {
-    if (!selectBookPage(0x8C, 0x0B)) return false;
-    constexpr uint8_t identity[] = {
-        0x00, 0x80, 0x00, 0x00,
-        0x00, 0x80, 0x00, 0x00,
-    };
-    for (size_t i = 0; i < sizeof(identity); i++) {
-        if (!writeRegister(0x28 + i, identity[i])) return false;
-    }
-    return true;
+uint32_t TAS5825PCodec::readPvdd_mV() {
+    if (!i2c_) return 0;
+    selectBookPage(BOOK_00, PAGE_00);
+    uint8_t adc = 0;
+    if (!readRegister(REG_PVDD_ADC, &adc)) return 0;
+    return pvddMvFromAdc(adc);
 }
 
 bool TAS5825PCodec::configureAnalogGain() {
+    // Auto-detect: measure the actual PVDD rail and pick the largest
+    // analog gain whose full-scale output still fits under it. A
+    // reading below the chip's 4.5 V operating floor means the ADC
+    // isn't valid (or the rail is absent) — fall back to the safe
+    // −8 dB setting.
+    uint32_t mv = readPvdd_mV();
+    if (mv < PVDD_MIN_VALID_MV) {
+        againReg_ = AGAIN_FALLBACK;
+        TAS5825_LOG("TAS5825P: PVDD ADC implausible (%lu mV) — AGAIN "
+                    "fallback -8.0 dB", (unsigned long)mv);
+    } else {
+        againReg_ = againStepForPvdd_mV(mv);
+        uint16_t db10 = againReg_ * 5;   // step = 0.5 dB
+        TAS5825_LOG("TAS5825P: PVDD %lu.%02lu V -> AGAIN -%u.%u dB "
+                    "(full-scale %u.%02u Vpeak)",
+                    (unsigned long)(mv / 1000), (unsigned long)((mv % 1000) / 10),
+                    db10 / 10, db10 % 10,
+                    AGAIN_FULLSCALE_MV[againReg_] / 1000,
+                    (AGAIN_FULLSCALE_MV[againReg_] % 1000) / 10);
+    }
     selectBookPage(BOOK_00, PAGE_00);
-    bool ok = true;
-    ok &= writeRegister(REG_ANALOG_CTRL, 0x11);
-    ok &= writeRegister(REG_MODE_CTRL, 0x00);
-    ok &= writeRegister(REG_AGAIN_L, 0x01);
-    ok &= writeRegister(REG_AGAIN_R, analogGainFor(supply_));
-    return ok;
+    return writeRegister(REG_AGAIN, againReg_);
 }
 
 #endif // SFX_HAS_AUDIO

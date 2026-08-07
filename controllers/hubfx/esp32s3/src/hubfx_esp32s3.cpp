@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.41.0-hubfx"
-#define BUILD_NUMBER     940
+#define FIRMWARE_VERSION "2.43.0-hubfx"
+#define BUILD_NUMBER     946
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -291,19 +291,10 @@ namespace Pwm {
     constexpr uint16_t FREQ_HZ = 1526;
 }
 
-namespace Codec {
-    /// TAS5825P PVDD-rail selector — picks the AGAIN table at codec
-    /// activate.  Default 12 V (3S LiPo).  Driven by `/hubfx.yaml`'s
-    /// `audio.codec_supply` field at boot via `applyHubFxConfigCallback`
-    /// — declared mutable (not constexpr) so the YAML can override it
-    /// before `audio.begin()` fires.  CONFIG_RELOAD updates the value
-    /// but the codec only re-reads it on reboot.
-    inline sfx_audio::tas5825::Supply SUPPLY_VOLTAGE =
-        sfx_audio::tas5825::Supply::V12;
-}
-
-// CodecAdapter specialization for HubFX's TAS5825P.  MUST come after
-// the `Gpio::` / `Codec::` namespaces — the header references them.
+// CodecAdapter specialization for HubFX's TAS5825 (P by default; build
+// with -DHUBFX_CODEC_TAS5825M for M-silicon boards).  MUST come after
+// the `Gpio::` namespace — the header references it.  Codec analog gain
+// auto-detects from the measured PVDD rail (codec_supply retired).
 #include "effects/audio_codec.h"
 
 // Board hardware probe — PCA9685 + INA226 boot diag + recovery, lifted
@@ -327,7 +318,7 @@ static constexpr hubfx_hw::HubFxHardwareProbe::PinConfig kHubFxProbeCfg = {
 
 // ── Policy aliases ───────────────────────────────────────────────────
 
-using Mixer        = AudioMixer<EspI2SOutput, TAS5825PCodec>;
+using Mixer        = AudioMixer<EspI2SOutput, HubFxCodecChip>;
 using AudioService = AudioServicePolicy<Mixer>;
 using AlertService = hubfx::effects::alerts::AlertServicePolicyT<Mixer>;
 
@@ -586,32 +577,14 @@ static hubfx::config::ConfigStoreSlot<LightFxConfigSchema,  LightFxYamlPool>  kL
 //      only POST-boot reloads rebuild the live port/role layout.
 static bool g_lightFxBooted = false;
 
-// Re-assert ONLY the board-level master state (codec supply + the `features:`
-// enable matrix that overrides each sub-file's local `enabled:`).  Does NOT
-// touch the port/role layout — split out so the reload-complete hook can run
-// it LAST without re-detaching roles the effect stores just re-claimed.
+// Re-assert ONLY the board-level master state.  Does NOT touch the
+// port/role layout — split out so the reload-complete hook can run it
+// LAST without re-detaching roles the effect stores just re-claimed.
 static void reassertHubFxFeatures(const HubFxConfig& cfg) {
-    // Codec PVDD voltage — board-specific, written before audio bring-up.
-    // /hubfx.yaml carries this because the codec is a board-level chip,
-    // not an effect's concern.  `audio.begin()` later in setup() reads
-    // `Codec::SUPPLY_VOLTAGE` via the CodecAdapter::probe() trait in
-    // audio_codec.h.  CONFIG_RELOAD updates the variable but the codec
-    // only re-reads on reboot — log a hint when the value changes.
-    {
-        sfx_audio::tas5825::Supply s;
-        if (sfx_audio::tas5825::parseSupply(cfg.audio.codecSupply, s)) {
-            if (s != Codec::SUPPLY_VOLTAGE) {
-                SFX_LOG_INFO("[codec] supply %s → %s  (reboot to apply)",
-                             sfx_audio::tas5825::supplyStr(Codec::SUPPLY_VOLTAGE),
-                             sfx_audio::tas5825::supplyStr(s));
-            }
-            Codec::SUPPLY_VOLTAGE = s;
-        } else if (cfg.audio.codecSupply[0]) {
-            SFX_LOG_WARN("[codec] unknown audio.codec_supply='%s' — keeping %s",
-                         cfg.audio.codecSupply,
-                         sfx_audio::tas5825::supplyStr(Codec::SUPPLY_VOLTAGE));
-        }
-    }
+    (void)cfg;
+    // NOTE (2026-08-01): the `audio.codec_supply` selector was RETIRED —
+    // the codec auto-detects the PVDD rail via its own ADC at activate()
+    // and picks the analog gain to match (see configureAnalogGain()).
 
     // NOTE (2026-07-26): the `features:` master-enable matrix was RETIRED.
     // Each effect's enable now lives ONLY in its own sub-config (`enginefx.yaml`
@@ -626,6 +599,10 @@ static void reassertHubFxFeatures(const HubFxConfig& cfg) {
     // the true set of live effects.
     board.recomputeEnabledCapabilities();
 }
+
+// Re-resolves every input-name binding after a post-boot /hubfx.yaml
+// reload — defined below the per-effect installers it calls.
+static void reinstallInputBindings();
 
 // /hubfx.yaml store apply callback — fires on the initial load AND on every
 // CONFIG_RELOAD.  Re-asserts the master features, then (POST-boot only)
@@ -645,6 +622,12 @@ static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
                      "from /hubfx.yaml", (unsigned)n);
         hubfx::config::applyPortRoles<HubFxBoard, HubFxTopologyService>(
             board, cfg);
+        // Every effect resolves its RC input NAMES against this file's
+        // inputs[] (Rule 43) at ITS OWN apply time — so a channel remap
+        // applied here must re-resolve them all, or each effect keeps
+        // listening on the old channel until its own config happens to
+        // be re-applied.
+        reinstallInputBindings();
     }
 }
 
@@ -756,6 +739,24 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
     // (g_lightFxBooted == false) — the setup block installs it once the
     // InputDispatcher is fully initialised.
     if (g_lightFxBooted) installLightFxSelector(cfg);
+}
+
+// Re-resolve EVERY input-name consumer against the freshly-applied
+// /hubfx.yaml inputs[] (fired by applyHubFxConfigCallback post-boot,
+// i.e. Studio's Input & Ports Apply).  Without this, remapping an input
+// to a different RC channel (e.g. light_program ch8 → ch10) updated the
+// config and the UI but every effect kept its subscription / resolved
+// table on the OLD channel until that effect's own config was
+// re-applied for some unrelated reason.
+static void reinstallInputBindings() {
+    installLightFxSelector(kLightFx.data());
+    installLandingActivation(kLanding.data());
+    installGearActivation(kGearCtrl.data());
+    // Engine + gun resolve their input tables inside their apply
+    // translators — re-run them against the fresh inputs[].
+    applyEngineFxConfigCallback(kEngineFx.data());
+    applyGunFxConfigCallback(kGunFx.data());
+    SFX_LOG_INFO("[config] input bindings re-resolved after /hubfx.yaml reload");
 }
 
 #if SFX_INSTRUMENTATION

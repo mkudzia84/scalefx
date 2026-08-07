@@ -24,7 +24,7 @@ media/
 The on-device layout mirrors this:
 
 ```
-/hubfx.yaml                features enable matrix + audio.codec_supply
+/hubfx.yaml                ports / inputs / expanders mapping (pure — features + codec_supply retired)
 ├── /alerts.yaml           severity → AlertSound + volumes
 ├── /enginefx.yaml         engine wiring + sounds
 ├── /landing.yaml          landing-light defs (servo + LED group)
@@ -169,6 +169,17 @@ unused and played audibly quiet).
 | --- | --- |
 | `gun_200rpm.mp3` | Low rate of fire. |
 | `gun_550rpm.mp3` | High rate of fire. |
+
+### `sounds/PEWPEW/` — cute voice "pew" (bench / demo)
+
+| File | Role |
+| --- | --- |
+| `pew_45ppm.wav` | Slow rate — one voice pew per 1.33 s loop = 45 pews/min. |
+| `pew_80ppm.wav` | Fast rate — one voice pew per 0.75 s loop = 80 pews/min. |
+
+One cute voice "pew" per file (22.05 kHz mono WAV); the loop length sets
+the fire rate, so the `ppm` suffix (pews per minute) lines up with what
+you hear when the gun channel loops it.
 
 ### Re-encoding from `sources/wav/`
 
