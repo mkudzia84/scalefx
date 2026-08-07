@@ -224,6 +224,28 @@ The probe stays available: flash `tests/hw/hubfx_usb_probe`, watch UART0 @
 plug (2 s heartbeats prove the probe is alive).  Same partition table as
 production, so configs survive; restore with `scalefx-flash flash hubfx`.
 
+**Hub-init instrumentation (probe v2, 2026-07-26).** The probe now sees the
+hub chip DIRECTLY, closing the "hub devices are hidden from clients" blind
+spot: (a) `CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK` + an `enum_filter_cb`
+that prints an `ENUM: VID/PID class=..` line for EVERY device the root port
+enumerates — U41 included (`class=09` = hub, tagged `HUB CHIP (U41 path)
+DETECTED`); (b) IDF `HUB`/`EXT_HUB`/`EXT_PORT`/`HCD` tags at DEBUG; (c) the
+heartbeat polls `usb_host_lib_info()` (`libdevs` counts internally-tracked
+devices, hubs included).  Healthy board: an ENUM class=09 line within ~1 s of
+boot and `libdevs=1` while idle.
+
+**Instrumented run on the REV C unit (2026-07-26):** stack fully up
+(`EXT_PORT`/`EXT_HUB` drivers installed, HCD DWC FIFO configured,
+`usb_host_install OK`) yet `enums=0 libdevs=0` forever — **the root port has
+never seen a connect edge**: U41's upstream port never presents a D+ pull-up.
+This narrows the fault to before enumeration even starts: U41 power (AVDD via
+L4), RESET_HUB stuck low, X2 not oscillating, or the R19/R20 upstream pair —
+exactly the bench-plan measurements above.  (`root_port_power(true)` returns
+`ESP_ERR_INVALID_STATE` on this IDF because the port auto-powers at install —
+expected, not a fault.)  Boot log fun fact: the bootloader reports **16 MB**
+flash on this module (production images assume 8 MB — free headroom if REV C
+standardizes on the bigger part).
+
 ## Firmware/tooling changes made during this bring-up
 
 - `HUBFX_PCB_REV` compile-time pin-map switch (rev B default; `=1`
