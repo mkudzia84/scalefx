@@ -7,6 +7,30 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.42.1 — 2026-08-01 — input remaps take effect on Apply
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.42.1 | ESP32-S3 | `hubfx-v2.42.1` |
+
+PATCH: logic fix on top of 2.42.0.
+
+### Bug Fixes
+- **Remapping an input to a different RC channel now takes effect on the
+  Input & Ports Apply.**  Every effect resolves its input NAMES against
+  /hubfx.yaml's inputs[] at its OWN apply time (Rule 43); Studio's
+  input-mapping Apply reloads only the /hubfx.yaml store, so the
+  lightfx selector / landing / gear / engine / gun bindings all kept
+  listening on the OLD channel until that effect's config happened to
+  be re-applied (the reported symptom: light selector moved ch8 → ch10,
+  saved + shown in the UI, but only responding after an unrelated light
+  edit + Apply).  The hubfx reload callback now re-installs every
+  input-driven subscription (`reinstallInputBindings()` — watch for
+  `[config] input bindings re-resolved` in the diag log).  This also
+  closes the gunfx apply comment's known "Phase 4 polish" gap.
+
+---
+
 ## 2.42.0 — 2026-08-01 — PVDD auto-gain + audio power telemetry
 
 | Component | Version | Platform | Tag |

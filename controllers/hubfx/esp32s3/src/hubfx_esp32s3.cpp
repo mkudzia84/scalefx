@@ -62,7 +62,7 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.42.0-hubfx"
+#define FIRMWARE_VERSION "2.42.1-hubfx"
 #define BUILD_NUMBER     946
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
@@ -600,6 +600,10 @@ static void reassertHubFxFeatures(const HubFxConfig& cfg) {
     board.recomputeEnabledCapabilities();
 }
 
+// Re-resolves every input-name binding after a post-boot /hubfx.yaml
+// reload — defined below the per-effect installers it calls.
+static void reinstallInputBindings();
+
 // /hubfx.yaml store apply callback — fires on the initial load AND on every
 // CONFIG_RELOAD.  Re-asserts the master features, then (POST-boot only)
 // rebuilds the port/role layout from the fresh config so a Studio "Apply" of
@@ -618,6 +622,12 @@ static void applyHubFxConfigCallback(const HubFxConfig& cfg) {
                      "from /hubfx.yaml", (unsigned)n);
         hubfx::config::applyPortRoles<HubFxBoard, HubFxTopologyService>(
             board, cfg);
+        // Every effect resolves its RC input NAMES against this file's
+        // inputs[] (Rule 43) at ITS OWN apply time — so a channel remap
+        // applied here must re-resolve them all, or each effect keeps
+        // listening on the old channel until its own config happens to
+        // be re-applied.
+        reinstallInputBindings();
     }
 }
 
@@ -729,6 +739,24 @@ static void applyLightFxConfigCallback(const LightFxYamlConfig& cfg) {
     // (g_lightFxBooted == false) — the setup block installs it once the
     // InputDispatcher is fully initialised.
     if (g_lightFxBooted) installLightFxSelector(cfg);
+}
+
+// Re-resolve EVERY input-name consumer against the freshly-applied
+// /hubfx.yaml inputs[] (fired by applyHubFxConfigCallback post-boot,
+// i.e. Studio's Input & Ports Apply).  Without this, remapping an input
+// to a different RC channel (e.g. light_program ch8 → ch10) updated the
+// config and the UI but every effect kept its subscription / resolved
+// table on the OLD channel until that effect's own config was
+// re-applied for some unrelated reason.
+static void reinstallInputBindings() {
+    installLightFxSelector(kLightFx.data());
+    installLandingActivation(kLanding.data());
+    installGearActivation(kGearCtrl.data());
+    // Engine + gun resolve their input tables inside their apply
+    // translators — re-run them against the fresh inputs[].
+    applyEngineFxConfigCallback(kEngineFx.data());
+    applyGunFxConfigCallback(kGunFx.data());
+    SFX_LOG_INFO("[config] input bindings re-resolved after /hubfx.yaml reload");
 }
 
 #if SFX_INSTRUMENTATION
