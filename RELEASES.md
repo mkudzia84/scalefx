@@ -43,9 +43,9 @@ cap to actually clamp the motor.
   railNow_mV [14:16] capDuty` (lengths 8/10/16 all valid).
 
 ### Internal
-- New voice **PEWPEW** demo gun sounds (`media/sounds/PEWPEW/gun_120rpm.mp3` /
-  `gun_450rpm.mp3`) — cute TTS "pew pew" replacing the synth laser chirps;
-  cadence matches the rpm suffix.
+- New voice **PEWPEW** demo gun sounds (`media/sounds/PEWPEW/pew_45ppm.wav` /
+  `pew_80ppm.wav`) — one cute voice pew per loop; the loop length sets the
+  fire rate (45 / 80 pews per minute).
 
 ---
 

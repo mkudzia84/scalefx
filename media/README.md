@@ -156,17 +156,16 @@ Firmware (see `alert_sound.h`) expects files at:
 | `gun_200rpm.mp3` | Low rate of fire. |
 | `gun_550rpm.mp3` | High rate of fire. |
 
-### `sounds/PEWPEW/` — cute voice "pew pew" (bench / demo)
+### `sounds/PEWPEW/` — cute voice "pew" (bench / demo)
 
 | File | Role |
 | --- | --- |
-| `gun_120rpm.mp3` | Slow rate — the meme phrase "pew pew … pew pew pew" (5 pews / 2.5 s loop = 120 rpm average). |
-| `gun_450rpm.mp3` | Fast rate — rapid regular "pewpewpew" burst (one pew every 133 ms = 450 rpm). |
+| `pew_45ppm.wav` | Slow rate — one voice pew per 1.33 s loop = 45 pews/min. |
+| `pew_80ppm.wav` | Fast rate — one voice pew per 0.75 s loop = 80 pews/min. |
 
-A human-style voice saying "pew" (Windows SAPI TTS, chipmunk-pitched
-1.45× via ffmpeg `asetrate`/`aresample`), assembled with `adelay`+`amix`;
-no source WAV.  Cadence matches the rpm suffix so the gun ROF bands line
-up with what you hear.
+One cute voice "pew" per file (22.05 kHz mono WAV); the loop length sets
+the fire rate, so the `ppm` suffix (pews per minute) lines up with what
+you hear when the gun channel loops it.
 
 ### Re-encoding from `sources/wav/`
 
