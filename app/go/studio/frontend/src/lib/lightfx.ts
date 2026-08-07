@@ -241,28 +241,23 @@ export async function loadLightFxConfig(): Promise<void> {
     const activePrograms: ActiveProgramT[] = []
     for (const p of raw._paths) {
         const name = nameFromDevicePath(p)
-        const tmpl = byName.get(name)
-        if (tmpl) {
-            // Template by this name exists — seed the draft from it.
-            // If the operator edited the on-device YAML out of band
-            // (via file manager) those changes will be OVERWRITTEN by
-            // the template on the next Apply.  Click Edit then Apply
-            // to push the current template state if that's intentional;
-            // otherwise re-download via the File Manager.
-            activePrograms.push({
-                name,
-                program: structuredClone(tmpl.program),
-            })
-        } else {
-            // Unknown name — fetch from device so the active row has
-            // SOMETHING to show.  If the device doesn't have it either
-            // (deleted out of band), we get a default-empty program.
-            let prog: ProgramT = defaultProgram()
-            try {
-                prog = await GetLightFxProgramStructured(p) as ProgramT
-            } catch { /* default-empty is fine */ }
-            activePrograms.push({ name, program: prog })
+        // The DEVICE file is authoritative for an active program — it is
+        // what the firmware actually runs and what the last Apply wrote.
+        // (Until 2026-08-01 a library template with the same name was
+        // seeded INSTEAD, which reverted applied edits in the UI on
+        // every tab remount — and the next Apply then pushed the stale
+        // template back to the board, silently undoing the operator's
+        // change on the device too.)  The library is only the fallback
+        // for a file the device no longer has.
+        let prog: ProgramT | null = null
+        try {
+            prog = await GetLightFxProgramStructured(p) as ProgramT
+        } catch { /* fall through to library / default */ }
+        if (!prog) {
+            const tmpl = byName.get(name)
+            prog = tmpl ? structuredClone(tmpl.program) : defaultProgram()
         }
+        activePrograms.push({ name, program: prog })
     }
 
     // Channels[]: device's /lightfx.yaml may not have it (schemaVersion
