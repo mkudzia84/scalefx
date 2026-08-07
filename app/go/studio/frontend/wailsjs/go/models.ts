@@ -928,6 +928,38 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class AudioCodecPower {
+	    available: boolean;
+	    model: string;
+	    dieId: number;
+	    pvddVolts: number;
+	    againDb: number;
+	    fullScaleVp: number;
+	    outPeakPct: number;
+	    speakerOhms: number;
+	    estWatts: number;
+	    muted: boolean;
+	    faults: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new AudioCodecPower(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.model = source["model"];
+	        this.dieId = source["dieId"];
+	        this.pvddVolts = source["pvddVolts"];
+	        this.againDb = source["againDb"];
+	        this.fullScaleVp = source["fullScaleVp"];
+	        this.outPeakPct = source["outPeakPct"];
+	        this.speakerOhms = source["speakerOhms"];
+	        this.estWatts = source["estWatts"];
+	        this.muted = source["muted"];
+	        this.faults = source["faults"];
+	    }
+	}
 	export class AudioPreloadStatus {
 	    residentBytes: number;
 	    budgetBytes: number;
@@ -1138,6 +1170,9 @@ export namespace main {
 	    positionName: string;
 	    guardMode: number;
 	    guardName: string;
+	    elementMv: number;
+	    railNowMv: number;
+	    capDuty: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new DiagBiMotorStatus(source);
@@ -1154,6 +1189,9 @@ export namespace main {
 	        this.positionName = source["positionName"];
 	        this.guardMode = source["guardMode"];
 	        this.guardName = source["guardName"];
+	        this.elementMv = source["elementMv"];
+	        this.railNowMv = source["railNowMv"];
+	        this.capDuty = source["capDuty"];
 	    }
 	}
 	export class DiagEndstopResult {
@@ -1615,6 +1653,7 @@ export namespace main {
 	    deployDuty: number;
 	    retractDuty: number;
 	    timeoutMs: number;
+	    motorVoltageMv?: number;
 	    guard?: GearGuardDTO;
 	    doors: GearDoorDTO[];
 	    doorMode: string;
@@ -1633,6 +1672,7 @@ export namespace main {
 	        this.deployDuty = source["deployDuty"];
 	        this.retractDuty = source["retractDuty"];
 	        this.timeoutMs = source["timeoutMs"];
+	        this.motorVoltageMv = source["motorVoltageMv"];
 	        this.guard = this.convertValues(source["guard"], GearGuardDTO);
 	        this.doors = this.convertValues(source["doors"], GearDoorDTO);
 	        this.doorMode = source["doorMode"];

@@ -38,6 +38,10 @@ export function CheckFiles(arg1) {
   return window['go']['main']['App']['CheckFiles'](arg1);
 }
 
+export function CodecPower() {
+  return window['go']['main']['App']['CodecPower']();
+}
+
 export function Connect(arg1) {
   return window['go']['main']['App']['Connect'](arg1);
 }
@@ -218,12 +222,12 @@ export function GearMotorCalibrate(arg1, arg2, arg3, arg4) {
   return window['go']['main']['App']['GearMotorCalibrate'](arg1, arg2, arg3, arg4);
 }
 
-export function GearMotorGuardFixed(arg1, arg2, arg3, arg4) {
-  return window['go']['main']['App']['GearMotorGuardFixed'](arg1, arg2, arg3, arg4);
+export function GearMotorGuardFixed(arg1, arg2, arg3, arg4, arg5) {
+  return window['go']['main']['App']['GearMotorGuardFixed'](arg1, arg2, arg3, arg4, arg5);
 }
 
-export function GearMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
-  return window['go']['main']['App']['GearMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8);
+export function GearMotorGuardLiveRatio(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['main']['App']['GearMotorGuardLiveRatio'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
 }
 
 export function GearMotorJog(arg1, arg2, arg3) {
