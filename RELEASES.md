@@ -29,6 +29,16 @@ ends / servo motion profiles feel unreliable". No wire changes.
   `setNormalizedTarget` (intent space: full = open/deploy → MIN-µs end when
   reversed); raw `SERVO_SET_TARGET` stays unreflected (servo space — the
   calibration jog needs absolute µs).
+- **Servo headers are silent until first commanded (quiet attach).** The
+  MCPWM driver used to start the 1500 µs pulse train the moment the port
+  attached at boot — every reset (and the bench had 25 unexpected
+  disconnects/resets in one day) drove all 10 servo headers to centre at
+  raw servo speed: mid-travel for a retract, "randomly open and shut at
+  high speed" from the operator's chair. The generator now holds the pin
+  forced-low from attach; the first real command releases it with the
+  correct width already latched. A servo with no pulse simply holds — no
+  boot motion at all. (ESP32/hub only; the Pico Arduino-Servo backend
+  keeps its attach-time pulse until the P8 native migration.)
 - **Role re-attach no longer teleports the integrator to centre.** Every
   Studio Apply (CONFIG_RELOAD → detach + re-attach all hub roles)
   re-emplaced each ServoActuatorRole and snapped its motion integrator to

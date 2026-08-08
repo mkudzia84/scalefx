@@ -55,13 +55,15 @@ public:
 
     /// Allocate one MCPWM generator on `gpio`.  Returns its comparator handle
     /// (used to set pulse width) or nullptr when the pool is exhausted /
-    /// hardware setup fails.
+    /// hardware setup fails.  `outGen` receives the generator handle (used by
+    /// EspServo for the quiet-attach force-level control).
     ///
     /// THREADING CONTRACT: allocate() mutates pool state (`_count`, the timer/
     /// operator tables) WITHOUT a lock — it MUST be called only during
     /// single-threaded setup (servo attach happens at board bringup, before the
     /// servo-tick task runs).  Do not call it from a running task.
-    mcpwm_cmpr_handle_t allocate(int gpio, uint16_t initialUs) {
+    mcpwm_cmpr_handle_t allocate(int gpio, uint16_t initialUs,
+                                 mcpwm_gen_handle_t* outGen = nullptr) {
         if (gpio < 0 || _count >= kMaxServos) return nullptr;
 
         const int idx     = _count;
@@ -95,6 +97,7 @@ public:
 
         mcpwm_comparator_set_compare_value(cmp, initialUs);
         ++_count;
+        if (outGen) *outGen = gen;
         return cmp;
     }
 
@@ -135,11 +138,24 @@ private:
 
 class EspServo {
 public:
+    /// QUIET ATTACH (2.45.2): attach() allocates the generator but holds the
+    /// pin FORCED LOW — no pulse train until the first writeMicroseconds().
+    /// A hobby servo (or a black-box retract controller) with no pulse simply
+    /// holds position; emitting the 1500 µs centre at attach actively DROVE
+    /// every servo mid-travel on each boot — with the bench's repeated
+    /// watchdog/brownout resets that read as "servos randomly open and shut".
+    /// servo_port.h keys off kQuietAttach to skip its initial write too.
+    static constexpr bool kQuietAttach = true;
+
     /// @param gpio  GPIO number.  @param minUs/maxUs  driver clamp (unused by
     /// the MCPWM math but kept for API parity — MicroservoPort clamps already).
     bool attach(int gpio, uint16_t /*minUs*/ = 500, uint16_t /*maxUs*/ = 2500,
                 uint16_t initialUs = 1500) {
-        _cmp = EspServoPool::instance().allocate(gpio, initialUs);
+        _cmp = EspServoPool::instance().allocate(gpio, initialUs, &_gen);
+        if (_cmp && _gen) {
+            mcpwm_generator_set_force_level(_gen, 0, true);   // pin low, no pulses
+            _forced = true;
+        }
         return _cmp != nullptr;
     }
 
@@ -150,13 +166,23 @@ public:
     /// register write (latched at counter-zero, see allocate()'s
     /// update_cmp_on_tez) so it cannot tear, but if a calibration handler runs
     /// on a task OTHER than the servo-tick task, route the write through the
-    /// owning task — do not have two tasks drive the same _cmp.
+    /// owning task — do not have two tasks drive the same _cmp.  The one-shot
+    /// force release below shares that single-writer contract.
     void writeMicroseconds(uint16_t us) {
-        if (_cmp) mcpwm_comparator_set_compare_value(_cmp, us);
+        if (!_cmp) return;
+        mcpwm_comparator_set_compare_value(_cmp, us);
+        if (_forced) {
+            // First real command — release the force so the generator starts
+            // pulsing at the freshly-set width (level -1 = remove force).
+            mcpwm_generator_set_force_level(_gen, -1, true);
+            _forced = false;
+        }
     }
 
 private:
-    mcpwm_cmpr_handle_t _cmp = nullptr;
+    mcpwm_cmpr_handle_t _cmp    = nullptr;
+    mcpwm_gen_handle_t  _gen    = nullptr;
+    bool                _forced = false;
 };
 
 }  // namespace sfx_peripherals

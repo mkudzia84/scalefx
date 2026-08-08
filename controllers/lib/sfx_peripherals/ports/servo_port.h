@@ -21,10 +21,22 @@
 #define SFX_PERIPHERAL_SERVO_PORT_H
 
 #include <cstdint>
+#include <type_traits>
 
 #include "sfx_servo.h"   // sfx_peripherals::ServoDriver (MCPWM / PIO)
 
 namespace sfx_peripherals {
+
+// Driver capability probe: a backend that declares `kQuietAttach = true`
+// (EspServo) emits NO pulse train until the first writeMicroseconds(), so
+// begin() must not push the initial centre.  Backends without the marker
+// (Arduino-Pico Servo) start pulsing on attach — begin() writes the initial
+// value as before so the pulse at least matches the declared centre.
+template <typename T, typename = void>
+struct servo_quiet_attach : std::false_type {};
+template <typename T>
+struct servo_quiet_attach<T, std::void_t<decltype(T::kQuietAttach)>>
+    : std::bool_constant<T::kQuietAttach> {};
 
 // ============================================================================
 // ServoPort — abstract pulse output (+ optional input capture)
@@ -59,7 +71,12 @@ public:
     /// @param gpioPin   Arduino pin number.
     /// @param minUs     Driver-level lower clamp (default 500 µs).
     /// @param maxUs     Driver-level upper clamp (default 2500 µs).
-    /// @param initialUs Pulse to write on `begin()` (default 1500 µs centre).
+    /// @param initialUs Intended centre (default 1500 µs).  On a quiet-attach
+    ///                  driver (ESP32) this is only the `microseconds()` seed —
+    ///                  NO pulse is emitted until the first command, so a
+    ///                  reboot can't drive an undercarriage mid-travel.  On
+    ///                  drivers that pulse from attach (Pico) it is written
+    ///                  on `begin()` as before.
     MicroservoPort(int gpioPin,
                    uint16_t minUs = 500,
                    uint16_t maxUs = 2500,
@@ -69,7 +86,9 @@ public:
     bool begin() override {
         if (_pin < 0) return false;
         _servo.attach(_pin, _minUs, _maxUs);
-        writeMicroseconds(_us);
+        if constexpr (!servo_quiet_attach<ServoDriver>::value) {
+            writeMicroseconds(_us);
+        }
         return _servo.attached();
     }
 
