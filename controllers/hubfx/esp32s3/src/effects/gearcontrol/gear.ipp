@@ -70,11 +70,14 @@ inline void Gear::emergencyHold() {
     _stepArmed = false;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutTimerDeadlineMs = 0;
     _strutState = GearStrutState::Unknown;   // frozen mid-travel → position uncertain
     _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Held, GearSubPhase::idle);
     if (_commit && _sendCtx) _commit(_sendCtx);
-    SFX_LOG_INFO("[gear] %u: EMERGENCY HOLD", _def.id);
+    SFX_LOG_INFO("[gear] %u: EMERGENCY HOLD%s", _def.id,
+                 _def.strutDrive == StrutDrive::HBridge
+                     ? "" : " (servo strut cannot brake — it finishes its stroke)");
 }
 
 inline void Gear::clearError() {
@@ -87,6 +90,7 @@ inline void Gear::clearError() {
     _errorReason = 0;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutTimerDeadlineMs = 0;
     _strutState = GearStrutState::Unknown;
     _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Unknown, GearSubPhase::idle);   // position uncertain after a fault
@@ -259,12 +263,7 @@ inline void Gear::onEndstopResult(uint8_t outcome) {
         return;
     }
     // Reached — expander already braked locally; record the strut end + advance.
-    _strutState = (_seekDir == Target::Down) ? GearStrutState::Out : GearStrutState::Up;
-    _legDone = true;
-    _movingDeadlineMs = 0;
-    if (_begin && _sendCtx) _begin(_sendCtx);
-    pump();
-    if (_commit && _sendCtx) _commit(_sendCtx);
+    strutLegReached();
 }
 
 // ── Tick ─────────────────────────────────────────────────────────────
@@ -288,6 +287,17 @@ inline void Gear::update(uint32_t nowMs) {
         return;
     }
     if (_manualLeg == ManualLeg::StrutDown || _manualLeg == ManualLeg::StrutUp) {
+        // Servo modes: the fixed travel timer IS the completion.
+        if (_def.strutDrive != StrutDrive::HBridge) {
+            if (_strutTimerDeadlineMs != 0 &&
+                (int32_t)(nowMs - _strutTimerDeadlineMs) >= 0) {
+                _strutTimerDeadlineMs = 0;
+                if (_begin && _sendCtx) _begin(_sendCtx);
+                finishManualStrut();
+                if (_commit && _sendCtx) _commit(_sendCtx);
+            }
+            return;
+        }
         if (_movingDeadlineMs != 0 && (int32_t)(nowMs - _movingDeadlineMs) >= 0) {
             SFX_LOG_WARN("[gear] %u: manual strut silent past seek timeout — ERROR", _def.id);
             enterError(GearError::TIMEOUT);
@@ -316,9 +326,20 @@ inline void Gear::update(uint32_t nowMs) {
         return;
     }
 
-    // Motor leg: silent-expander backstop (the seek's own timeout is
-    // authoritative and arrives as ENDSTOP_RESULT(timeout)).
+    // Strut leg completion / backstop.
     if (_sub == GearSubPhase::strut_moving) {
+        // Servo modes: the fixed travel timer IS the completion — the doors
+        // stage only engages after it elapses (black-box controller).
+        if (_def.strutDrive != StrutDrive::HBridge) {
+            if (_strutTimerDeadlineMs != 0 &&
+                (int32_t)(nowMs - _strutTimerDeadlineMs) >= 0) {
+                SFX_LOG_INFO("[gear] %u: strut travel time elapsed — leg complete", _def.id);
+                strutLegReached();
+            }
+            return;
+        }
+        // HBridge: silent-expander backstop (the seek's own timeout is
+        // authoritative and arrives as ENDSTOP_RESULT(timeout)).
         if (_movingDeadlineMs == 0) return;
         if ((int32_t)(nowMs - _movingDeadlineMs) < 0) return;
         SFX_LOG_WARN("[gear] %u: expander silent past seek timeout — ERROR", _def.id);
@@ -337,6 +358,7 @@ inline void Gear::enterError(uint8_t reason) {
     _errorReason = reason;
     _movingDeadlineMs = 0;
     _doorDeadlineMs   = 0;
+    _strutTimerDeadlineMs = 0;
     _strutState = GearStrutState::Unknown;
     _manualLeg  = ManualLeg::None;
     setPhaseSub(GearPhase::Error, GearSubPhase::idle);
@@ -358,11 +380,52 @@ inline void Gear::setPhaseSub(uint8_t newPhase, uint8_t newSub) {
 }
 
 inline void Gear::startSeek() {
-    commandGuard();                 // push the saved stall guard before seeking
-    commandSeek(seekDuty());        // toward _target
+    if (_def.strutDrive == StrutDrive::HBridge) {
+        commandGuard();             // push the saved stall guard before seeking
+        commandSeek(seekDuty());    // toward _target
+        _seekDir = _target;
+        _strutState = GearStrutState::Moving;
+        armMotorBackstop();
+        _strutTimerDeadlineMs = 0;
+        return;
+    }
+    // Servo modes (integrated/3rd-party retract controller, black box): put
+    // the pulse at the target end and run the FIXED travel timer — the
+    // deadline IS the completion (there is no feedback to wait on).  A
+    // mid-travel reversal re-commands the pulse and restarts the FULL timer
+    // (conservative: an unknown mechanism mid-stroke needs a full stroke).
+    commandStrutServo();
     _seekDir = _target;
     _strutState = GearStrutState::Moving;
-    armMotorBackstop();
+    _movingDeadlineMs = 0;          // no expander backstop — the timer rules
+    _strutTimerDeadlineMs = sfx_core::EffectClock::instance().nowMs()
+                          + (_def.travelMs != 0 ? _def.travelMs : 1u);
+    SFX_LOG_INFO("[gear] %u: strut servo → %s for %ums (%s)",
+                 _def.id, _target == Target::Down ? "deploy" : "retract",
+                 (unsigned)_def.travelMs, StrutDrive::getName(_def.strutDrive));
+}
+
+inline void Gear::commandStrutServo() {
+    if (!_send) return;
+    // Deploy drives the pulse to the calibrated MAX-µs end unless reversed —
+    // the same convention as doors and landing lights; direction/travel live
+    // in the servo role's calibration + this def's `reverse` flag.
+    const bool toMax = (_target == Target::Down) != _def.reverse;
+    uint8_t payload[3];
+    payload[0] = _def.strutServo.portIdx;
+    SfxWire::putU16LE(&payload[1], toMax ? RolePacket::kPosNormFull : 0);
+    _send(_sendCtx, _def.strutServo,
+          RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload));
+}
+
+inline void Gear::strutLegReached() {
+    _strutState = (_seekDir == Target::Down) ? GearStrutState::Out : GearStrutState::Up;
+    _legDone = true;
+    _movingDeadlineMs     = 0;
+    _strutTimerDeadlineMs = 0;
+    if (_begin && _sendCtx) _begin(_sendCtx);
+    pump();
+    if (_commit && _sendCtx) _commit(_sendCtx);
 }
 
 inline void Gear::openDoors() {
@@ -445,6 +508,10 @@ inline void Gear::commandGuard() {
 
 inline void Gear::commandMotorBrake() {
     if (!_send) return;
+    // Servo-driven struts have no brake — the retract controller is a black
+    // box and finishes its stroke on its own.  (Also keeps BIMOTOR packets
+    // away from a servo port.)
+    if (_def.strutDrive != StrutDrive::HBridge) return;
     const uint8_t payload[1] = { _def.motor.portIdx };
     _send(_sendCtx, _def.motor,
           RolePacket::BIMOTOR_BRAKE, payload, sizeof(payload));

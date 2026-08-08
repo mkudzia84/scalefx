@@ -301,6 +301,13 @@ sounds:                # OPTIONAL (2026-06-11) — transit loops on HubFxLayout:
   deploy:  /sounds/gear/deploy.wav    # looped while any gear deploys; empty = silent
   retract: /sounds/gear/retract.wav
   output_mask: 3       # 1 = left, 2 = right, 3 = both
+strut_mode: hbridge            # hbridge | servo | servo_shared (2.45.0)
+#   hbridge      — custom DC motor per strut (BiDcMotor role; endstop by current)
+#   servo        — each strut is an integrated retract on its OWN servo channel:
+#                  per-gear `strut_servo:` port + `travel_ms` (fixed stroke —
+#                  the door stage waits for it; the controller is a black box)
+#   servo_shared — ONE channel drives all struts:
+#                    strut_shared: { port: { kind: servo, idx: N }, travel_ms: 5000 }
 gears:
   - id: 0
     name: nose

@@ -57,10 +57,40 @@ struct DoorDef {
     PortRef  servo;                ///< ServoActuator role port; empty = none
 };
 
+/// How the strut MOVES (2.45.0 — the strut stage is customizable; doors are
+/// always PWM servos).  The servo modes treat the retract controller as a
+/// BLACK BOX: command the pulse to the deploy/retract end and hold the
+/// sequencer for a FIXED travel time — no feedback, no stall detection.
+///   HBridge     — custom DC motor via BiDcMotor role (endstop-sensed).
+///   ServoOwn    — each strut is an integrated/3rd-party retract taking an
+///                 RC-servo signal on ITS OWN servo port.
+///   ServoShared — ONE servo-signal output drives the WHOLE undercarriage
+///                 (a single multi-strut controller); every gear's def
+///                 carries the same shared port + travel time.
+namespace StrutDrive {
+    constexpr uint8_t HBridge     = 0;
+    constexpr uint8_t ServoOwn    = 1;
+    constexpr uint8_t ServoShared = 2;
+    inline const char* getName(uint8_t d) {
+        switch (d) {
+            case HBridge:     return "hbridge";
+            case ServoOwn:    return "servo";
+            case ServoShared: return "servo-shared";
+            default:          return "?";
+        }
+    }
+}
+
 struct GearDef {
     uint8_t  id            = 0;
     char     name[16]      = {};
-    PortRef  motor;                            ///< must have BiDcMotor role
+    PortRef  motor;                            ///< HBridge mode: must have BiDcMotor role
+
+    // ── Strut drive (2.45.0) ─────────────────────────────────────────
+    uint8_t  strutDrive    = StrutDrive::HBridge;
+    PortRef  strutServo;                        ///< Servo modes: the retract's signal port
+    uint32_t travelMs      = 5000;              ///< Servo modes: FIXED stroke duration —
+                                                ///< doors wait this long after the command
 
     // Drive model (2.44.0): the strut commands FULL-SCALE duty and the
     // BiDcMotor role's voltage cap turns that into exactly motorVoltageMv
@@ -150,6 +180,7 @@ public:
         _manualLeg  = ManualLeg::None;
         _movingDeadlineMs = 0;
         _doorDeadlineMs   = 0;
+        _strutTimerDeadlineMs = 0;
         _doorSeq.configure(_def.doors, _def.numDoors, _def.openMode,
                            _def.doorDelayMs, _def.closePolicy,
                            sendFn, sendCtx);
@@ -227,7 +258,9 @@ private:
 
     void setPhaseSub(uint8_t newPhase, uint8_t newSub);
     void enterError(uint8_t reason);   ///< brake + → Error with a GearError reason
-    void startSeek();          ///< push guard + seek toward _target; arm motor backstop; set _seekDir
+    void startSeek();          ///< HBridge: guard+seek; Servo modes: pulse + travel timer; sets _seekDir
+    void commandStrutServo();  ///< Servo modes: SERVO_SET_POS_NORM to the deploy/retract end
+    void strutLegReached();    ///< strut leg complete (endstop event OR travel timer) → advance
     void openDoors();          ///< _doorSeq.open() + arm door backstop
     void closeDoors();         ///< close per policy (Down) / re-stow (Up) + arm backstop
     void reverseDoors();       ///< _doorSeq.reverse() (re-open) + arm backstop
@@ -281,6 +314,8 @@ private:
 
     uint32_t      _movingDeadlineMs = 0;       ///< EffectClock deadline for the motor seek backstop
     uint32_t      _doorDeadlineMs   = 0;       ///< EffectClock deadline for a door leg (missed SERVO_MOTION_DONE backstop)
+    uint32_t      _strutTimerDeadlineMs = 0;   ///< Servo modes: the FIXED-travel completion timer
+                                               ///< (black-box controller — the deadline IS "arrived")
 
     /// A servo has no position feedback, so a door leg completes on the
     /// SERVO_MOTION_DONE async — but that event can be lost (lossy broadcast,

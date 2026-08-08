@@ -7,6 +7,43 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.45.0 — 2026-08-09 — customizable strut drive: integrated PWM retracts
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.45.0 | ESP32-S3 | `hubfx-v2.45.0` |
+
+MINOR: new config schema fields; NO wire changes (rides the existing
+ServoActuator role / SERVO_SET_POS_NORM) — expanders need no reflash.
+
+### New Features
+- **The strut stage of the gear sequencer (doors → strut → doors) is now
+  customizable** via a single `strut_mode:` selector supporting the three
+  undercarriage setups:
+  - `hbridge` (default, unchanged) — custom DC motor per strut on an
+    H-bridge port (BiDcMotor role), endstop detected by current;
+  - `servo` — each strut is an INTEGRATED/3rd-party retract controller
+    taking an RC-servo signal on its OWN channel (per-gear
+    `strut_servo:` port + `travel_ms`);
+  - `servo_shared` — ONE servo channel drives the WHOLE undercarriage
+    (top-level `strut_shared: { port, travel_ms }`).
+  The servo modes treat the controller as a BLACK BOX: the sequencer
+  puts the pulse at the deploy/retract end (deploy → calibrated MAX end
+  unless `reverse:`) and holds for the FIXED `travel_ms` before the
+  door stage engages — no feedback exists, so the time IS the
+  completion.  A mid-travel reversal re-commands the pulse and restarts
+  the full timer (conservative).  E-stop cannot brake a black-box
+  stroke (logged); manual strut moves use the same timer.  Stall
+  guards, calibration, and the voltage cap remain hbridge-only.
+- **Studio**: a "Strut drive" segmented selector on the gear tab (with
+  the shared channel + travel time inline for `servo_shared`); each
+  strut card's left column switches between the motor editor (hbridge)
+  and a strut-channel + travel-time editor (servo) or a shared-mode
+  note; pools/claims/validation are mode-aware (strut channels join
+  `$effectClaims`; doors and struts exclude each other's picks).
+
+---
+
 ## 2.44.3 — 2026-08-08 — the real crash: re-entrant role-event dispatch
 
 | Component | Version | Platform | Tag |

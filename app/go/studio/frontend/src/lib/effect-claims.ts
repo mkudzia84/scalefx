@@ -129,12 +129,18 @@ export const effectClaims: Readable<Claim[]> = derived(
         // selectable in every sibling effect's picker (and vice versa —
         // GearPanel filters against this same merged list).
         if ($gear?.enabled) {
+            const mode = $gear.strutMode ?? 'hbridge'
             for (const g of $gear.gears ?? []) {
                 const label = g.name && g.name.trim() ? g.name : `strut${g.id}`
-                add('gear', `${label} / motor`, g.motor)
+                if (mode === 'hbridge')     add('gear', `${label} / motor`, g.motor)
+                else if (mode === 'servo')  add('gear', `${label} / strut`, g.strutServo)
                 for (let i = 0; i < (g.doors ?? []).length; i++) {
                     add('gear', `${label} / door${i + 1}`, g.doors[i].port)
                 }
+            }
+            // servo_shared: the ONE channel for the whole set (2.45.0).
+            if (mode === 'servo_shared' && $gear.strutShared?.port) {
+                add('gear', 'gear / shared strut', $gear.strutShared.port)
             }
         }
 

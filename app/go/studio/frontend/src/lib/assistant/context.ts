@@ -177,14 +177,22 @@ export function buildAssistantContext(): string {
     const gear: any = get(gearDraft)
     if (gear && gear.enabled && gear.gears && gear.gears.length) {
         const gi = gear.input || {}
-        const head = [`coordination \`${gear.coord}\``, `switch ${chanRef(gi.name, dm)} (down ${gate(gi.thresholdUs, gi.hysteresisUs)})`]
+        const head = [`coordination \`${gear.coord}\``,
+                      `strut drive \`${gear.strutMode ?? 'hbridge'}\`${gear.strutMode === 'servo_shared' && gear.strutShared ? ` (shared channel \`${refName(gear.strutShared.port, pidx)}\`, travel \`${gear.strutShared.travelMs}ms\`)` : ''}`,
+                      `switch ${chanRef(gi.name, dm)} (down ${gate(gi.thresholdUs, gi.hysteresisUs)})`]
         if (gear.deployOnConnectionLoss) head.push('deploys on signal loss')
         const gs = gear.sounds || {}
         if (gs.deploy || gs.retract) head.push(`sounds: ${[gs.deploy && `deploy \`${gs.deploy}\``, gs.retract && `retract \`${gs.retract}\``].filter(Boolean).join(', ')} [${maskName(gs.outputMask)}]`)
         fx.push(`Retractable gear: ON — ${head.join('; ')}.`)
         for (const g of gear.gears) {
             const lp: string[] = []
-            lp.push(`motor \`${refName(g.motor, pidx)}\` (drive \`${((g.motorVoltageMv || 6000) / 1000).toFixed(1)}V\` voltage-first, direction \`${g.reverse ? 'reversed' : 'forward'}\`, timeout \`${g.timeoutMs}ms\`)`)
+            if ((gear.strutMode ?? 'hbridge') === 'hbridge') {
+                lp.push(`motor \`${refName(g.motor, pidx)}\` (drive \`${((g.motorVoltageMv || 6000) / 1000).toFixed(1)}V\` voltage-first, direction \`${g.reverse ? 'reversed' : 'forward'}\`, timeout \`${g.timeoutMs}ms\`)`)
+            } else if (gear.strutMode === 'servo') {
+                lp.push(`strut channel \`${refName(g.strutServo, pidx)}\` (integrated retract, fixed travel \`${g.travelMs}ms\`, deploy → \`${g.reverse ? 'min' : 'max'}\` end)`)
+            } else {
+                lp.push(`strut driven by the shared servo channel (see head)`)
+            }
             const gd = g.guard || {}
             lp.push(`stall guard \`${gd.mode}\` (ratio \`${(gd.ratioX100 / 100).toFixed(2)}×\`, threshold \`${gd.thresholdMa}mA\`${gd.ceilingMa ? `, ceiling \`${gd.ceilingMa}mA\`` : ''})`)
             if (g.doors && g.doors.length) {

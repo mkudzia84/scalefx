@@ -64,7 +64,7 @@
 #include <hardware/gpio.h>
 
 #define FIRMWARE_VERSION "1.3.0"
-#define BUILD_NUMBER     44
+#define BUILD_NUMBER     45
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)

@@ -27,12 +27,20 @@
  *     deploy:  /sounds/gear/deploy.wav    # looped while any gear is deploying
  *     retract: /sounds/gear/retract.wav   # looped while any gear is retracting
  *     output_mask: 3             # 1 = left, 2 = right, 3 = both
+ *   strut_mode: hbridge          # hbridge | servo | servo_shared (2.45.0)
+ *   strut_shared:                # servo_shared only — ONE channel, all struts
+ *     port: { kind: servo, idx: 4 }
+ *     travel_ms: 5000            # fixed stroke duration (black-box controller)
  *   gears:
  *     - id: 0
  *       name: nose
- *       motor: { guid: "AB12", kind: hbridge, idx: 0 }
- *       reverse: false           # deploy runs the H-bridge reversed
- *       timeout_ms:   30000      # full-travel watchdog
+ *       motor: { guid: "AB12", kind: hbridge, idx: 0 }   # hbridge mode
+ *       strut_servo: { kind: servo, idx: 4 }             # servo mode (own channel)
+ *       travel_ms: 5000          # servo mode: fixed stroke duration —
+ *                                # doors engage only after it elapses
+ *       reverse: false           # deploy runs the H-bridge reversed /
+ *                                # drives the servo pulse to the MIN end
+ *       timeout_ms:   30000      # full-travel watchdog (hbridge)
  *       motor_voltage_mv: 6000   # motor DRIVE voltage — the strut seeks
  *                                # full-scale and the role cap delivers
  *                                # exactly this at the motor on any pack
@@ -162,6 +170,38 @@ struct GearControlConfigSchema {
             if (d.sounds.outputMask == 0 || d.sounds.outputMask > 3) d.sounds.outputMask = 3;
         }
 
+        // ── Strut drive mode (2.45.0) — how the strut STAGE moves.  ONE
+        // selector for the whole undercarriage (the three supported setups):
+        //   strut_mode: hbridge       — custom DC motor via H-bridge per strut
+        //   strut_mode: servo         — one PWM (servo) channel per strut
+        //                               (integrated retract controller)
+        //   strut_mode: servo_shared  — a SINGLE PWM channel drives ALL struts
+        // Servo modes are BLACK BOXES: completion = per-strut (or shared)
+        // `travel_ms` fixed time; the door stage waits for it.
+        uint8_t strutMode = StrutDrive::HBridge;
+        if (root) {
+            const char* sm = root->template childAs<const char*>("strut_mode", "hbridge");
+            if (sm) {
+                if      (std::strcmp(sm, "servo") == 0)        strutMode = StrutDrive::ServoOwn;
+                else if (std::strcmp(sm, "servo_shared") == 0) strutMode = StrutDrive::ServoShared;
+                else                                           strutMode = StrutDrive::HBridge;
+            }
+        }
+        // servo_shared: strut_shared: { port: {kind: servo, idx}, travel_ms }
+        auto     sharedPort     = portRefFromNode(nullptr);   // empty PortRef
+        uint32_t sharedTravelMs = 5000;
+        if (strutMode == StrutDrive::ServoShared) {
+            const auto* sh = root ? root->child("strut_shared") : nullptr;
+            if (sh) {
+                sharedPort     = portRefFromNode(sh->child("port"));
+                sharedTravelMs = (uint32_t)sh->template childAs<int32_t>("travel_ms", 5000);
+            }
+            if (sharedPort.portKind == 0) {
+                SFX_LOG_WARN("[gearcontrol-config] strut_mode=servo_shared but "
+                             "`strut_shared.port` is missing/invalid — struts will not move");
+            }
+        }
+
         const auto* gearsNode = root ? root->child("gears") : nullptr;
         if (!gearsNode || gearsNode->type != YamlNode::Sequence) {
             return true;   // empty table — service stays inert
@@ -177,9 +217,25 @@ struct GearControlConfigSchema {
             std::memset(def.name, 0, sizeof(def.name));
             if (nm && nm[0]) std::strncpy(def.name, nm, sizeof(def.name) - 1);
 
-            // motor: { guid?, kind: hbridge, idx }
+            def.strutDrive = strutMode;
+            if (strutMode == StrutDrive::ServoOwn) {
+                // strut_servo: { guid?, kind: servo, idx } + travel_ms per strut
+                def.strutServo = portRefFromNode(g->child("strut_servo"));
+                def.travelMs   = (uint32_t)g->template childAs<int32_t>("travel_ms", 5000);
+                if (def.strutServo.portKind == 0) {
+                    SFX_LOG_WARN("[gearcontrol-config] gears[%d] (id=%u): strut_mode=servo "
+                                 "but `strut_servo` is missing/invalid", i, (unsigned)def.id);
+                    continue;
+                }
+            } else if (strutMode == StrutDrive::ServoShared) {
+                def.strutServo = sharedPort;      // every strut drives the ONE channel
+                def.travelMs   = sharedTravelMs;
+                if (sharedPort.portKind == 0) continue;   // warned above
+            }
+
+            // motor: { guid?, kind: hbridge, idx } — HBridge mode only.
             def.motor = portRefFromNode(g->child("motor"));
-            if (def.motor.portKind == 0) {
+            if (strutMode == StrutDrive::HBridge && def.motor.portKind == 0) {
                 SFX_LOG_WARN("[gearcontrol-config] gears[%d] (id=%u): missing/invalid `motor`",
                              i, (unsigned)def.id);
                 continue;

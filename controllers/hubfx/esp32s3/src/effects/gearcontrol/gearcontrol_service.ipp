@@ -99,10 +99,20 @@ void GearControlServicePolicyT<TTopology, TLandingService>::applyDefs() {
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::claimPorts() {
     using namespace sfx_core;
+    namespace StrutDrive = hubfx::effects::gearctrl::StrutDrive;
     for (uint8_t i = 0; i < _numDefs; ++i) {
         const GearDef& d = _defs[i];
-        if (!_topo->claim(d.motor, EffectId::GearCtrl, RoleKind::BiDcMotor)) {
-            SFX_LOG_WARN("[gear-svc] gear %u: motor claim failed", d.id);
+        if (d.strutDrive == StrutDrive::HBridge) {
+            if (!_topo->claim(d.motor, EffectId::GearCtrl, RoleKind::BiDcMotor)) {
+                SFX_LOG_WARN("[gear-svc] gear %u: motor claim failed", d.id);
+            }
+        } else {
+            // Servo-driven strut: claim its signal port (a ServoActuator).
+            // In servo_shared mode every gear carries the SAME port — the
+            // repeated claim by the same effect is an idempotent no-op.
+            if (!_topo->claim(d.strutServo, EffectId::GearCtrl, RoleKind::ServoActuator)) {
+                SFX_LOG_WARN("[gear-svc] gear %u: strut-servo claim failed", d.id);
+            }
         }
         // Status LEDs are NOT claimed/driven here — the GearControl
         // expander lights them locally from its H-bridge state.
@@ -583,6 +593,9 @@ void GearControlServicePolicyT<TTopology, TLandingService>::dispatchRoleEvent(
     // BIMOTOR_ENDSTOP_RESULT ([portIdx][outcome][travel:u16][peak:u16]).
     if (innerType == RolePacket::BIMOTOR_ENDSTOP_RESULT) {
         for (uint8_t i = 0; i < _numDefs; ++i) {
+            // Servo-driven struts have no motor ref — their empty PortRef
+            // (portIdx 0, empty guid) must never match a stray event.
+            if (_defs[i].strutDrive != hubfx::effects::gearctrl::StrutDrive::HBridge) continue;
             if (_defs[i].motor.portIdx == portIdx && guidMatches(_defs[i].motor)) {
                 _gears[i].onEndstopResult(outcome);
             }

@@ -58,7 +58,12 @@ type GearGuardDTO struct {
 type GearChannelDTO struct {
 	ID      uint8      `yaml:"id"             json:"id"`
 	Name    string     `yaml:"name,omitempty" json:"name"`
-	Motor   PortRefDTO `yaml:"motor"          json:"motor"`
+	Motor   PortRefDTO `yaml:"motor,omitempty" json:"motor"`
+	// Strut drive customization (2.45.0): in `servo` strut mode the strut is
+	// an integrated retract controller on its OWN servo channel; travel_ms is
+	// the FIXED stroke duration (black box — doors wait for it).
+	StrutServo PortRefDTO `yaml:"strut_servo,omitempty" json:"strutServo"`
+	TravelMs   uint32     `yaml:"travel_ms,omitempty"   json:"travelMs"`
 	// Voltage-first drive (2.44.0): deploy/retract seek at full scale and
 	// the motor role's cap delivers exactly MotorVoltageMv at the motor on
 	// any pack.  Reverse flips the deploy direction.  The raw
@@ -93,12 +98,24 @@ type GearSoundsDTO struct {
 	OutputMask uint8  `yaml:"output_mask,omitempty" json:"outputMask"` // 1=L 2=R 3=both
 }
 
+// GearStrutSharedDTO — the `strut_shared:` block (servo_shared mode): ONE
+// servo channel drives the whole undercarriage; travel_ms = fixed stroke.
+type GearStrutSharedDTO struct {
+	Port     PortRefDTO `yaml:"port"      json:"port"`
+	TravelMs uint32     `yaml:"travel_ms" json:"travelMs"`
+}
+
 // GearConfig mirrors /gearcontrol.yaml (schema v2 + the append-only
-// optional `input:` / `sounds:` blocks, 2026-06-11).
+// optional `input:` / `sounds:` blocks, 2026-06-11; `strut_mode` /
+// `strut_shared` 2.45.0).
 type GearConfig struct {
 	SchemaVersion int              `yaml:"schema_version"    json:"schemaVersion"`
 	Enabled       bool             `yaml:"enabled"           json:"enabled"`
 	Coord         string           `yaml:"coord"             json:"coord"` // independent | door_sync | full_sync | sequenced
+	// How the strut stage moves: hbridge (DC motor per strut) | servo (one
+	// PWM channel per strut) | servo_shared (one channel for ALL struts).
+	StrutMode   string              `yaml:"strut_mode,omitempty"   json:"strutMode"`
+	StrutShared *GearStrutSharedDTO `yaml:"strut_shared,omitempty" json:"strutShared,omitempty"`
 	// item 6: emergency-deploy the gear when an input link drops (the
 	// InputDispatcher's CONNECTION DOWN signal).
 	DeployOnConnectionLoss bool             `yaml:"deploy_on_connection_loss,omitempty" json:"deployOnConnectionLoss"`
@@ -142,6 +159,7 @@ func defaultGearConfig() GearConfig {
 		SchemaVersion: 2,
 		Enabled:       false,
 		Coord:         "independent",
+		StrutMode:     "hbridge",
 		Input:         GearInputDTO{ThresholdUs: 1500, HysteresisUs: 50},
 		Sounds:        GearSoundsDTO{OutputMask: 3},
 		Gears:         []GearChannelDTO{},
@@ -182,6 +200,9 @@ func (a *App) LoadGearConfig() (GearConfig, error) {
 	if cfg.Coord == "" {
 		cfg.Coord = "independent"
 	}
+	if cfg.StrutMode == "" {
+		cfg.StrutMode = "hbridge"
+	}
 	if cfg.Gears == nil {
 		cfg.Gears = []GearChannelDTO{}
 	}
@@ -210,9 +231,13 @@ func (a *App) LoadGearConfig() (GearConfig, error) {
 	for i := range cfg.Gears {
 		g := &cfg.Gears[i]
 		foldRef(fmt.Sprintf("gear[%d].motor", i), &g.Motor)
+		foldRef(fmt.Sprintf("gear[%d].strutServo", i), &g.StrutServo)
 		for j := range g.Doors {
 			foldRef(fmt.Sprintf("gear[%d].door[%d]", i, j), &g.Doors[j].Port)
 		}
+	}
+	if cfg.StrutShared != nil {
+		foldRef("strutShared.port", &cfg.StrutShared.Port)
 	}
 	a.diag.Info("GEAR", "LoadGearConfig: ok — enabled=%v coord=%s gears=%d; folded %d hub-identity port ref(s) → \"\" (hub=%q)",
 		cfg.Enabled, cfg.Coord, len(cfg.Gears), folds, a.id.GUID)

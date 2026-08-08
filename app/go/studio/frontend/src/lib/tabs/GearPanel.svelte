@@ -32,13 +32,14 @@
         gearDraft, gearDirty, gearHasErrors, gearPhases,
         loadGearConfig, refreshGearStatus,
         addGearChannel, seedDefaultGearStruts, removeGearChannel, setGearEnabled, setGearCoord, setGearDeployOnConnLoss,
+        setGearStrutMode, updateGearStrutShared,
         updateGearChannel, removeGearDoor,
         updateGearInput, updateGearSounds,
         gearItemErrors, installGearPhaseListener,
         gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll,
         gearDoors, gearMoveStrut, gearDoorsAll, gearMoveStrutAll,
         GearAllDeploy, GearAllRetract, StrutUp, StrutMoving,
-        type GearConfigT, type GearChannelT, type CoordMode,
+        type GearConfigT, type GearChannelT, type CoordMode, type StrutMode,
         type PortRefT, type GearPhaseT,
     } from '../gear'
     import {
@@ -133,7 +134,13 @@
     $: fleetStrutsUp  = strutCount > 0 && (cfg?.gears ?? []).every(g => ($gearPhases[g.id]?.strutState ?? 0) === StrutUp)
     $: fleetManMoving = (cfg?.gears ?? []).some(g => { const p = $gearPhases[g.id]; return !!p && ([1, 3, 5].includes(p.subPhase) || p.strutState === StrutMoving) })
     $: fleetHasDoors  = (cfg?.gears ?? []).some(g => g.doors.length > 0)
-    $: fleetHasMotor  = (cfg?.gears ?? []).some(g => !!(g.motor && g.motor.kind))
+    // Mode-aware "the struts can actually move" predicate (2.45.0): hbridge
+    // needs motors, servo needs per-strut channels, servo_shared the one port.
+    $: fleetHasMotor  = (cfg?.strutMode ?? 'hbridge') === 'hbridge'
+        ? (cfg?.gears ?? []).some(g => !!(g.motor && g.motor.kind))
+        : (cfg?.strutMode === 'servo'
+            ? (cfg?.gears ?? []).some(g => !!(g.strutServo && g.strutServo.kind))
+            : !!(cfg?.strutShared?.port?.kind))
     $: fleetManGate   = busy || dirty || hasErrors || fleetManMoving
     // Master status vocabulary is the gear-up/gear-down language (directional
     // while in transit): error · held · lowering/raising · gear down · gear up
@@ -235,6 +242,47 @@
         updateGearSounds(s => ({ ...s, [field]: '' }))
         soundErrors = { ...soundErrors, [field]: '' }
     }
+
+    // ─── Strut drive mode (2.45.0) ───────────────────────────────────
+    // ONE selector for the whole undercarriage — how the strut stage moves.
+    // The servo modes drive black-box retract controllers: the pulse goes to
+    // the deploy/retract end and the sequencer waits a FIXED travel time
+    // before the door stage engages (no feedback exists to wait on).
+    const strutModeOptions: { id: StrutMode; label: string; hint: string }[] = [
+        { id: 'hbridge',      label: 'H-bridge motor',  hint: 'Custom DC motor per strut on an H-bridge port (BiDcMotor role) — endstop detected by current.' },
+        { id: 'servo',        label: 'Servo per strut', hint: 'Each strut is an integrated retract controller on its OWN servo (PWM) channel — completes after a fixed travel time.' },
+        { id: 'servo_shared', label: 'Servo shared',    hint: 'ONE servo (PWM) channel drives the whole undercarriage (a single multi-strut controller) — completes after a fixed travel time.' },
+    ]
+    $: strutMode = (cfg?.strutMode ?? 'hbridge') as StrutMode
+    function onPickSharedStrut(e: Event) {
+        // '' (the blank option) clears the pick — parsePortKey('') returns the
+        // unselected sentinel, releasing the port back to the pools (Rule 49).
+        updateGearStrutShared(s => ({ ...s, port: parsePortKey(selValue(e), 'servo') }))
+    }
+    function onPickStrutServo(id: number, e: Event) {
+        updateGearChannel(id, g => ({ ...g, strutServo: parsePortKey(selValue(e), 'servo') }))
+    }
+    /** Servo refs used by strut channels (own-mode) + the shared channel, so
+     *  the door pool and the strut pools exclude each other's picks. */
+    function usedStrutServoRefs(c: GearConfigT | null): Set<string> {
+        const out = new Set<string>()
+        if (!c) return out
+        if (c.strutMode === 'servo') {
+            for (const g of c.gears) if (g.strutServo && g.strutServo.kind)
+                out.add(`${g.strutServo.guid}#${g.strutServo.idx}`)
+        }
+        if (c.strutMode === 'servo_shared' && c.strutShared?.port?.kind)
+            out.add(`${c.strutShared.port.guid}#${c.strutShared.port.idx}`)
+        return out
+    }
+    // Shared-channel picker pool (servo_shared mode) — free ServoActuator
+    // ports minus doors; its own pick survives via `keep` (Rule 49).
+    $: sharedStrutPool = (cfg && strutMode === 'servo_shared')
+        ? doorPool($deviceModel.ports, xClaims, usedDoorRefs(cfg.gears),
+                   cfg.strutShared?.port ?? null)
+        : []
+    $: sharedStrutEmpty = strutMode === 'servo_shared' &&
+        sharedStrutPool.length === 0 && !(cfg?.strutShared?.port?.kind)
 
     // ─── Coordination ────────────────────────────────────────────────
     // Two modes only (kept deliberately simple): Independent or Full-sync.
@@ -623,6 +671,45 @@
                     {/each}
                 </div>
             </div>
+            <!-- Strut drive mode (2.45.0) — how the strut stage moves.  ONE
+                 selector for the whole set (Rule 60.3 segmented toggle). -->
+            <div class="sctl-row sync-row">
+                <span class="sctl-name">Strut drive</span>
+                <div class="seg-select" title="How the strut stage moves — the doors are always PWM servos.">
+                    {#each strutModeOptions as o}
+                        <button class="seg" class:on={strutMode === o.id}
+                                on:click={() => setGearStrutMode(o.id)} disabled={busy}
+                                title={o.hint}>{o.label}</button>
+                    {/each}
+                </div>
+            </div>
+            {#if strutMode === 'servo_shared'}
+                <!-- The ONE channel + fixed travel time for the whole set.
+                     Black-box retract controller: the door stage engages only
+                     after the travel time elapses (Rule 39 yellow on empty). -->
+                <div class="sctl-row shared-strut-row" class:invalid={false}>
+                    <span class="sctl-name">Shared channel</span>
+                    <div class="sctl-acts shared-strut-acts">
+                        <select class="field-input" value={portRefToKey(cfg?.strutShared?.port ?? null)}
+                                on:change={onPickSharedStrut} disabled={busy || (sharedStrutEmpty && !(cfg?.strutShared?.port?.kind))}
+                                title="The single servo (PWM) output wired to the undercarriage controller — drives ALL struts.">
+                            <option value="">{sharedStrutEmpty ? '— no free ServoActuator port —' : '— pick the shared channel —'}</option>
+                            {#each sharedStrutPool as p}
+                                <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
+                            {/each}
+                        </select>
+                        <input class="field-input narrow" type="number" min="500" max="60000" step="500"
+                               value={cfg?.strutShared?.travelMs ?? 5000}
+                               on:change={(e) => updateGearStrutShared(s => ({ ...s, travelMs: Math.max(500, Math.round(numValue(e))) }))}
+                               disabled={busy}
+                               title="Fixed travel time — the controller is a black box, so the sequencer waits this long before the doors engage. Time a full stroke and add margin." />
+                        <span class="unit">ms</span>
+                    </div>
+                </div>
+                {#if sharedStrutEmpty}
+                    <div class="sctl-row"><span class="hint warn">No free ServoActuator port for the shared channel — attach one on the IO tab.</span></div>
+                {/if}
+            {/if}
             <!-- Fleet manual row: all doors / all struts (all-or-nothing; the
                  firmware refuses the whole set if any leg breaks the interlock). -->
             {#if fleetHasDoors || fleetHasMotor}
@@ -652,7 +739,7 @@
                  the door + lifecycle status right-aligned.  Manual control of a
                  single strut lives in its config-card header below. -->
             {#each cfg.gears as gch (gch.id)}
-                {@const chanErrors = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports).length > 0}
+                {@const chanErrors = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports, strutMode).length > 0}
                 {@const phT        = $gearPhases[gch.id]}
                 {@const ph         = phT?.phase ?? 6}
                 {@const errored    = ph === 5}
@@ -734,12 +821,14 @@
     {/if}
 
     {#each (cfg?.gears ?? []) as gch (gch.id)}
-        {@const issues       = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports)}
+        {@const issues       = gearItemErrors(cfg.gears, cfg.gears.findIndex(g => g.id === gch.id), $deviceModel.ports, strutMode)}
         {@const chanErrors   = issues.length > 0}
         {@const usedMotors   = usedMotorRefs(cfg.gears)}
-        {@const usedDoors    = usedDoorRefs(cfg.gears)}
+        {@const usedDoors    = new Set([...usedDoorRefs(cfg.gears), ...usedStrutServoRefs(cfg)])}
         {@const motorOpts    = motorPool($deviceModel.ports, xClaims, usedMotors, gch.motor)}
         {@const motorPoolEmpty= motorOpts.length === 0 && (!gch.motor || !gch.motor.kind)}
+        {@const strutServoOpts = strutMode === 'servo' ? doorPool($deviceModel.ports, xClaims, usedDoors, gch.strutServo) : []}
+        {@const strutServoEmpty= strutMode === 'servo' && strutServoOpts.length === 0 && (!gch.strutServo || !gch.strutServo.kind)}
         {@const doorAddPool  = doorPool($deviceModel.ports, xClaims, usedDoors, null)}
         {@const doorPoolEmpty= doorAddPool.length === 0 && gch.doors.length === 0}
         {@const order        = cfg.gears.findIndex(g => g.id === gch.id)}
@@ -750,7 +839,9 @@
         {@const acts         = strutActions(gch.id, ph)}
         {@const man          = manualState(phT)}
         {@const manualGate   = gated || man.moving}
-        {@const hasMotor     = !!(gch.motor && gch.motor.kind)}
+        {@const hasMotor     = strutMode === 'hbridge' ? !!(gch.motor && gch.motor.kind)
+                             : strutMode === 'servo'   ? !!(gch.strutServo && gch.strutServo.kind)
+                             :                            !!(cfg?.strutShared?.port?.kind)}
         {@const hasDoors     = gch.doors.length > 0}
         <div class="card group-card" class:invalid={chanErrors}>
             <div class="card-header inner">
@@ -792,6 +883,65 @@
                  stay OUT of the columns (Rule 60.2). -->
             <div class="two-col strut-cols">
                 <div class="col">
+                    {#if strutMode === 'servo'}
+                    <!-- Servo-per-strut mode: the strut is an integrated retract
+                         controller on its OWN servo channel — black box, fixed
+                         travel time (2.45.0). -->
+                    <div class="sub-frame" class:frame-warn={strutServoEmpty}>
+                        <div class="frame-head">
+                            Strut channel
+                            {#if strutServoEmpty}<span class="section-warn-tag">no ServoActuator port</span>{/if}
+                        </div>
+                        <div class="form-row">
+                            <span class="field-label">Port</span>
+                            <select class="field-input wide" value={portRefToKey(gch.strutServo)}
+                                    on:change={(e) => onPickStrutServo(gch.id, e)}
+                                    disabled={busy || (strutServoEmpty && !gch.strutServo?.kind)}>
+                                <option value="">{strutServoEmpty ? '— no free ServoActuator port —' : '— pick the strut channel —'}</option>
+                                {#each strutServoOpts as p}
+                                    <option value={modelPortKey(p)}>{refOptLabel(p)}</option>
+                                {/each}
+                            </select>
+                        </div>
+                        {#if strutServoEmpty}
+                            <div class="form-row">
+                                <span class="hint warn">No free servo port with a ServoActuator role — attach one on the IO tab, then pick it here.</span>
+                            </div>
+                        {/if}
+                        {#if gch.strutServo?.kind}
+                            <div class="form-row">
+                                <span class="field-label">Deploy drives</span>
+                                <div class="seg-select">
+                                    <button class="seg" class:on={motorForward(gch)}
+                                            on:click={() => setMotorDirection(gch.id, true)} disabled={busy}
+                                            title="Deploy drives the pulse to the calibrated MAX end; retract to MIN.">Max end</button>
+                                    <button class="seg" class:on={!motorForward(gch)}
+                                            on:click={() => setMotorDirection(gch.id, false)} disabled={busy}
+                                            title="Deploy drives the pulse to the calibrated MIN end; retract to MAX.">Min end</button>
+                                </div>
+                            </div>
+                            <div class="form-row">
+                                <span class="field-label">Travel time</span>
+                                <input class="field-input narrow" type="number" min="500" max="60000" step="500"
+                                       value={gch.travelMs}
+                                       on:change={(e) => setField(gch.id, 'travelMs', Math.max(500, Math.round(numValue(e))))}
+                                       disabled={busy}
+                                       title="Fixed stroke duration — the retract controller is a black box, so the sequencer waits this long before the doors engage. Time a full stroke and add margin." />
+                                <span class="unit">ms</span>
+                                <span class="hint compact">the doors wait for this to elapse — no feedback exists.</span>
+                            </div>
+                        {/if}
+                    </div>
+                    {:else if strutMode === 'servo_shared'}
+                    <!-- Shared-channel mode: the strut column is informational —
+                         the ONE channel + travel time live in the header above. -->
+                    <div class="sub-frame">
+                        <div class="frame-head">Strut drive</div>
+                        <div class="form-row">
+                            <span class="hint compact">Driven by the <b>shared servo channel</b> — pick the port and travel time in the header above. All struts move together.</span>
+                        </div>
+                    </div>
+                    {:else}
                     <div class="sub-frame" class:frame-warn={motorPoolEmpty}>
                         <div class="frame-head">
                             Gear motor
@@ -854,6 +1004,7 @@
                             </div>
                         {/if}
                     </div>
+                    {/if}
                 </div>
 
                 <div class="col">

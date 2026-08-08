@@ -216,13 +216,22 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | On signal loss (deploy) | If an input LINK drops (e.g. the Jeti UART dies, not just the gear channel), the gear emergency-deploys. | off |
 | Deploy / Retract sound + Speaker | Optional transit WAVs and the channel(s) they play on. | empty / `Stereo` |
 
+### Strut drive (whole undercarriage — one selector)
+| Setting | What it does | Default |
+|---|---|---|
+| Strut drive | How the strut stage moves. `H-bridge motor` = custom DC motor per strut (BiDcMotor role, endstop detected by current). `Servo per strut` = each strut is an integrated/3rd-party retract controller on its OWN servo (PWM) channel. `Servo shared` = ONE servo channel drives the whole undercarriage. In both servo modes the controller is a black box: the sequencer commands the pulse and waits a fixed **Travel time** before the door stage engages — there is no feedback. | `H-bridge motor` |
+| Shared channel (Servo shared only) | The single servo port wired to the undercarriage controller. | unassigned |
+| Shared travel time (Servo shared only) | Fixed stroke duration for the whole set — time a full stroke and add margin. | `5000ms` (min 500) |
+
 ### Per strut (leg)
 | Setting | What it does | Default |
 |---|---|---|
 | Name | Label (e.g. `Main Left`, `Nose`). | first three: `Main Left` / `Main Right` / `Front/Back` |
-| Motor port | The H-bridge port (BiDcMotor role) that drives the leg. | unassigned |
-| Deploy direction | `Forward` = deploy runs the motor forward (retract reverses). `Reverse` = deploy runs in reverse. | `Forward` |
-| Travel timeout | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
+| Motor port (H-bridge mode) | The H-bridge port (BiDcMotor role) that drives the leg. | unassigned |
+| Strut channel (Servo-per-strut mode) | This strut's own servo (PWM) channel to its integrated retract controller. | unassigned |
+| Travel time (Servo-per-strut mode) | Fixed stroke duration — the doors engage only after it elapses. | `5000ms` (min 500) |
+| Deploy direction | H-bridge: `Forward` = deploy runs the motor forward (retract reverses). Servo modes: deploy drives the pulse to the calibrated `Max end` (or `Min end` when flipped). | `Forward` / `Max end` |
+| Travel timeout (H-bridge mode) | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
 
 ### Motor calibration window (the ⚙ Calibrate motor… popup)
 

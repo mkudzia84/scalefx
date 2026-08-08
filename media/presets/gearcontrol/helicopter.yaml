@@ -31,6 +31,11 @@
 schema_version: 1
 enabled: true
 
+# strut_mode: hbridge (default) | servo | servo_shared  — 2.45.0: the strut
+# stage can drive integrated PWM retract controllers instead of H-bridges
+# (per-strut `strut_servo:` + `travel_ms`, or a top-level `strut_shared:`
+# block).  This preset uses the ScaleFX H-bridge path.
+
 gears:
   - id: 0
     name: nose

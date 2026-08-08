@@ -26,6 +26,14 @@ Flip the deploy *direction* in the gear leg settings, and make sure the servo an
 travel are calibrated. If the travel *timeout* is too short, the leg stops before
 it reaches the end.
 
+**Q: Can I use off-the-shelf / integrated retracts instead of the ScaleFX motor driver?**
+Yes. Set **Strut drive** on the gear tab: `Servo per strut` gives every strut
+its own servo (PWM) channel to its built-in controller, and `Servo shared`
+drives the whole undercarriage from ONE channel. Those controllers give no
+feedback, so you set a **Travel time** per strut (or one shared) — the door
+sequence waits that long before closing. Time a full stroke and add a safety
+margin. Doors stay on regular servo channels in every mode.
+
 **Q: My gear motor is rated 6 V but the model runs a bigger pack — will it burn out?**
 No — the gear drive is voltage-first: each strut declares its **Motor V**
 (drive voltage, set in the **Calibrate motor…** window) and the firmware

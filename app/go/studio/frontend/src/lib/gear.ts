@@ -53,12 +53,30 @@ export interface GearGuardT {
     ceilingMa: number
 }
 
+/** How the strut stage moves (2.45.0):
+ *  - `hbridge`: custom DC motor via BiDcMotor role per strut (endstop-sensed)
+ *  - `servo`: each strut is an integrated retract controller on its OWN
+ *    servo (PWM) channel — black box, completes on a fixed travel time
+ *  - `servo_shared`: ONE servo channel drives the whole undercarriage */
+export type StrutMode = 'hbridge' | 'servo' | 'servo_shared'
+
+export interface GearStrutSharedT {
+    port: PortRefT
+    travelMs: number
+}
+
 export interface GearChannelT {
     id: number
     name: string
     motor: PortRefT
+    /** `servo` strut mode: this strut's own signal channel. */
+    strutServo: PortRefT
+    /** Servo strut modes: fixed stroke duration — doors engage only after
+     *  this elapses (the controller is a black box, no feedback). */
+    travelMs: number
     /** Deploy runs the H-bridge reversed (voltage-first drive, 2.44.0 —
-     *  the strut seeks full-scale; direction is this flag). */
+     *  the strut seeks full-scale; direction is this flag).  In servo strut
+     *  modes: deploy drives the pulse to the MIN end instead of MAX. */
     reverse: boolean
     timeoutMs: number
     /** Motor DRIVE voltage — firmware delivers exactly this average at the
@@ -95,6 +113,10 @@ export interface GearConfigT {
     schemaVersion: number
     enabled: boolean
     coord: CoordMode
+    /** How the strut stage moves — one selector for the whole set. */
+    strutMode: StrutMode
+    /** servo_shared mode: the ONE channel + travel time for all struts. */
+    strutShared?: GearStrutSharedT
     /** item 6: emergency-deploy the gear when an input link drops. */
     deployOnConnectionLoss: boolean
     input: GearInputT
@@ -153,6 +175,8 @@ export function defaultGearChannel(id: number): GearChannelT {
         id,
         name: `gear${id}`,
         motor: emptyPort('hbridge'),
+        strutServo: emptyPort('servo'),
+        travelMs: 5000,
         reverse: false,
         timeoutMs: 30000,
         motorVoltageMv: 6000,
@@ -235,22 +259,37 @@ function portResolvesTo(
 
 /** Returns the human-readable validation problems for gear channel
  *  `idx`.  `ports` come from the device model.  Cross-effect port conflicts
- *  are guarded by the picker POOL ($effectClaims), not here (see header). */
+ *  are guarded by the picker POOL ($effectClaims), not here (see header).
+ *  `strutMode` decides which strut-drive fields are required. */
 export function gearItemErrors(
     gears: GearChannelT[],
     idx: number,
     ports: readonly Port[],
+    strutMode: StrutMode = 'hbridge',
 ): string[] {
     const g = gears[idx]
     const out: string[] = []
     if (!g) return out
 
-    // Motor — required, must be a BiDcMotor.
-    if (!g.motor || !g.motor.kind) {
-        out.push('No gear motor assigned — the channel can\'t deploy.')
-    } else if (!portResolvesTo(ports, g.motor, RoleKind.BiDcMotor, 'hbridge')) {
-        out.push('Gear motor port has no BiDcMotor role attached.')
+    if (strutMode === 'hbridge') {
+        // Motor — required, must be a BiDcMotor.
+        if (!g.motor || !g.motor.kind) {
+            out.push('No gear motor assigned — the channel can\'t deploy.')
+        } else if (!portResolvesTo(ports, g.motor, RoleKind.BiDcMotor, 'hbridge')) {
+            out.push('Gear motor port has no BiDcMotor role attached.')
+        }
+    } else if (strutMode === 'servo') {
+        // Integrated retract on its own servo channel + a sane travel time.
+        if (!g.strutServo || !g.strutServo.kind) {
+            out.push('No strut servo channel assigned — the channel can\'t deploy.')
+        } else if (!portResolvesTo(ports, g.strutServo, RoleKind.ServoActuator, 'servo')) {
+            out.push('Strut servo port has no ServoActuator role attached.')
+        }
+        if (!g.travelMs || g.travelMs < 500) {
+            out.push('Strut travel time must be at least 500 ms.')
+        }
     }
+    // servo_shared: the shared port/travel validate at the effect level.
 
     // Doors — each must resolve to a ServoActuator.
     g.doors.forEach((d, di) => {
@@ -272,8 +311,9 @@ export function gearItemErrors(
 }
 
 /** Effect-level (non-channel) validation problems: the optional sound
- *  paths must be absolute on-device paths when set. */
-export function gearEffectErrors(cfg: GearConfigT): string[] {
+ *  paths must be absolute on-device paths when set; servo_shared mode
+ *  needs its ONE channel + travel time. */
+export function gearEffectErrors(cfg: GearConfigT, ports: readonly Port[] = []): string[] {
     const out: string[] = []
     const checkPath = (label: string, p: string) => {
         if (p && !p.startsWith('/'))
@@ -281,6 +321,17 @@ export function gearEffectErrors(cfg: GearConfigT): string[] {
     }
     checkPath('Deploy',  cfg.sounds?.deploy ?? '')
     checkPath('Retract', cfg.sounds?.retract ?? '')
+    if (cfg.strutMode === 'servo_shared') {
+        const sh = cfg.strutShared
+        if (!sh || !sh.port || !sh.port.kind) {
+            out.push('Shared strut channel: no servo port picked.')
+        } else if (ports.length && !portResolvesTo(ports, sh.port, RoleKind.ServoActuator, 'servo')) {
+            out.push('Shared strut channel: port has no ServoActuator role attached.')
+        }
+        if (!sh || !sh.travelMs || sh.travelMs < 500) {
+            out.push('Shared strut travel time must be at least 500 ms.')
+        }
+    }
     return out
 }
 
@@ -292,9 +343,9 @@ export const gearHasErrors: Readable<boolean> = derived(
     [gearDraft, deviceModel],
     ([$draft, $dm]) => {
         if (!$draft || !$draft.enabled) return false
-        if (gearEffectErrors($draft).length > 0) return true
+        if (gearEffectErrors($draft, $dm.ports).length > 0) return true
         return $draft.gears.some((_, i) =>
-            gearItemErrors($draft.gears, i, $dm.ports).length > 0)
+            gearItemErrors($draft.gears, i, $dm.ports, $draft.strutMode).length > 0)
     },
 )
 
@@ -345,10 +396,21 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         outputMask: (out.sounds?.outputMask && out.sounds.outputMask <= 3)
                     ? out.sounds.outputMask : 3,
     }
+    out.strutMode = (out.strutMode === 'servo' || out.strutMode === 'servo_shared')
+        ? out.strutMode : 'hbridge'
+    // The shared block exists exactly when the mode needs it — normalise both ways.
+    out.strutShared = out.strutMode === 'servo_shared'
+        ? {
+            port:     out.strutShared?.port ?? emptyPort('servo'),
+            travelMs: out.strutShared?.travelMs || 5000,
+          }
+        : undefined
     out.gears         = (out.gears ?? []).map(g => ({
         id:          g.id ?? 0,
         name:        g.name ?? '',
         motor:       g.motor ?? emptyPort('hbridge'),
+        strutServo:  g.strutServo ?? emptyPort('servo'),
+        travelMs:    g.travelMs || 5000,
         reverse:     g.reverse ?? false,
         timeoutMs:   g.timeoutMs ?? 30000,
         // 0/absent = pre-2.44 file — firmware floors at 1 V, mirror its 6 V default.
@@ -495,6 +557,25 @@ export function setGearEnabled(on: boolean): void {
 
 export function setGearCoord(coord: CoordMode): void {
     gearDraft.update(c => ({ ...c, coord }))
+}
+
+/** Switch how the strut stage moves (hbridge / servo / servo_shared).
+ *  Entering servo_shared seeds the shared block; leaving it drops it. */
+export function setGearStrutMode(mode: StrutMode): void {
+    gearDraft.update(c => ({
+        ...c,
+        strutMode: mode,
+        strutShared: mode === 'servo_shared'
+            ? (c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000 })
+            : undefined,
+    }))
+}
+
+export function updateGearStrutShared(mutate: (s: GearStrutSharedT) => GearStrutSharedT): void {
+    gearDraft.update(c => ({
+        ...c,
+        strutShared: mutate(c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000 }),
+    }))
 }
 
 /** item 6: toggle emergency-deploy-on-input-connection-loss. */

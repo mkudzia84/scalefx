@@ -1650,6 +1650,8 @@ export namespace main {
 	    id: number;
 	    name: string;
 	    motor: PortRefDTO;
+	    strutServo: PortRefDTO;
+	    travelMs: number;
 	    reverse: boolean;
 	    timeoutMs: number;
 	    motorVoltageMv: number;
@@ -1668,6 +1670,8 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.motor = this.convertValues(source["motor"], PortRefDTO);
+	        this.strutServo = this.convertValues(source["strutServo"], PortRefDTO);
+	        this.travelMs = source["travelMs"];
 	        this.reverse = source["reverse"];
 	        this.timeoutMs = source["timeoutMs"];
 	        this.motorVoltageMv = source["motorVoltageMv"];
@@ -1730,10 +1734,44 @@ export namespace main {
 	        this.invert = source["invert"];
 	    }
 	}
+	export class GearStrutSharedDTO {
+	    port: PortRefDTO;
+	    travelMs: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new GearStrutSharedDTO(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.travelMs = source["travelMs"];
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class GearConfig {
 	    schemaVersion: number;
 	    enabled: boolean;
 	    coord: string;
+	    strutMode: string;
+	    strutShared?: GearStrutSharedDTO;
 	    deployOnConnectionLoss: boolean;
 	    input: GearInputDTO;
 	    sounds: GearSoundsDTO;
@@ -1748,6 +1786,8 @@ export namespace main {
 	        this.schemaVersion = source["schemaVersion"];
 	        this.enabled = source["enabled"];
 	        this.coord = source["coord"];
+	        this.strutMode = source["strutMode"];
+	        this.strutShared = this.convertValues(source["strutShared"], GearStrutSharedDTO);
 	        this.deployOnConnectionLoss = source["deployOnConnectionLoss"];
 	        this.input = this.convertValues(source["input"], GearInputDTO);
 	        this.sounds = this.convertValues(source["sounds"], GearSoundsDTO);
@@ -1806,6 +1846,7 @@ export namespace main {
 	        this.strutName = source["strutName"];
 	    }
 	}
+	
 	export class GunAxisDTO {
 	    enabled: boolean;
 	    servoPort: PortRefDTO;
