@@ -111,6 +111,10 @@ void GearControlServicePolicyT<TTopology, TLandingService>::claimPorts() {
 
 template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
 void GearControlServicePolicyT<TTopology, TLandingService>::update() {
+    // Deferred role events FIRST — the reactions (brake, door commands,
+    // batch commits) must run here on the loop task, never in the dispatch
+    // context that delivered them (see onRoleEvent).
+    drainRoleEvents();
     const uint32_t now = sfx_core::EffectClock::instance().nowMs();
     for (uint8_t i = 0; i < _numDefs; ++i) {
         _gears[i].update(now);
@@ -517,6 +521,57 @@ template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::L
 void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
         const char* guid, uint8_t innerType,
         const uint8_t* p, size_t len) {
+    // ENQUEUE ONLY — no FSM reactions here (see the header comment: inline
+    // reactions send wire commands whose ACK-pump re-enters this dispatch
+    // nested — the 2026-08-08 crash family).  Reactions run in update().
+    if (innerType == RolePacket::BIMOTOR_ENDSTOP_RESULT) {
+        if (len < 2) return;
+    } else if (innerType == RolePacket::SERVO_MOTION_DONE) {
+        if (len < 1) return;
+    } else {
+        return;   // not a gear-relevant event
+    }
+
+    QueuedRoleEvent ev;
+    ev.innerType = innerType;
+    ev.portIdx   = p[0];
+    ev.outcome   = (len >= 2) ? p[1] : 0;
+    if (guid) {
+        std::strncpy(ev.guid, guid, sizeof(ev.guid) - 1);
+        ev.guid[sizeof(ev.guid) - 1] = 0;
+    }
+
+    portENTER_CRITICAL(&_roleEvMux);
+    const uint8_t next = (uint8_t)((_roleEvTail + 1) % kRoleEventQ);
+    if (next == _roleEvHead) {
+        ++_roleEvDropped;                 // full — count, never block here
+    } else {
+        _roleEvQ[_roleEvTail] = ev;
+        _roleEvTail = next;
+    }
+    portEXIT_CRITICAL(&_roleEvMux);
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::drainRoleEvents() {
+    for (;;) {
+        QueuedRoleEvent ev;
+        portENTER_CRITICAL(&_roleEvMux);
+        const bool have = (_roleEvHead != _roleEvTail);
+        if (have) {
+            ev = _roleEvQ[_roleEvHead];
+            _roleEvHead = (uint8_t)((_roleEvHead + 1) % kRoleEventQ);
+        }
+        portEXIT_CRITICAL(&_roleEvMux);
+        if (!have) break;
+        dispatchRoleEvent(ev.guid, ev.innerType, ev.portIdx, ev.outcome);
+    }
+}
+
+template <hubfx::topology::TopologyService TTopology, hubfx::effects::landing::LandingLightService TLandingService>
+void GearControlServicePolicyT<TTopology, TLandingService>::dispatchRoleEvent(
+        const char* guid, uint8_t innerType,
+        uint8_t portIdx, uint8_t outcome) {
     const bool guidEmpty = !guid || guid[0] == 0;
     auto guidMatches = [&](const PortRef& ref) -> bool {
         return (ref.guid[0] == 0 && guidEmpty) ||
@@ -527,9 +582,6 @@ void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
     // Gear motion uses the BiDcMotor endstop seek, so the motor-leg async is
     // BIMOTOR_ENDSTOP_RESULT ([portIdx][outcome][travel:u16][peak:u16]).
     if (innerType == RolePacket::BIMOTOR_ENDSTOP_RESULT) {
-        if (len < 2) return;
-        const uint8_t portIdx = p[0];
-        const uint8_t outcome = p[1];
         for (uint8_t i = 0; i < _numDefs; ++i) {
             if (_defs[i].motor.portIdx == portIdx && guidMatches(_defs[i].motor)) {
                 _gears[i].onEndstopResult(outcome);
@@ -543,8 +595,6 @@ void GearControlServicePolicyT<TTopology, TLandingService>::onRoleEvent(
     // their motion profile reaching target (monitored, decision #1).  Route
     // to the gear whose door PortRef matches (board GUID + portIdx).
     if (innerType == RolePacket::SERVO_MOTION_DONE) {
-        if (len < 1) return;
-        const uint8_t portIdx = p[0];
         for (uint8_t i = 0; i < _numDefs; ++i) {
             for (uint8_t d = 0; d < _defs[i].numDoors; ++d) {
                 const PortRef& s = _defs[i].doors[d].servo;

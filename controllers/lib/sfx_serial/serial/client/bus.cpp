@@ -115,7 +115,19 @@ void SerialBus::processFrame(const uint8_t* frame, size_t frameLen) {
     
     if (!SfxWire::parsePacket(decoded, decLen, &type, &tag, &payload, &payloadLen)) {
         _stats.crc_errors++;
-        SFX_LOG_WARN("[SerialBus] Packet parse failed, len=%zu", decLen);
+        // Hex-dump the head of the rejected packet — the decisive tool for
+        // wire-corruption hunts (input-gap saga, 2026-07-15; re-deployed for
+        // the deterministic post-endstop parse failures, 2026-08-08).
+        char hex[3 * 24 + 1];
+        const size_t nDump = decLen < 24 ? decLen : 24;
+        for (size_t i = 0; i < nDump; ++i) {
+            static const char* d = "0123456789ABCDEF";
+            hex[i * 3]     = d[decoded[i] >> 4];
+            hex[i * 3 + 1] = d[decoded[i] & 0xF];
+            hex[i * 3 + 2] = ' ';
+        }
+        hex[nDump * 3] = '\0';
+        SFX_LOG_WARN("[SerialBus] Packet parse failed, len=%zu head: %s", decLen, hex);
         return;
     }
     

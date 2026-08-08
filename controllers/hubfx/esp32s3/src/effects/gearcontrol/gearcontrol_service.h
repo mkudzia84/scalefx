@@ -164,8 +164,23 @@ private:
     void handleDoorAll    (const uint8_t* p, size_t len);   ///< manual: every strut's doors (all-or-nothing)
     void handleStrutAll   (const uint8_t* p, size_t len);   ///< manual: every strut's motor (all-or-nothing)
 
+    /// Role-event INGRESS — enqueue-only, callable from ANY dispatch context.
+    /// The 2026-08-08 coredump family: reacting to BIMOTOR_ENDSTOP_RESULT
+    /// inline (enterError → commitBatch → forwardToExpander) pumps the wire
+    /// for the ACK, which dispatches the NEXT queued event NESTED inside the
+    /// first handler — with three simultaneous faults the recursion corrupts
+    /// the shared batch state / stack.  Events are now queued here and the
+    /// REACTIONS run from update() on the loop task.
     void onRoleEvent(const char* guid, uint8_t innerType,
                      const uint8_t* p, size_t len);
+
+    /// The former onRoleEvent body — match the event to a gear and run its
+    /// FSM reaction (which may send wire commands).  update()-context only.
+    void dispatchRoleEvent(const char* guid, uint8_t innerType,
+                           uint8_t portIdx, uint8_t outcome);
+
+    /// Drain the role-event ring — first thing in update().
+    void drainRoleEvents();
 
     // Connection-loss subscriber (item 6) — registered on the InputDispatcher
     // in begin().  `state` 2 = DOWN (the actionable loss); fires an emergency
@@ -222,6 +237,22 @@ private:
     bool    _syncActive           = false;    // DoorSync/FullSync: a barrier walk is in flight
     Gear::Target _syncTarget      = Gear::Target::Up;   // DoorSync/FullSync: barrier-walk target
     bool    _deployOnConnLoss     = false;    // item 6: emergency deploy on input link loss
+
+    // Deferred role-event ring (see onRoleEvent).  Producers can be the USB
+    // CDC driver task AND a loop-task sync-forward pump, so head/tail moves
+    // are guarded by a spinlock (ESP-IDF portMUX — this is hub-only code).
+    struct QueuedRoleEvent {
+        uint8_t innerType = 0;
+        uint8_t portIdx   = 0;
+        uint8_t outcome   = 0;
+        char    guid[5]   = {};
+    };
+    static constexpr uint8_t kRoleEventQ = 16;
+    QueuedRoleEvent _roleEvQ[kRoleEventQ] = {};
+    uint8_t  _roleEvHead = 0;
+    uint8_t  _roleEvTail = 0;
+    uint32_t _roleEvDropped = 0;
+    portMUX_TYPE _roleEvMux = portMUX_INITIALIZER_UNLOCKED;
     bool    _connLossLatched      = false;    // one deploy per loss (cleared on recovery)
 
     // Transit sounds (optional — silent when no paths configured).

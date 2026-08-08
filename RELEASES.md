@@ -7,6 +7,48 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.44.3 — 2026-08-08 — the real crash: re-entrant role-event dispatch
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.44.3 | ESP32-S3 | `hubfx-v2.44.3` |
+
+PATCH: the root-cause fix behind the whole 2026-08-08 crash family (the
+2.44.2 stack growth treated a symptom; a fresh coredump then handed us
+the full recursive backtrace).
+
+### Bug Fixes
+- **Gear role-event reactions ran INSIDE the event dispatch** — a fault
+  reaction (`Gear::enterError` → brake + batch commit) sends a
+  synchronous `forwardToExpander`, whose ACK-wait PUMPS the receive
+  path, which dispatches the NEXT queued endstop event NESTED inside
+  the first handler (same reaction → deeper nesting).  The batch buffer
+  and bus-client tag state are single-flight; three simultaneous
+  NO-MOTOR faults (unwired motors + full_sync) nested three deep and
+  corrupted memory — presenting as three different-looking panics
+  (poisoned stack, scheduler ready-list assert, LoadProhibited in the
+  subscriber fan-out).  Latent since the gear phase; tonight's
+  bench scenario was the first reliable detonator.  Fix: role-event
+  ingress is now ENQUEUE-ONLY (spinlock-guarded ring, safe from any
+  dispatch context — events arrive on the USB-CDC driver task AND on
+  sync-forward pumps); the gear service drains the ring at the top of
+  update() on the loop task, so reactions and their synchronous sends
+  always run flat.  Bench: the previously 100%-reproducible triple-fault
+  cycle now runs crash-free indefinitely.
+- **Rejected-frame hex dump**: `[SerialBus] Packet parse failed` now
+  logs the head bytes of the rejected packet (the input-gap saga's
+  decisive tool, permanently installed).
+
+### Known (hardware, not firmware)
+- With a brushed gear motor attached and driving, the hub↔expander USB
+  link dies within ~1 s (hcd transaction errors, no disconnect
+  callback) and self-heals in ~8 s — survives cable swaps and both
+  battery topologies.  Classic brushed-motor EMI: fit suppression caps
+  on the motor, twist the leads, ferrite the USB cable.  Firmware now
+  rides through it; the link hygiene is a bench/airframe task.
+
+---
+
 ## 2.44.2 — 2026-08-08 — loopTask stack overflow during gear cycles
 
 | Component | Version | Platform | Tag |
