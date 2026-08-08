@@ -804,7 +804,18 @@ func cmdBiMotorGuard(a *App, args []string) error {
 				return fmt.Errorf("thresholdMa: %w", err)
 			}
 		}
-		if err := a.roleAt(guid).BiMotorSetGuardFixed(uint16(idx), uint16(thr), window); err != nil {
+		// args[4] (the live-mode ceiling slot) is meaningless in fixed mode
+		// but keeps the positional contract; args[5] = optional motorMv.
+		if len(args) >= 6 {
+			motorMv, e := strconv.Atoi(args[5])
+			if e != nil {
+				return fmt.Errorf("motorMv: %w", e)
+			}
+			err = a.roleAt(guid).BiMotorSetGuardFixed(uint16(idx), uint16(thr), window, uint16(motorMv))
+		} else {
+			err = a.roleAt(guid).BiMotorSetGuardFixed(uint16(idx), uint16(thr), window)
+		}
+		if err != nil {
 			return err
 		}
 		Ok("bimotor[%d]%s guard = %s (%d mA, confirm %d ms)", idx, guidTag(guid), cCyan("fixed"), thr, window)

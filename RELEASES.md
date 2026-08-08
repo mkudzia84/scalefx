@@ -7,6 +7,87 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.44.0 — 2026-08-08 — voltage-first gear drive (raw duties retired)
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.44.0 | ESP32-S3 | `hubfx-v2.44.0` |
+| GearControl (expander) | 1.3.0 | RP2040 | `gearcontrol-v1.3.0` |
+| PortExpander (expander) | 1.0.0-rc2 | RP2040 | `portexpander-v1.0.0-rc2` |
+
+MINOR: config-schema change on the hub; the expander bump fixes the motor
+PWM carrier (below) — reflash expanders for quiet, full-torque partial-duty
+drive.
+
+### Breaking ⚠️
+- **`gears[].deploy_duty` / `retract_duty` RETIRED** (parsed keys are
+  ignored).  The raw numbers silently re-meant themselves on every pack
+  change — the same `20000` that drove a mechanism at 9 V on 4S starved
+  it at 6 V-capped on 6S (the 2026-08-07 bench stall).  Direction moves
+  to a `reverse:` flag (default false = deploy forward); operators with
+  reversed struts re-set the Direction toggle once.
+
+### New Features
+- **Voltage-first drive**: each strut declares only its motor DRIVE
+  voltage (`motor_voltage_mv`, default 6000, floor 1000 — "no cap" is
+  gone since full-scale would mean raw pack voltage).  The strut seeks
+  at full scale and the BiDcMotor role's cap delivers exactly that
+  average at the motor on ANY pack, battery-sag compensated at 10 Hz.
+- **Studio**: the calibration dialog drops the Duty field (Motor V +
+  Timeout are the only drive knobs; sweeps/jogs run at the drive
+  voltage, identical to a real deploy); the strut card summary shows
+  `drive V · direction · timeout`; the Direction toggle writes the
+  `reverse` flag.  `commitDuties` + its tests deleted.
+
+### Bug Fixes
+- **Expander motor PWM carrier fixed: ~490 kHz → 20 kHz.**  The Pico
+  native-PWM path never set a slice clock divider, so H-bridge pins
+  free-ran at clk_sys/256 ≈ 490 kHz — irrelevant historically because
+  the old raw duties (20000 on a 255-count port) clamped to 100 % =
+  smooth DC, but the voltage-first cap drives REAL partial duty and half
+  a megahertz is far beyond clean H-bridge FET switching: audible whine,
+  mushy torque, ripple-rattled stall sensing (the 4S bench symptom).
+  `NativePwmPort::setFrequencyHz` now lands on the Pico slice divider;
+  GearControl + PortExpander set 20 kHz (ultrasonic, in driver spec) on
+  every motor at bring-up.  Frequency is per-slice, so a slice-partner
+  LED changes carrier too — harmless.
+- **Dual-PWM H-bridge PWM switched to SLOW-DECAY (drive/brake)** (1.2.1).
+  The old mapping (active=duty, other=0) coasted every off-phase — fast
+  decay — so at real partial duty the motor current collapsed each
+  cycle: jerky motion, weak torque, low/peaky current sense and false
+  stall trips.  The active side now stays HIGH while the complementary
+  side chops drive↔brake, keeping motor current continuous (both-high =
+  brake was already the hardware contract).  PwmDir bridges
+  (PortExpander) are unaffected — their decay mode is fixed by the
+  driver chip.
+- **No-load fault diagnosis + high-rail sensing limit documented**
+  (1.3.0, ISSUES.md §7): the GearControl in-line INA226 cannot read
+  motor current in ONE drive direction above ~8 V rail (common-mode
+  dependent; blind at 16 V/4S and 23 V/6S, both directions fine at
+  7.6 V/2S — full characterization in ISSUES.md §7).  A no-load fault
+  that coincides with REAL rail sag (vs the pre-drive baseline) is now
+  diagnosed as "shunt unreadable at this common-mode — run the motor
+  rail from a lower pack" instead of "no motor"; either way the stroke
+  FAULTS AND BRAKES immediately (a timed-drive workaround was tried and
+  rejected — grinding an unsensed stroke into its endstop wedges the
+  mechanism).  **Operational guidance: power the GearControl motor rail
+  from 2S/3S** (the expander's cap + sensing use its LOCAL rail — the
+  hub's own pack voltage is never involved, so a 6S hub + 2S gear rail
+  is fully supported).  Cross-pack validation of the sensed direction:
+  endstop stall reads 1170/1286/1333 mA on 2S/4S/6S — one untouched 1 A
+  threshold across a 3× rail range.  Hardware fix (low-side shunts or
+  INA240) queued for the board rev.
+- **Fixed-mode stall guard gains inrush blanking** (same 150 ms window
+  as LiveRatio): from standstill the motor draws near locked-rotor
+  current until the mechanism breaks away, which false-tripped a 1 A
+  Fixed guard ~150 ms into every stroke.  An endstop cannot legitimately
+  arrive inside the blank.
+- `[mdiag]` drive instrumentation: while any motor is driven, the board
+  logs both bridge pins' real PWM slice state + the raw INA226 shunt µV
+  / bus mV every 500 ms — the tooling that isolated ISSUES.md §7.
+
+---
+
 ## 2.43.1 — 2026-08-07 — TAS5825M is the default codec + M activate fixed
 
 | Component | Version | Platform | Tag |

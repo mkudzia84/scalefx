@@ -96,12 +96,27 @@ public:
         if (signedDuty > (int16_t)maxAB)  signedDuty =  (int16_t)maxAB;
         if (signedDuty < -(int16_t)maxAB) signedDuty = -(int16_t)maxAB;
         _signed = signedDuty;
+        // SLOW-DECAY (drive/brake) PWM, both directions: the active side
+        // stays HIGH and the complementary side chops LOW(drive)↔HIGH
+        // (brake) — motor current recirculates through the bridge during
+        // the off-phase and stays CONTINUOUS (fast decay's drive/coast
+        // collapsed the current every cycle at partial duty: jerky motion,
+        // mushy torque; bench 2026-08-08).  Both-high = brake is this
+        // hardware's contract — see brake().
+        //
+        // NOTE (ISSUES.md §7): an IN-LINE INA226 cannot read the leg it
+        // sits on while that leg's common-mode rides HIGH (reverse drive
+        // above ~8 V rail reads ~0 µV with amps flowing).  That is a
+        // SENSOR limitation, not a decay-mode choice — chopping the shunt
+        // leg (fast decay) was tried and is equally blind.  Keep the motor
+        // supply ≤ ~2S/3S on boards with in-line shunts, or fix in the
+        // board rev (low-side shunt / INA240).
         if (signedDuty > 0) {
-            _a->setDuty((uint16_t)signedDuty);
-            _b->setDuty(0);
+            _a->setDuty(maxAB);
+            _b->setDuty((uint16_t)(maxAB - (uint16_t)signedDuty));
         } else if (signedDuty < 0) {
-            _a->setDuty(0);
-            _b->setDuty((uint16_t)(-signedDuty));
+            _a->setDuty((uint16_t)(maxAB - (uint16_t)(-signedDuty)));
+            _b->setDuty(maxAB);
         } else {
             coast();
         }

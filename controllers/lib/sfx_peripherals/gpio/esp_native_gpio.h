@@ -45,6 +45,13 @@ public:
         return gpio_get_level((gpio_num_t)pin) != 0;
     }
 
+    /// Per-pin PWM carrier frequency — NOT implemented on the ESP32 path:
+    /// LEDC channels here share one lazily-configured ~5 kHz timer, and no
+    /// HubFX native-PWM pin drives a motor (H-bridge ports exist only on the
+    /// Pico expanders, which implement this properly).  Returns false so a
+    /// caller's setFrequencyHz() reports honestly.
+    bool setPinPwmFrequencyHz(uint8_t, uint32_t) { return false; }
+
     /// 8-bit brightness via LEDC (lazy per-pin channel; ~5 kHz, low-speed).
     bool setLedBrightness(uint8_t pin, uint8_t brightness) {
         const int ch = channelForPin(pin);

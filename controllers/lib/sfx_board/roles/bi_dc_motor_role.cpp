@@ -165,6 +165,7 @@ void BiDcMotorRole::moveToEnd(Position targetEnd, int16_t signedDuty, uint16_t t
     _runMean_mA          = 0;
     _runMin_mA           = 0xFFFF;
     _belowFloorStartMs   = 0;     // no-load (open-circuit) detector, this stroke
+    _railIdle_mV         = voltage_mV();   // pre-drive rail baseline (sag diagnosis)
 
     _lastSeekLogMs       = now;
     _seekState           = SeekState::Seeking;
@@ -282,14 +283,31 @@ void BiDcMotorRole::tick() {
                     if (i_mag_nl < _presentFloor_mA) {
                         if (_belowFloorStartMs == 0) _belowFloorStartMs = now;
                         else if (now - _belowFloorStartMs >= kNoLoadConfirmMs) {
+                            // Fault EITHER WAY — a stroke whose current we
+                            // cannot see must not keep driving (grinding a
+                            // gear into its endstop wedges the mechanism —
+                            // bench 2026-08-08).  The rail-sag check only
+                            // picks the DIAGNOSIS: real sag = real load the
+                            // shunt can't read (in-line INA226 blind at high
+                            // common-mode, ISSUES.md §7 — power the motor
+                            // rail from ≤2S/3S); no sag = genuinely no motor.
                             if (_port) _port->brake();
                             _commandedSigned = 0;
                             _requestedSigned = 0;
                             _seekState       = SeekState::TimedOut;   // latched fault
                             _position        = Position::Unknown;
-                            SFX_LOG_INFO("[bimotor] NO-LOAD: I stayed <%umA for %ums under drive — "
-                                         "no motor / open circuit / blown output (braked, fault latched)",
-                                         (unsigned)_presentFloor_mA, (unsigned)kNoLoadConfirmMs);
+                            const int16_t sag = (int16_t)(_railIdle_mV - voltage_mV());
+                            if (_vSense && sag > kBlindSagConfirmMv) {
+                                SFX_LOG_WARN("[bimotor] NO-LOAD fault, but the rail sagged %dmV "
+                                             "(%d -> %d): REAL load, shunt unreadable at this "
+                                             "common-mode (ISSUES.md §7) — run the motor rail "
+                                             "from a lower pack (2S/3S) for sensed drive",
+                                             (int)sag, (int)_railIdle_mV, (int)voltage_mV());
+                            } else {
+                                SFX_LOG_INFO("[bimotor] NO-LOAD: I stayed <%umA for %ums under drive — "
+                                             "no motor / open circuit / blown output (braked, fault latched)",
+                                             (unsigned)_presentFloor_mA, (unsigned)kNoLoadConfirmMs);
+                            }
                             if (_onEndstop) _onEndstop(BiMotorSeekOutcome::NoLoad,
                                                        (uint16_t)(now - _seekStartMs), 0, _position);
                             return;
@@ -336,8 +354,14 @@ void BiDcMotorRole::tick() {
                     }
                 }
             } else if (_stallThreshold_mA != 0) {
-                // Fixed mode — original behaviour.
-                if (stepStallDetect(now, _stallThreshold_mA)) return;
+                // Fixed mode — same inrush blanking as LiveRatio: from
+                // standstill the motor draws near locked-rotor current until
+                // the mechanism breaks away, which false-tripped the guard
+                // ~150 ms into every stroke (bench 2026-08-08) — an endstop
+                // cannot be "reached" before the blank expires anyway.
+                if (now - _seekStartMs >= _inrushBlank_ms) {
+                    if (stepStallDetect(now, _stallThreshold_mA)) return;
+                }
             }
         }
         // Optional timeout (deadline 0 = none) → brake + latched fault.

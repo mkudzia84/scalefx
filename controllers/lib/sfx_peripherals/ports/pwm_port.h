@@ -100,12 +100,25 @@ public:
     uint16_t duty() const     override { return _duty; }
     uint16_t maxDuty() const  override { return _maxDuty; }
 
+    /// Carrier frequency for this pin's PWM (platform-dependent; the Pico
+    /// implements it per slice, ESP32 LEDC returns false).  Motor drivers
+    /// MUST set an in-spec carrier (~20 kHz): the platform default is an
+    /// LED-oriented clk_sys/256 ≈ 490 kHz free-run that H-bridge ICs cannot
+    /// switch cleanly at partial duty (whine + mushy torque).
+    bool setFrequencyHz(uint16_t hz) override {
+        if (!NativeGpio::instance().setPinPwmFrequencyHz((uint8_t)_pin, hz)) return false;
+        _freqHz = hz;
+        return true;
+    }
+    uint16_t frequencyHz() const override { return _freqHz; }
+
 private:
     int      _pin;
     bool     _inverted;
     uint8_t  _resBits;
     uint16_t _maxDuty = 255;
     uint16_t _duty    = 0;
+    uint16_t _freqHz  = 0;
 };
 
 // ============================================================================

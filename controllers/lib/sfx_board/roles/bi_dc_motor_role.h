@@ -276,6 +276,16 @@ private:
     Position  _targetEnd      = Position::Unknown;
     uint32_t  _lastSeekLogMs  = 0;        ///< throttle for verbose seek-progress logs
 
+    // No-load fault diagnosis (hardware/pcb-nextver/ISSUES.md §7): an
+    // in-line INA226 reads ~0 in reverse at high rail common-mode while
+    // real current flows.  A no-load fault WITH real rail sag (vs the
+    // pre-drive baseline) is logged as "shunt unreadable — lower the
+    // motor pack", not "no motor".  Either way the stroke FAULTS and
+    // brakes — driving on unreadable current risks wedging the mechanism
+    // into its endstop (bench 2026-08-08).
+    int16_t   _railIdle_mV    = 0;        ///< rail before the stroke began
+    static constexpr int16_t kBlindSagConfirmMv = 300;
+
     // LiveRatio baseline — trailing minimum of |I| (the free-running floor).
     // _runMean_mA doubles as the "armed" sentinel: 0 = still warming up.
     uint32_t  _runAccum_mA    = 0;        ///< (legacy, unused — kept for ABI calm)

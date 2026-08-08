@@ -246,6 +246,83 @@ expected, not a fault.)  Boot log fun fact: the bootloader reports **16 MB**
 flash on this module (production images assume 8 MB — free headroom if REV C
 standardizes on the bigger part).
 
+## 7. 🔴 OPEN — GearControl motor current sensing is DIRECTION-BLIND (INA226 in-line shunt vs PWM common mode)
+
+**Board:** GearControl expander (GearCtrl-3C38), bench 2026-08-08, first
+session with REAL partial-duty motor PWM (the voltage-first cap on a 4S
+pack; historically every drive clamped to 100 % duty = smooth DC, which
+is why this never surfaced).
+
+**Visible symptom:** the INA226 does not show/sense motor current in ONE
+drive direction — the raw `SHUNT_V` register reads 0–15 µV (≈ 0–3 mA)
+while several AMPS demonstrably flow (VM sags 16.0 → 14.4 V across the
+~0.36 Ω feed measured on 2S; the mechanism moves).  Downstream effect:
+Studio/CLI current readout shows ~0 mA for reverse strokes, and the
+BiDcMotor role's no-load detector (|I| < 30 mA for 700 ms ⇒ "no motor /
+open circuit") kills every healthy reverse stroke at ~850 ms — the gear
+"stops abruptly in one direction" with a NO-LOAD / position-unknown
+fault.  Forward strokes read perfectly (−437 µV ↔ 87 mA = exactly the
+5 mΩ shunt) and stall/endstop detection works.
+
+**Ruled out by experiment** (mdiag PWM-register dump + raw-µV
+instrumentation, gearcontrol 1.2.1 b38/b39): PWM carrier (490 kHz and
+18.8 kHz identical), decay mode (slow drive/brake AND fast drive/coast
+both blind in reverse), which bridge pin chops (either — registers
+confirmed doing exactly as commanded), duty level, firmware sign
+handling (readings are signed end-to-end), clones (parts are genuine,
+ID-verified; the historic hub "clone" was the 0x40 PCA collision, not a
+fake).
+
+**Topology + working theory:** the 5 mΩ shunt sits IN-LINE in the OUT2
+motor leg (DRV8871-class bridge U4/U5/U6, netlist symbol mislabeled
+VREG_LM5017MR; pin map decoded: 2=IN1 3=IN2 4=ILIM 5=VM 6=OUT1
+8=OUT2→shunt→J.2).  Forward conducts with the shunt node near GND;
+reverse conducts with the shunt node at VM — the reading dies when the
+shunt's common-mode is HIGH: reverse blind at 16.0 V (4S) AND 23.3 V
+(6S); the one confirmed reverse detection happened at 7.6 V CM (2S
+full-duty stall, peak 1170 mA).  A genuine INA226 is spec'd to 36 V CM,
+so the exact mechanism (board-level IN± path vs IC input behavior under
+load) needs a scope across R19 and at IN+/IN− during a reverse stroke.
+Characterization gap: 2S partial-duty reverse not yet measured (decides
+CM-level vs polarity dependence).
+
+Cross-pack validation of the sensed direction (same 8 V cap, Fixed 1 A
+guard): forward endstop stall reads 1170 / 1286 / 1333 mA on 2S / 4S /
+6S at 100 % / 50 % / 34 % duty — the voltage-first drive delivers the
+same motor event within ±7 % across a 3× rail range, one untouched
+threshold.
+
+**Hardware fix (rev-next), pick one:**
+1. **Low-side shunts** — move each shunt into the bridge's GND return
+   (DRV PowerPAD/GND → shunt → plane).  CM ≈ 0 V in BOTH directions and
+   during recirculation; the existing INA226s work as-is.  Cheapest and
+   preferred.
+2. **PWM-rated in-line CSA** — keep the in-line shunt, replace the
+   sensor with INA240/INA241 (enhanced PWM common-mode rejection,
+   −4…+80 V CM) — the part built for exactly this node.
+3. **High-side supply sensing** — shunt in each motor's VM feed (quiet
+   CM = VM): INA226-compatible; reads duty-scaled average supply current
+   (ratio-based stall guards still work; absolute mA needs duty
+   correction).
+
+**Operational solution (adopted): power the GearControl MOTOR rail from
+2S/3S**, independent of the hub's pack.  The voltage cap + all sensing
+run off the expander's LOCAL per-motor INA226 rail reading — the hub
+only pushes the motor's rated voltage constant, never its own Vin — so
+a 6S hub with a 2S gear-motor rail is fully supported by the
+architecture and restores current-based endstops in BOTH directions
+(bench-verified: full 5.4 s strokes, ~100 mA free-run visible both
+ways, 1.17 A endstop stalls).
+
+**Firmware stance:** a no-load fault that coincides with real rail sag
+is DIAGNOSED as "shunt unreadable at this common-mode — lower the motor
+pack" (vs a genuine "no motor" when the rail doesn't sag), but the
+stroke faults and brakes either way.  A timed-drive-to-deadline
+workaround was tried and REJECTED: grinding a stroke with unreadable
+current into its endstop wedged the mechanism (leadscrew lock, freed by
+hand).  Also added: Fixed-guard inrush blanking (breakaway current ≈
+locked-rotor false-tripped a 1 A threshold ~150 ms into every stroke).
+
 ## Firmware/tooling changes made during this bring-up
 
 - `HUBFX_PCB_REV` compile-time pin-map switch (rev B default; `=1`

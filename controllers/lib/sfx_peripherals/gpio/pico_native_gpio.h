@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
+#include <hardware/clocks.h>
 
 class PicoNativeGpio {
 public:
@@ -49,6 +50,23 @@ public:
         pwm_set_wrap(slice, 255);
         pwm_set_gpio_level((uint)pin, brightness);
         pwm_set_enabled(slice, true);
+        return true;
+    }
+
+    /// Set the pin's PWM carrier frequency (slice clock divider; wrap stays
+    /// 255 → duty resolution unchanged).  With NO divider a slice free-runs
+    /// at clk_sys/256 ≈ 490 kHz — fine for an LED, far beyond what H-bridge
+    /// driver ICs switch cleanly (whine + mushy torque at partial duty).
+    /// Motor ports set ~20 kHz (ultrasonic, in-spec).  NOTE: frequency is
+    /// per SLICE — the pin's slice-partner changes with it (harmless for
+    /// LEDs, which don't care about carrier frequency).
+    bool setPinPwmFrequencyHz(uint8_t pin, uint32_t hz) {
+        if (hz == 0) return false;
+        const uint slice = pwm_gpio_to_slice_num((uint)pin);
+        float div = (float)clock_get_hz(clk_sys) / (256.0f * (float)hz);
+        if (div < 1.0f)   div = 1.0f;     // ceiling: clk_sys/256
+        if (div > 255.9f) div = 255.9f;   // floor: ~1.9 kHz @125 MHz
+        pwm_set_clkdiv(slice, div);
         return true;
     }
 };

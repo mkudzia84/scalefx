@@ -50,8 +50,8 @@
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
 
-#define FIRMWARE_VERSION "1.0.0-rc1"
-#define BUILD_NUMBER     4
+#define FIRMWARE_VERSION "1.0.0-rc2"
+#define BUILD_NUMBER     6
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/expander.tel)
@@ -147,12 +147,20 @@ public:
         {ina[0]}, {ina[1]}, {ina[2]}, {ina[3]}, {ina[4]},
     };
 
+    /// Motor PWM carrier — ultrasonic + within H-bridge driver spec (the
+    /// platform default clk_sys/256 ≈ 490 kHz free-run whines and delivers
+    /// mushy torque at partial duty; see the GearControl bench note).
+    static constexpr uint16_t kMotorPwmHz = 20000;
+
     /// I²C + INA226 bring-up — runs BEFORE board.begin() so the H-bridge
     /// current sensors are live when the registry walks port begin().
     void initHardware() {
         i2cBus.begin(Gpio::I2C_SDA, Gpio::I2C_SCL, 400000);
         for (uint8_t k = 0; k < 5; ++k) {
             ina[k].begin(i2cBus, I2cAddr::INA226[k], Sense::SHUNT_OHMS, Sense::MAX_AMPS);
+        }
+        for (uint8_t m = 0; m < 5; ++m) {
+            motor[m].setFrequencyHz(kMotorPwmHz);   // magnitude PWM pin
         }
     }
 

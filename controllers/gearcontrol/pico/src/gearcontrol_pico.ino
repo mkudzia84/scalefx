@@ -60,8 +60,11 @@
 #include <power/ina226.h>
 #include <power/ina226_sensor.h>
 
-#define FIRMWARE_VERSION "1.1.0"
-#define BUILD_NUMBER     31
+#include <hardware/pwm.h>                   // [mdiag] raw slice-register dump
+#include <hardware/gpio.h>
+
+#define FIRMWARE_VERSION "1.3.0"
+#define BUILD_NUMBER     44
 
 // ════════════════════════════════════════════════════════════════════════
 //  Board pin / address map (cross-ref: instructions/schematics/gearcontrol.tel)
@@ -211,12 +214,21 @@ public:
         {ina[0]}, {ina[1]}, {ina[2]},
     };
 
+    /// Motor PWM carrier — ultrasonic + within H-bridge driver spec.  The
+    /// platform default (clk_sys/256 ≈ 490 kHz, LED-oriented) is far beyond
+    /// clean FET switching: at partial duty (the voltage-first cap on a big
+    /// pack) the bridge whined and delivered mushy torque (bench 2026-08-08).
+    static constexpr uint16_t kMotorPwmHz = 20000;
+
     /// I²C + INA226 bring-up — runs BEFORE board.begin() so the H-bridge
     /// current sensors are live when the registry walks port begin().
     void initHardware() {
         i2cBus.begin(Gpio::I2C_SDA, Gpio::I2C_SCL, 400000);
         for (uint8_t k = 0; k < 3; ++k) {
             ina[k].begin(i2cBus, I2cAddr::INA226[k], Sense::SHUNT_OHMS, Sense::MAX_AMPS);
+        }
+        for (uint8_t m = 0; m < 3; ++m) {
+            motor[m].setFrequencyHz(kMotorPwmHz);   // both half-bridge pins
         }
     }
 
@@ -289,6 +301,49 @@ void loop() {
         }
     }
     statusLeds.update(duty, cur, err);
+
+    // ── Drive instrumentation (bench 2026-08-08: partial-duty current
+    //    invisible in ONE direction) — while any motor is driven, dump the
+    //    ACTUAL PWM slice state of both bridge pins (function, slice/chan,
+    //    DIV 8.4, TOP, CC level, enable) + the RAW INA226 shunt µV / bus mV
+    //    every 500 ms.  Separates "pins not doing what we commanded" (slice
+    //    conflicts — GP16/17 SHARE slice 0 with the GP1 servo header!) from
+    //    "INA blind to real current". ─────────────────────────────────────
+    {
+        static uint32_t lastDumpMs = 0;
+        const bool anyDriven = duty[0] != 0 || duty[1] != 0 || duty[2] != 0;
+        const uint32_t nowMs = millis();
+        if (anyDriven && nowMs - lastDumpMs >= 500) {
+            lastDumpMs = nowMs;
+            static constexpr uint8_t kMotPins[3][2] = { {15, 16}, {17, 18}, {19, 20} };
+            for (uint8_t m = 0; m < 3; ++m) {
+                if (duty[m] == 0) continue;
+                char line[200];
+                int len = snprintf(line, sizeof line, "[mdiag] M%u duty=%d", m, (int)duty[m]);
+                for (uint8_t p = 0; p < 2; ++p) {
+                    const uint8_t pin   = kMotPins[m][p];
+                    const uint    slice = pwm_gpio_to_slice_num(pin);
+                    const uint    chan  = pwm_gpio_to_channel(pin);
+                    const uint32_t div  = pwm_hw->slice[slice].div;
+                    const uint32_t top  = pwm_hw->slice[slice].top;
+                    const uint32_t cc   = pwm_hw->slice[slice].cc;
+                    const uint16_t lvl  = (chan == PWM_CHAN_A) ? (uint16_t)cc : (uint16_t)(cc >> 16);
+                    len += snprintf(line + len, sizeof line - len,
+                                    "  %c:GP%u s%u%c fn=%d div=%lu.%lu top=%lu lvl=%u en=%d",
+                                    p == 0 ? 'A' : 'B', pin, slice, chan == PWM_CHAN_A ? 'A' : 'B',
+                                    (int)gpio_get_function(pin),
+                                    (unsigned long)(div >> 4), (unsigned long)(div & 0xF),
+                                    (unsigned long)top, lvl,
+                                    (int)(pwm_hw->slice[slice].csr & 1));
+                }
+                SFX_LOG_INFO("%s", line);
+                SFX_LOG_INFO("[mdiag] M%u INA raw: shunt=%duV bus=%dmV cur=%dmA",
+                             m, (int)board.ina[m].readShuntVoltage_uV(),
+                             (int)board.ina[m].busVoltage_mV(),
+                             (int)cur[m]);
+            }
+        }
+    }
 
     busy_wait_ms(1);
 }
