@@ -138,24 +138,20 @@ private:
 
 class EspServo {
 public:
-    /// QUIET ATTACH (2.45.2): attach() allocates the generator but holds the
-    /// pin FORCED LOW — no pulse train until the first writeMicroseconds().
-    /// A hobby servo (or a black-box retract controller) with no pulse simply
-    /// holds position; emitting the 1500 µs centre at attach actively DROVE
-    /// every servo mid-travel on each boot — with the bench's repeated
-    /// watchdog/brownout resets that read as "servos randomly open and shut".
-    /// servo_port.h keys off kQuietAttach to skip its initial write too.
-    static constexpr bool kQuietAttach = true;
+    /// QUIET-ATTACH REVERTED (2.45.3): 2.45.2 held the pin forced-low until
+    /// the first command (to kill the boot centre-slam) — but a black-box
+    /// integrated retract controller with a SILENT PWM input hunts/cycles
+    /// autonomously, and limp door servos flap under spring load: the bench
+    /// heard "all servos randomly moving" with ZERO commands on the wire.
+    /// Steady pulses from attach are the lesser evil; the boot-slam is
+    /// mitigated separately (rare resets + the integrator seed fix).
+    static constexpr bool kQuietAttach = false;
 
     /// @param gpio  GPIO number.  @param minUs/maxUs  driver clamp (unused by
     /// the MCPWM math but kept for API parity — MicroservoPort clamps already).
     bool attach(int gpio, uint16_t /*minUs*/ = 500, uint16_t /*maxUs*/ = 2500,
                 uint16_t initialUs = 1500) {
-        _cmp = EspServoPool::instance().allocate(gpio, initialUs, &_gen);
-        if (_cmp && _gen) {
-            mcpwm_generator_set_force_level(_gen, 0, true);   // pin low, no pulses
-            _forced = true;
-        }
+        _cmp = EspServoPool::instance().allocate(gpio, initialUs);
         return _cmp != nullptr;
     }
 
@@ -166,23 +162,13 @@ public:
     /// register write (latched at counter-zero, see allocate()'s
     /// update_cmp_on_tez) so it cannot tear, but if a calibration handler runs
     /// on a task OTHER than the servo-tick task, route the write through the
-    /// owning task — do not have two tasks drive the same _cmp.  The one-shot
-    /// force release below shares that single-writer contract.
+    /// owning task — do not have two tasks drive the same _cmp.
     void writeMicroseconds(uint16_t us) {
-        if (!_cmp) return;
-        mcpwm_comparator_set_compare_value(_cmp, us);
-        if (_forced) {
-            // First real command — release the force so the generator starts
-            // pulsing at the freshly-set width (level -1 = remove force).
-            mcpwm_generator_set_force_level(_gen, -1, true);
-            _forced = false;
-        }
+        if (_cmp) mcpwm_comparator_set_compare_value(_cmp, us);
     }
 
 private:
-    mcpwm_cmpr_handle_t _cmp    = nullptr;
-    mcpwm_gen_handle_t  _gen    = nullptr;
-    bool                _forced = false;
+    mcpwm_cmpr_handle_t _cmp = nullptr;
 };
 
 }  // namespace sfx_peripherals

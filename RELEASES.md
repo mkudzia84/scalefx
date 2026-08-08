@@ -7,6 +7,28 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.45.3 — 2026-08-08 — quiet-attach reverted: silent PWM inputs make black-box retracts hunt
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.45.3 | ESP32-S3 | `hubfx-v2.45.3` |
+
+PATCH: reverts 2.45.2's quiet-attach after live falsification on the bench.
+
+### Bug Fixes
+
+- **Servo headers pulse from attach again.** 2.45.2 held every servo pin
+  forced-low until its first command, to stop the boot centre-slam. Bench
+  result: "all servos randomly moving" with ZERO commands on the wire, no
+  resets, RC routing disabled — integrated retract controllers hunt/cycle
+  autonomously when their PWM input is silent, and limp door servos flap
+  under spring load. A steady pulse is the lesser evil; the boot-slam is
+  mitigated by the (retained) integrator-seed fix and by resets being rare.
+  The `kQuietAttach` driver capability plumbing stays (all-false) for a
+  future opt-in per-port policy.
+
+---
+
 ## 2.45.2 — 2026-08-08 — servo REV reflection restored + role-attach position seed
 
 | Component | Version | Platform | Tag |
