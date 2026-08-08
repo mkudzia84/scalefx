@@ -149,10 +149,16 @@ public:
     ///   - BusReset: resetBus() root-port power-cycle (queued from the recovery
     ///               timer — the deep HCD calls + 500 ms block must NOT run on the
     ///               3120 B timer-service task; see requestBusReset()).
+    ///   - SynthDisconnect: _handleCdcEvent(DISCONNECTED) for a slot whose
+    ///               device died without delivering the callback (detected by
+    ///               consecutive TX failures).  The teardown closes the CDC
+    ///               handle = deep USB-host frames — must NOT run on the
+    ///               caller of cdcWrite (loopTask overflowed exactly there,
+    ///               coredump 2026-08-08: exccause 0x41, 0xa5-poisoned stack).
     struct PendingWork {
-        enum class Kind : uint8_t { OpenCdc, BusReset };
+        enum class Kind : uint8_t { OpenCdc, BusReset, SynthDisconnect };
         Kind     kind = Kind::OpenCdc;
-        uint16_t vid  = 0;
+        uint16_t vid  = 0;   // SynthDisconnect: slot index in `vid`
         uint16_t pid  = 0;
     };
 

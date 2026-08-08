@@ -7,6 +7,29 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.44.2 — 2026-08-08 — loopTask stack overflow during gear cycles
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.44.2 | ESP32-S3 | `hubfx-v2.44.2` |
+
+PATCH: crash fix, found via flash coredump minutes after 2.44.1.
+
+### Bug Fixes
+- **loopTask stack overflow → PANIC reboot mid-gear-cycle** (coredump:
+  exccause 0x41 DebugException, backtrace dead at an 0xa5-poisoned
+  frame — the end-of-stack watchpoint).  A gear cycle converges the
+  gear FSM, role-event forwards, SerialBus parsing (including rejecting
+  USB-corrupted packets), the audio rail governor, and USB writes on
+  the ONE 16 KB loop task; the 2.44.1 synthesized-disconnect teardown
+  ran there too — repeating the exact mistake the June USB saga
+  documented (deep teardown on a shallow context).  Fixes: the
+  synthesized disconnect is now QUEUED to the 8 KB `usb_worker` task
+  (new PendingWork::SynthDisconnect, duplicate-safe), and the loop task
+  grows 16 → 24 KB as convergence headroom.
+
+---
+
 ## 2.44.1 — 2026-08-08 — USB half-dead expander slot self-heals
 
 | Component | Version | Platform | Tag |

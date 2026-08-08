@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.44.1-hubfx"
-#define BUILD_NUMBER     963
+#define FIRMWARE_VERSION "2.44.2-hubfx"
+#define BUILD_NUMBER     964
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -1370,14 +1370,17 @@ void loop() {
 //  we spawn a dedicated loop task that mirrors what Arduino-ESP32's loopTask
 //  used to do: setup() once, then loop() forever, pinned to Core 0
 //  (ARDUINO_RUNNING_CORE=0 → Core 1 belongs to the audio producer/consumer)
-//  with the 16 KB stack the deep config-reload path needs (was
-//  CONFIG_ARDUINO_LOOP_STACK_SIZE).  loop() already ends with vTaskDelay(1),
-//  so IDLE0 / TWDT stay fed.
+//  with a 24 KB stack: 16 KB (the old CONFIG_ARDUINO_LOOP_STACK_SIZE) left
+//  only ~10.8 KB headroom at boot, and a gear cycle converging the gear FSM +
+//  role-event forwards + SerialBus parse + audio governor + USB writes on this
+//  ONE task overflowed it (coredump 2026-08-08: exccause 0x41 DebugException,
+//  0xa5-poisoned frame = the end-of-stack watchpoint).  loop() already ends
+//  with vTaskDelay(1), so IDLE0 / TWDT stay fed.
 extern "C" void app_main(void) {
     xTaskCreatePinnedToCore(
         [](void*) {
             setup();
             for (;;) loop();
         },
-        "loopTask", 16384, nullptr, 1, &loopTaskHandle, /*core=*/0);
+        "loopTask", 24576, nullptr, 1, &loopTaskHandle, /*core=*/0);
 }

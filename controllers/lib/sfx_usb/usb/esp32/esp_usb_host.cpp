@@ -151,6 +151,12 @@ static void usbHostWorkerTask(void* arg) {
                     SFX_LOG_INFO("[UsbHost] Worker: running deferred bus reset");
                     EspUsbHost::instance().resetBus();
                     break;
+                case EspUsbHost::PendingWork::Kind::SynthDisconnect:
+                    SFX_LOG_WARN("[UsbHost] Worker: synthesizing disconnect for dead slot=%u",
+                                 (unsigned)req.vid);
+                    EspUsbHost::instance()._handleCdcEvent((int)req.vid,
+                                                           CDC_ACM_HOST_DEVICE_DISCONNECTED);
+                    break;
             }
         }
     }
@@ -964,10 +970,20 @@ int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
         constexpr uint8_t kTxDeadThreshold = 8;
         if (n >= kTxDeadThreshold) {
             SFX_LOG_WARN("[UsbHost] slot=%d unresponsive after %u consecutive TX "
-                         "failures — synthesizing disconnect to recover",
+                         "failures — queueing synthesized disconnect",
                          slotIdx, (unsigned)n);
             slot.txDeadCount.store(0, std::memory_order_relaxed);
-            _handleCdcEvent(slotIdx, CDC_ACM_HOST_DEVICE_DISCONNECTED);
+            // DEFER to the worker task — the teardown closes the CDC handle
+            // (deep USB-host frames) and must not run on our caller's stack:
+            // loopTask overflowed exactly here (coredump 2026-08-08,
+            // exccause 0x41 / 0xa5-poisoned stack).  Duplicate queueing is
+            // harmless — _handleCdcEvent bails when the slot is already
+            // closed.
+            if (_workQueue) {
+                PendingWork req = { PendingWork::Kind::SynthDisconnect,
+                                    (uint16_t)slotIdx, 0 };
+                xQueueSend((QueueHandle_t)_workQueue, &req, 0);
+            }
         }
     } else {
         SFX_LOG_WARN("[UsbHost] TX failed: slot=%d err=%s", slotIdx, esp_err_to_name(err));
