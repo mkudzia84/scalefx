@@ -22,9 +22,20 @@ void ServoActuatorRole::initFromPort() {
     _profile.maxUs      = _maxUs;
     _profile.centerUs   = (_minUs + _maxUs) / 2;
     _mp.setProfile(_profile);
-    _mp.snapTo(_profile.centerUs);
-    _lastPosUs = _profile.centerUs;
-    _outUs     = _profile.centerUs;
+    // Seed the integrator from the port's LAST WRITTEN pulse, not the
+    // centre.  Roles re-emplace on every CONFIG_RELOAD (Studio Apply) while
+    // the physical servo stays wherever it was — an unconditional centre
+    // snap desynced the integrator (and the Studio live view) from reality,
+    // and the next command made the servo jump unprofiled from its true
+    // position.  A fresh boot reads the port's initial pulse (1500 centre),
+    // so first-attach behaviour is unchanged.  Clamp into the hw window in
+    // case the port was last driven by a wider prior calibration.
+    uint16_t seed = _port->microseconds();
+    if (seed < _minUs) seed = _minUs;
+    if (seed > _maxUs) seed = _maxUs;
+    _mp.snapTo(seed);
+    _lastPosUs = seed;
+    _outUs     = seed;
 }
 
 void ServoActuatorRole::setLimits(uint16_t minUs, uint16_t maxUs) {
@@ -84,14 +95,21 @@ void ServoActuatorRole::setTarget(uint16_t target_us) {
 }
 
 void ServoActuatorRole::setNormalizedTarget(uint16_t pos) {
-    // Saturate the fraction, then map it LINEARLY onto the CURRENT calibrated
-    // [_minUs, _maxUs] (live — so a re-calibration is picked up on the next
-    // command).  Hand the mapped µs to setTarget() so it gets the identical
-    // clamp + inverted reflection a direct target does (no double-reflection:
-    // the position is in SERVO space pre-reflection, exactly like a setTarget()
-    // argument — kept linear, NOT piecewise-through-centre, so the reflection
-    // stays correct under REV).
+    // Saturate the fraction, apply the REV reflection, then map LINEARLY onto
+    // the CURRENT calibrated [_minUs, _maxUs] (live — so a re-calibration is
+    // picked up on the next command).
+    //
+    // THE REFLECTION LIVES HERE AND ONLY HERE.  pos is INTENT space (full =
+    // open/deploy, zero = close/retract); `reversed` maps intent-full onto the
+    // min-µs end.  Raw setTarget() stays unreflected — its argument is SERVO
+    // space (the calibration dialog jogs absolute µs).  NOTE 2.45.2: the
+    // reflection was silently LOST in the Phase 2.9 MotionProfile refactor —
+    // this function mapped linearly and the only reversed-aware code
+    // (open/closeEndpoint) had no callers, so the profile's `reversed` flag
+    // did NOTHING on the wire path (doors/struts/landing/gun all ignored it)
+    // while every doc and the Studio dialog claimed otherwise.
     if (pos > kPosNormFull) pos = kPosNormFull;
+    if (_reversed) pos = kPosNormFull - pos;
     const uint16_t us = static_cast<uint16_t>(
         _minUs + static_cast<uint32_t>(_maxUs - _minUs) * pos / kPosNormFull);
     setTarget(us);

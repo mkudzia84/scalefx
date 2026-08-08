@@ -7,6 +7,44 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.45.2 — 2026-08-08 — servo REV reflection restored + role-attach position seed
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.45.2 | ESP32-S3 | `hubfx-v2.45.2` |
+
+PATCH: two shared-role-library bugs behind "doors don't hit the calibrated
+ends / servo motion profiles feel unreliable". No wire changes.
+
+### Bug Fixes
+
+- **The servo profile's `reversed` flag did NOTHING on the wire path.** The
+  REV reflection was silently lost in the Phase 2.9 MotionProfile refactor:
+  `setNormalizedTarget` mapped the intent fraction linearly onto
+  `[min, max]` with no reflection (its comment claimed `setTarget`
+  reflected — it never did), and the only reversed-aware code
+  (`openEndpoint()/closeEndpoint()`) had **no callers**. Every door, servo
+  strut, landing servo and gun axis ignored ↔ Reversed while the Studio
+  dialog and all docs claimed otherwise. The reflection now lives in
+  `setNormalizedTarget` (intent space: full = open/deploy → MIN-µs end when
+  reversed); raw `SERVO_SET_TARGET` stays unreflected (servo space — the
+  calibration jog needs absolute µs).
+- **Role re-attach no longer teleports the integrator to centre.** Every
+  Studio Apply (CONFIG_RELOAD → detach + re-attach all hub roles)
+  re-emplaced each ServoActuatorRole and snapped its motion integrator to
+  1500 µs while the physical servo sat wherever it was — the Studio live
+  bar showed centre ("some other value"), and the next command made the
+  servo jump unprofiled from its true position before slewing. The role now
+  seeds from the port's last-written pulse (fresh boot still starts at the
+  port's initial 1500 centre).
+
+**Note:** the fix is in the shared role library
+(`controllers/lib/sfx_board/roles/`) — expander boards (GearControl,
+PortExpander, LightFX) pick it up on their next build+flash; until then
+their locally-hosted servos still ignore `reversed`.
+
+---
+
 ## 2.45.1 — 2026-08-08 — servo calibration integrity: envelope leak, auto-expand, double reversal
 
 | Component | Version | Platform | Tag |

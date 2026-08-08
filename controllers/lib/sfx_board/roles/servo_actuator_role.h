@@ -83,15 +83,17 @@ public:
     void setTarget(uint16_t target_us);
 
     /// NORMALISED-position setter — INTENT layer (Rule 42).  `pos` is a
-    /// fraction in `[0, kPosNormFull]` (0 = calibrated MIN-µs end,
-    /// `kPosNormFull` = MAX-µs end) mapped LINEARLY onto the LIVE calibrated
-    /// `[minUs, maxUs]`, then driven via `setTarget` (so REV reflection +
-    /// motion shaping apply once, exactly as for a direct target).  Callers
-    /// express "where in the travel" without knowing the limits — GunFx
-    /// yaw/pitch (RC pulse → fraction), landing deploy (`kPosNormFull` → open
-    /// end) / retract (`0` → close end) — and a later live re-calibration is
+    /// fraction in `[0, kPosNormFull]` in INTENT space: `kPosNormFull` =
+    /// open/deploy, 0 = close/retract.  The REV reflection is applied HERE
+    /// (reversed maps intent-full onto the MIN-µs end — see openEndpoint()),
+    /// then the fraction maps LINEARLY onto the LIVE calibrated
+    /// `[minUs, maxUs]` and drives setTarget() for the motion shaping.
+    /// Callers express "where in the travel" without knowing the limits —
+    /// GunFx yaw/pitch (RC pulse → fraction), landing/gear deploy
+    /// (`kPosNormFull`) / retract (`0`) — and a later live re-calibration is
     /// honoured automatically because the role owns the limits.  Out-of-range
-    /// `pos` saturates at the ends.
+    /// `pos` saturates at the ends.  (Raw setTarget() is SERVO space and
+    /// never reflects — the calibration dialog jogs absolute µs.)
     void setNormalizedTarget(uint16_t pos);
 
     /// Full-scale value for `setNormalizedTarget()` (mirrors RolePacket::kPosNormFull).
