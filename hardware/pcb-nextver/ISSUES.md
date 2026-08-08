@@ -352,7 +352,7 @@ separate re-entrant gear-event dispatch, fixed in 2.44.3).
 data pair + VBUS; keep H-bridge return copper away from the USB
 connector ground; (joins §7's low-side-shunt/INA240 sensing fix).
 
-## 9. 🔴 OPEN — digital servos on the 6 V rail jitter randomly + overheat (3.3 V signal margin)
+## 9. 🟢 RESOLVED — "digital servos jitter randomly + overheat" was MECHANICAL BINDING (uncalibrated limits), not a board fault
 
 **Symptom (2026-08-08, board 9C6C).** Servos plugged into the hub's
 SRV1..SRV10 headers move RANDOMLY and run EXTREMELY HOT — but only some
@@ -366,36 +366,32 @@ rails/signals) unaffected throughout. The all-day "servos randomly open
 and shut" reports trace back to this, compounded by (now fixed) firmware
 issues riding on top.
 
-**Suspected cause — SIGNAL INTEGRITY, source TBD.** (The affected servos
-are HV/8 V-capable, so the 6 V rail rating itself is NOT the issue —
-operator-confirmed 2026-08-08.) A malformed or noise-corrupted pulse
-train (runt pulses, extra edges per frame, unstable width, ground bounce
-riding the 3.3 V signal) decodes as randomly-shifting targets → the
-servo hunts continuously at near-stall current → random motion + extreme
-heat.  Model dependence matches: decoders that filter glitches stay
-clean, ones that trust every edge go mad.  Two candidate sources, in
-test order:
-1. **The pure-IDF `EspServo` MCPWM driver** (esp_servo.h) — new with the
-   ESP-IDF migration, correct on paper (1 MHz tick / 20 ms period /
-   high-on-tez, low-on-compare), NEVER verified on real pins.
-2. **Board-level noise** — buck ripple / ground bounce coupling into the
-   direct GPIO→header signal lines under load.
+**Root cause (operator-confirmed 2026-08-08 evening): MECHANICAL
+BINDING from uncalibrated travel limits — not a board fault.** Studio's
+hub-config saves were silently not landing on the device (open Studio
+bug, see RELEASES 2.45.1/2.45.2 context), so the servo roles ran raw
+limits (500–2500 µs).  Gear/door commands drove the servos past the
+mechanisms' physical range into the airframe stops → continuous stall
+current → extreme heat → thermal-protection cycling (twitch-jerk) +
+stall load sagging the shared 6 V rail, which made the other servos on
+the rail glitch too — "all servos randomly moving".  The model
+dependence was simply which mechanisms bind inside 500–2500 µs and which
+swing free.  Board, rail, signal levels and the MCPWM driver are all
+exonerated for this symptom; re-calibrating with non-binding limits
+resolves it.
 
-**Bench confirmation plan.**
-1. UNPLUG the affected servos; inspect for heat damage before reuse.
-2. **Self-scope the driver (no instruments):** jumper one SRV header's
-   signal pin to the INP header, attach the rc-pwm input role on IN_1
-   (live role attach — no config change), read the measured width /
-   frame rate / glitch count via `input-verbose` + `subscribe`.  Clean
-   steady 1500 µs @ 50 Hz ⇒ driver exonerated at the pin; jitter or
-   extra edges ⇒ firmware driver bug — fix in esp_servo.h.
-3. Meter the 6 V buck: DC level + ripple (AC range), idle vs loaded.
-4. If a scope is available: signal at the servo connector under buck
-   load — look for noise riding the 3.3 V pulse + ground bounce.
-
-**REV C action (pending root cause).** If board-level noise: buffer the
-ten servo signal lines (line driver at the headers) + review the servo
-ground return path; if driver: firmware-only fix, no board change.
+**Lessons kept from the elimination (still useful):**
+- The affected servos are HV/8 V-capable — the 6 V rail rating was never
+  the issue.
+- The "PULSE" input mode is a PPM FRAME decoder (rise-to-rise periods):
+  a plain servo pulse train reads as nothing but sync gaps and decodes
+  ZERO channels.  A SRV→INP loopback therefore needs the sync-skip
+  diagnostic (added 2026-08-08, esp_rmt_ppm_policy.cpp — logs the raw
+  HIGH/LOW µs of non-PPM signals at ~1 Hz), which turns the RMT capture
+  into a no-scope pulse-width meter.  Note the INP header line sits on
+  the TX pad and reaches the RX pin only via the 2.2 kΩ bridge.
+- A stalled servo can be damaged: check heat-cycled units (smell,
+  discoloration, smooth rotation) before trusting them again.
 
 ---
 

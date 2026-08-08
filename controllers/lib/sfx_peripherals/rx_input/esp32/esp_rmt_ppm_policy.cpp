@@ -18,6 +18,7 @@
 
 #include "esp_rmt_ppm_policy.h"
 #include <string.h>
+#include <serial/diag_log.h>   // SFX_LOG_INFO — sync-skip pulse diagnostics
 
 // ─── RMT done callback (ISR context) ───────────────────────────
 bool IRAM_ATTR EspRmtPpmPolicy::rmtDoneCallback(
@@ -152,6 +153,23 @@ bool EspRmtPpmPolicy::readFrame(uint16_t* pulses_us, uint8_t maxCh, uint8_t& out
 
         // Sync gap detection
         if (width_us >= RxConfig::PPM_SYNC_US) {
+            // Diagnostic (rate-limited ~1 Hz): a repeating sync-only signal is
+            // NOT PPM — e.g. a plain servo pulse train (one 1–2 ms pulse per
+            // 20 ms frame) looks like nothing but sync gaps here.  Log the raw
+            // HIGH/LOW split so the bench can measure a looped-back servo
+            // header with no scope (the 2026-08-08 SRV→INP self-scope).
+            {
+                static uint32_t s_lastPulseLogMs = 0;
+                const uint32_t now = SFX_MILLIS();
+                if (now - s_lastPulseLogMs >= 1000) {
+                    s_lastPulseLogMs = now;
+                    SFX_LOG_INFO("[ppm] sync-skip sym: high=%uus low=%uus (lvl %u/%u)",
+                                 (unsigned)symbols[i].duration0,
+                                 (unsigned)symbols[i].duration1,
+                                 (unsigned)symbols[i].level0,
+                                 (unsigned)symbols[i].level1);
+                }
+            }
             // Sync — channels collected so far form the frame
             if (ch > 0) break;
             continue;  // Sync at start, skip
