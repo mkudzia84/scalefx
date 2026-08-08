@@ -7,6 +7,29 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.44.1 — 2026-08-08 — USB half-dead expander slot self-heals
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.44.1 | ESP32-S3 | `hubfx-v2.44.1` |
+
+PATCH: USB-host robustness.
+
+### Bug Fixes
+- **A half-dead expander slot now self-heals.**  An expander that drops
+  off the bus WITHOUT delivering the CDC disconnect callback left the
+  hub with an open slot whose driver handle was dead — every forwarded
+  packet failed `ESP_ERR_INVALID_STATE` and the hub spammed
+  `[UsbHost] TX failed` forever (bench: Studio's motor-status poll
+  against GearControl, cable/ground glitch suspected as trigger).
+  `cdcWrite` now counts consecutive INVALID_STATE failures and after 8
+  SYNTHESIZES the disconnect through the normal teardown path (close,
+  unmount, auto-recovery timer) so re-enumeration brings the device
+  back — a ~2 s blip instead of a wedged session.  The TX warning is
+  rate-limited (first + every 32nd).
+
+---
+
 ## 2.44.0 — 2026-08-08 — voltage-first gear drive (raw duties retired)
 
 | Component | Version | Platform | Tag |

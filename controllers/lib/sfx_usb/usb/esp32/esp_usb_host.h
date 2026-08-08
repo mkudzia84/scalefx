@@ -211,10 +211,15 @@ private:
         // can never free the handle out from under an in-flight TX (Rule 15 /
         // mirrors AudioMixer::destroyChannelSourceSafe's busy-flag handshake).
         std::atomic<bool> txBusy{false};
+        // Consecutive TX ESP_ERR_INVALID_STATE count — a device that dies
+        // WITHOUT a disconnect callback (bench 2026-08-08: half-dead slot
+        // spammed forever) is detected here and the disconnect synthesized.
+        std::atomic<uint8_t> txDeadCount{0};
         void reset() {
             cdcHandle = nullptr; rxStream = nullptr; devAddr = 0;
             pendingUnmount.store(false, std::memory_order_release);
             txBusy.store(false, std::memory_order_release);
+            txDeadCount.store(0, std::memory_order_release);
             open.store(false, std::memory_order_release);
         }
     };

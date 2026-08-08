@@ -943,10 +943,35 @@ int EspUsbHost::cdcWrite(int devIndex, const uint8_t* data, size_t len) {
 
     if (err == ESP_OK) {
         _state.stats.bytes_sent += len;
+        slot.txDeadCount.store(0, std::memory_order_relaxed);
         return (int)len;
     }
 
-    SFX_LOG_WARN("[UsbHost] TX failed: slot=%d err=%s", slotIdx, esp_err_to_name(err));
+    // Dead-device detection: ESP_ERR_INVALID_STATE means the driver-side
+    // device is gone/unusable while OUR slot still thinks it's open — a
+    // disconnect that never delivered its callback (bench 2026-08-08: the
+    // hub spammed this warning forever while Studio polled a dead slot).
+    // After a few consecutive hits, SYNTHESIZE the disconnect so the full
+    // teardown path runs (close, unmount, auto-recovery timer) and
+    // re-enumeration can bring the device back.  Rate-limit the warning —
+    // the first hit and every 32nd, not every poll.
+    if (err == ESP_ERR_INVALID_STATE || err == ESP_ERR_NOT_FOUND) {
+        const uint8_t n = (uint8_t)(slot.txDeadCount.fetch_add(1, std::memory_order_relaxed) + 1);
+        if (n == 1 || (n % 32) == 0) {
+            SFX_LOG_WARN("[UsbHost] TX failed: slot=%d err=%s (consecutive=%u)",
+                         slotIdx, esp_err_to_name(err), (unsigned)n);
+        }
+        constexpr uint8_t kTxDeadThreshold = 8;
+        if (n >= kTxDeadThreshold) {
+            SFX_LOG_WARN("[UsbHost] slot=%d unresponsive after %u consecutive TX "
+                         "failures — synthesizing disconnect to recover",
+                         slotIdx, (unsigned)n);
+            slot.txDeadCount.store(0, std::memory_order_relaxed);
+            _handleCdcEvent(slotIdx, CDC_ACM_HOST_DEVICE_DISCONNECTED);
+        }
+    } else {
+        SFX_LOG_WARN("[UsbHost] TX failed: slot=%d err=%s", slotIdx, esp_err_to_name(err));
+    }
     return -1;
 #else
     if (!slot.open || !slot.cdcHandle) return -1;
