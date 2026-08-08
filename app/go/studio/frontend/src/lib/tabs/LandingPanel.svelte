@@ -230,22 +230,11 @@
         return 'manual'
     }
 
-    // Deploy direction.  Instead of typing open/close µs, the operator picks
-    // which calibrated servo END is the DEPLOYED position; we write extreme
-    // sentinels that the servo role CLAMPS to its own calibrated min/max
-    // (servo_actuator_role setTarget clamps to [minUs,maxUs]).  So deploy
-    // always lands on the real endpoint — robust to recalibration and correct
-    // per-servo even when a group's servos have different ranges.  Direction is
-    // derived from which sentinel is larger (open ≥ close ⇒ deploy-at-max).
-    const SERVO_MAX_SENTINEL = 2500   // ≥ any calibrated maxUs (port ceiling)
-    const SERVO_MIN_SENTINEL = 500    // ≤ any calibrated minUs (port floor)
-    function setDirection(id: number, openAtMax: boolean) {
-        updateLandingLight(id, l => ({
-            ...l,
-            openUs:  openAtMax ? SERVO_MAX_SENTINEL : SERVO_MIN_SENTINEL,
-            closeUs: openAtMax ? SERVO_MIN_SENTINEL : SERVO_MAX_SENTINEL,
-        }))
-    }
+    // Deploy direction: SOLELY the servo profile's ↔ Reversed flag (set in
+    // ⚙ Calibrate) — Rule 42 single source, matching gear doors/struts.  The
+    // old per-group toggle (swapped openUs/closeUs sentinels) is retired; the
+    // fields stay in the DTO only for config round-trip and are ignored by
+    // the firmware since 2.45.4.
 
     // ─── Program picker (for activation.mode === 'program') ─────────
     // Reads the OTHER column's draft so the operator's in-flight
@@ -354,15 +343,14 @@
                 <span class="hint">all move together; LEDs come on only once EVERY servo reaches its open position</span>
                 <!-- "no free servos" warning is on the + Add row below, not duplicated here. -->
             </div>
-            <div class="form-row">
-                <span class="field-label">Deploy direction</span>
-                <button class="small state-toggle"
-                        on:click={() => setDirection(light.id, !(light.openUs >= light.closeUs))}
-                        disabled={busy}
-                        title="Which calibrated servo end is the DEPLOYED position. Click to flip; retract goes to the other end.">
-                    {light.openUs >= light.closeUs ? '⇧ Deploy → MAX end' : '⇩ Deploy → MIN end'}
-                </button>
-                <span class="hint">deploy drives the servo to its calibrated {light.openUs >= light.closeUs ? 'MAX' : 'MIN'} endpoint, retract to the other — set the travel with <b>⚙ Calibrate</b> below.</span>
+            <!-- Direction lives SOLELY in each servo's calibration (↔ Reversed)
+                 — Rule 42, same single-source rule as gear doors/struts.  The
+                 old "Deploy direction" toggle wrote swapped openUs/closeUs
+                 sentinels, a workaround from the era when the role's REV
+                 reflection was broken; with the reflection restored (2.45.2)
+                 the two mechanisms compounded (2.45.4 cleanup). -->
+            <div class="form-row sub">
+                <span class="hint">deploy = calibrated MAX end · retract = MIN — moves the wrong way? flip <b>↔ Reversed</b> in that servo's <b>⚙ Calibrate</b> below.</span>
             </div>
             {#each light.servos as s, i (i)}
                 <div class="form-row">

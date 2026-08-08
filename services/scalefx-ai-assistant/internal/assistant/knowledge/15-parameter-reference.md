@@ -194,7 +194,7 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Setting | What it does | Default |
 |---|---|---|
 | Name | Label for the group. | `landing<id>` |
-| Deploy direction | Which calibrated servo end is the DEPLOYED position; retract goes to the other end. (Set by a toggle, not raw µs — the servo's calibration defines the travel.) | deploy → MAX end |
+| Deploy direction | There is NO per-group direction toggle (removed 2.45.4): deploy always drives each servo to its calibrated MAX end, retract to MIN. If a servo moves the wrong way, flip **↔ Reversed** in that servo's **Calibrate Servo** window — the same single rule as gear doors and servo struts. | deploy → MAX end |
 | Servo port(s) | The servo(s) that deploy/retract the light. | none |
 | LED port(s) + Brightness | The searchlight LED(s) and their brightness % when deployed. | none / per LED |
 | Fade-in | LED soft-start: ramp 0→brightness over this many ms once the servo is fully deployed (0 = hard on). | `400ms` |

@@ -547,10 +547,6 @@ inline void GunUnit::commandFanPct(uint8_t pct) {
     rolecmd::u8(_send, _sendCtx, _spec.smoke.fanPort, RolePacket::MOTOR_SET_PCT, pct);
 }
 
-inline void GunUnit::commandServoTargetUs(const PortRef& port, uint16_t us) {
-    rolecmd::u16(_send, _sendCtx, port, RolePacket::SERVO_SET_TARGET, us);
-}
-
 inline void GunUnit::commandServoPosNorm(const PortRef& port, uint16_t rcUs) {
     if (!_send) return;
     // Convert the RC pulse [kRcMinUs, kRcMaxUs] → normalised fraction

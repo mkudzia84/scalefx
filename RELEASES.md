@@ -7,6 +7,44 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.45.4 — 2026-08-08 — landing-light direction single-sourced + servo-path audit
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.45.4 | ESP32-S3 | `hubfx-v2.45.4` |
+
+PATCH: audit follow-up to the 2.45.2 REV-reflection restoration — every
+firmware servo drive path checked for calibrated-limit compliance.
+
+Audit result: all effect paths respect the calibrated limits — gear
+doors, servo struts, landing lights and gun aim all drive via
+`SERVO_SET_POS_NORM` (mapped onto the role's LIVE `[min,max]`), gun
+recoil is clamped at the role output, and raw `SERVO_SET_TARGET` is
+hard-clamped by the role. (Limits only protect once the calibration
+actually reaches the device — the Studio save bug remains open.)
+
+### Bug Fixes
+
+- **Landing lights: deploy direction now lives SOLELY in the servo
+  profile's `reversed`** — the same single-source rule as gear doors and
+  servo struts. The panel's "Deploy direction" toggle wrote swapped
+  `open_us`/`close_us` sentinels, a workaround from the era when the
+  role's REV reflection was silently broken; with the reflection
+  restored (2.45.2) the two mechanisms COMPOUNDED — both set cancels
+  out, either alone flips deploy under the operator. The toggle is
+  removed (a hint points at ↔ Reversed in ⚙ Calibrate), and the firmware
+  ignores the vestigial `open_us`/`close_us` (still parsed for compat).
+
+### Internal
+
+- Dead code removed: `GunUnit::commandServoTargetUs` (no callers — gun
+  aim uses the pos-norm path).
+- PPM sync-skip pulse diagnostic (from `e06e2d6`) ships in this build:
+  the RMT capture logs raw HIGH/LOW µs of non-PPM signals at ~1 Hz — a
+  no-scope pulse-width meter for SRV→INP loopbacks.
+
+---
+
 ## 2.45.3 — 2026-08-08 — quiet-attach reverted: silent PWM inputs make black-box retracts hunt
 
 | Component | Version | Platform | Tag |

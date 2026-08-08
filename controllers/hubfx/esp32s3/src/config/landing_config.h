@@ -25,15 +25,15 @@
  *         threshold_us: 1500          # ≥ threshold ⇒ deploy, < ⇒ retract
  *         hysteresis_us: 50
  *
- * NOTE (2026-06-06): `open_us` / `close_us` encode only the DEPLOY
- * DIRECTION (which mechanical end is "deployed"), NOT the literal target.
- * `LandingLight::deploy()` / `retract()` drive each servo via
- * `SERVO_SET_POS_NORM` (a normalised fraction — full = open end / 0 = close
- * end) that the ROLE maps onto its own LIVE calibrated [min,max] (Rule 42/44),
- * so the servo always travels the full calibrated throw regardless of the
- * stored µs AND follows a later re-calibration automatically.  `open_us >= close_us` ⇒
- * deploy drives to the calibrated MAX end (else the MIN end).  The travel
- * limits live in the servo's `/hubfx.yaml` ports[].profile, never here.
+ * NOTE (2.45.4): `open_us` / `close_us` are VESTIGIAL — parsed for config
+ * compat, ignored.  Deploy/retract drive each servo via `SERVO_SET_POS_NORM`
+ * (full = deploy / 0 = retract) that the ROLE maps onto its own LIVE
+ * calibrated [min,max] (Rule 42/44), with the profile's `reversed` flag as
+ * the ONLY direction mechanism (full → MIN end when reversed).  The old
+ * `open_us >= close_us` ordering trick was the direction workaround from the
+ * era when the role's REV reflection was silently broken (2.45.2 notes);
+ * once restored, the two mechanisms compounded.  The travel limits live in
+ * the servo's `/hubfx.yaml` ports[].profile, never here.
  *
  * `activation:` drives the light from an RC channel (resolved + wired by
  * the sketch's LandingActivationDriver, mirroring the EngineFx toggle).

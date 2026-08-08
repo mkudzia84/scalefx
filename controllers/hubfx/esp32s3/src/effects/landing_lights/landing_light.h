@@ -155,20 +155,25 @@ private:
     /// fraction maps onto the servo's LIVE calibrated [min,max] (Rule 42/44 —
     /// the role owns calibration), so the servo always lands exactly on the
     /// calibrated end AND a later re-calibration is picked up automatically (the
-    /// role re-maps on the next command).  `openUs`/`closeUs` encode only
-    /// DIRECTION (which mechanical end is "deployed") — their literal µs is
-    /// ignored for travel, so a landing.yaml that still stores a mid-range
-    /// 1900/1100 still reaches the full throw.  Physical wiring direction is the
-    /// servo's own REV flag (orthogonal — set in calibration).
-    static constexpr uint16_t kPosOpenEnd  = RolePacket::kPosNormFull;      ///< → role's calibrated MAX-µs end
-    static constexpr uint16_t kPosCloseEnd = 0;                              ///< → role's calibrated MIN-µs end
+    /// role re-maps on the next command).
+    ///
+    /// DIRECTION lives SOLELY in the servo profile's `reversed` (2.45.4 —
+    /// same single-source rule as gear doors + servo struts).  The old
+    /// `openUs >= closeUs` ordering trick was the direction workaround from
+    /// the era when the role's REV reflection was silently broken (see the
+    /// 2.45.2 notes); with the reflection restored the two mechanisms
+    /// COMPOUNDED — both set cancels out, either alone flips deploy under
+    /// the operator's feet.  `openUs`/`closeUs` are now fully vestigial
+    /// (parsed for config compat, ignored).
+    static constexpr uint16_t kPosOpenEnd  = RolePacket::kPosNormFull;      ///< → calibrated MAX-µs end (MIN when profile reversed)
+    static constexpr uint16_t kPosCloseEnd = 0;                              ///< → calibrated MIN-µs end (MAX when profile reversed)
     /// Travel-timeout backstop for a servo move with no position feedback —
     /// mirrors the gear door sequencer's kDoorTravelTimeoutMs.  If every
     /// servo hasn't reported SERVO_TARGET_REACHED within this window the
     /// phase is force-completed (see update()).
     static constexpr uint32_t kTravelTimeoutMs = 4000;
-    uint16_t deployPosNorm()  const { return _def.openUs >= _def.closeUs ? kPosOpenEnd  : kPosCloseEnd; }
-    uint16_t retractPosNorm() const { return _def.openUs >= _def.closeUs ? kPosCloseEnd : kPosOpenEnd;  }
+    uint16_t deployPosNorm()  const { return kPosOpenEnd;  }
+    uint16_t retractPosNorm() const { return kPosCloseEnd; }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
     /// deploy/retract to avoid recomputing on every event.
     uint8_t allServosMask() const {

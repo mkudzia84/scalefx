@@ -226,7 +226,6 @@ private:
     void commandServoRecoil(const PortRef& port, int16_t offsetUs, uint16_t durationMs);
     void commandHeater(bool on);
     void commandFanPct(uint8_t pct);
-    void commandServoTargetUs(const PortRef& port, uint16_t us);
     /// Send SERVO_SET_POS_NORM — convert an RC pulse to a normalised fraction
     /// and let the axis servo's role map it onto its LIVE calibrated [min,max]
     /// (Rule 42).  Used for the yaw/pitch passthrough so a full-throw input
@@ -252,7 +251,7 @@ private:
     void sendFanPctIfChanged(uint8_t pct, uint32_t nowMs);
     // Phase 2.9: ServoActuatorRole owns the motion profile; the gun
     // just pushes a target each tick.  `lastCommandedRef` carries the
-    // last value we wrote so we suppress redundant SERVO_SET_TARGET
+    // last value we wrote so we suppress redundant SERVO_SET_POS_NORM
     // packets while the input is stable.
     void tickAxis(const GunAxis& axis,
                   uint16_t lastRcUs, bool manualValid, uint16_t manualUs,
