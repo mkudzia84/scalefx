@@ -323,6 +323,35 @@ current into its endstop wedged the mechanism (leadscrew lock, freed by
 hand).  Also added: Fixed-guard inrush blanking (breakaway current ≈
 locked-rotor false-tripped a 1 A threshold ~150 ms into every stroke).
 
+## 8. 🟡 OPEN — brushed gear-motor EMI kills the hub↔expander USB link
+
+**Symptom (bench 2026-08-08):** with a brushed retract motor attached and
+driving, the hub↔GearControl USB link dies within ~1 s of motor start —
+`hcd_errors` + `ESP_ERR_INVALID_RESPONSE` (transaction-level corruption,
+NO disconnect callback: the device stays powered, the SIGNAL dies).
+Survives a cable swap and both battery topologies (twin 6S+2S and
+uni-2S).  Rock-solid with motors unplugged, and rock-solid all evening
+on a direct PC↔expander link with the same motors driving — the failing
+element is the hub-side link's noise margin under brushed-motor EMI.
+
+**Firmware stance:** fully resilient as of hubfx 2.44.1–2.44.3 — dead
+slots synthesize a disconnect (worker-deferred), bus-reset recovery
+re-mounts in ~8 s, and no crash (the 2026-08-08 panic family was the
+separate re-entrant gear-event dispatch, fixed in 2.44.3).
+
+**Bench fixes to apply (classic brushed-motor suppression, in order):**
+1. 100 nF ceramic directly across the motor terminals (+ optionally
+   47–100 nF each terminal → motor can).
+2. Twist the motor leads for their full run.
+3. Route the USB cable away from motor leads (cross at 90°).
+4. Clip-on ferrite / common-mode choke on the USB cable, expander end.
+5. Star-ground the motor supply minus at the expander VM input (short,
+   thick leads).
+
+**Board-rev items:** common-mode choke footprint on the expander's USB
+data pair + VBUS; keep H-bridge return copper away from the USB
+connector ground; (joins §7's low-side-shunt/INA240 sensing fix).
+
 ## Firmware/tooling changes made during this bring-up
 
 - `HUBFX_PCB_REV` compile-time pin-map switch (rev B default; `=1`
