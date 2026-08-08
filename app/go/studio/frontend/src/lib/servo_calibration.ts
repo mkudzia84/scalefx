@@ -24,8 +24,8 @@
 // loop the wire doesn't need.  Easy to layer in later.
 
 import { writable, get, type Writable } from 'svelte/store'
-import { ServoSetTarget, SetPortProfile, ServoSetProfileLive } from '../../wailsjs/go/main/App'
-import { markHubDirty, type Port } from './devicemodel'
+import { ServoSetTarget, SetPortProfile, ServoSetProfileLive, SaveHubConfig } from '../../wailsjs/go/main/App'
+import { clearHubDirty, type Port } from './devicemodel'
 import type { PortRefLike } from './components/port_keys'
 
 // ─── DTO mirrors ──────────────────────────────────────────────────────
@@ -170,13 +170,15 @@ export async function saveServoCalibration(): Promise<void> {
     openServoCalibration.update(x => x ? { ...x, busy: true, error: '' } : x)
     try {
         // SetPortProfile pushes live to the role + updates the studio
-        // overlay, but does NOT persist to /hubfx.yaml — that happens on
-        // Apply (SaveHubConfig).  Raise the hub-dirty flag so the global
-        // ConfigToolbar lights up and the operator can Apply (Rule 46).
-        // Without this the saved profile is live on the role but the
-        // toolbar reads "in sync" and the operator can't persist it.
+        // overlay.  Then PERSIST IMMEDIATELY (SaveHubConfig): calibration
+        // is DEVICE state, not draft config — parking it behind the global
+        // Apply left a window where a board unplug/reboot re-stamped the
+        // role from the stale /hubfx.yaml and silently reverted the
+        // calibration (incl. the REV flag — the "gear ignores my reverse"
+        // bench saga, 2026-08-08 evening).  Save = durable, full stop.
         await SetPortProfile(s.guid, /*ServoKind=*/1, s.portIdx, s.draft as any)
-        markHubDirty()
+        await SaveHubConfig()
+        clearHubDirty()
         // Park at center so the saved limits are exercised on the next
         // operator-driven deploy/retract (no surprise mid-range hold).
         await ServoSetTarget(s.guid, s.portIdx, s.draft.centerUs)
@@ -258,7 +260,12 @@ export async function toggleReversed(
 ): Promise<ServoProfileT> {
     const next = { ...current, reversed: !current.reversed }
     await SetPortProfile(guid, /*ServoKind=*/1, portIdx, next as any)
-    markHubDirty()   // reversed persists into /hubfx.yaml ports[].profile (Rule 46)
+    // Persist immediately — same rationale as saveServoCalibration: a
+    // direction flag that only lives on the live role until the next
+    // global Apply evaporates on a board unplug and the next boot runs
+    // the OLD direction.
+    await SaveHubConfig()
+    clearHubDirty()
     return next
 }
 

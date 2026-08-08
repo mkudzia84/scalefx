@@ -357,7 +357,10 @@ const _hubErrors = derived(validationCounts, ($vc) => $vc.errors > 0)
  *  can raise the flag explicitly.  Direct-Wails-call sites without
  *  this would silently leave the IO config out-of-sync with the GUI. */
 export function markHubDirty():  void { _hubDirty.set(true) }
-function          clearHubDirty(): void { _hubDirty.set(false) }
+/** Exported for flows that PERSIST themselves (servo calibration Save
+ *  calls SaveHubConfig directly — device-state, not draft config) and
+ *  must lower the flag after their own write. */
+export function clearHubDirty(): void { _hubDirty.set(false) }
 
 export const hubConfigSource: DirtySource = {
     id:        'hubconfig',

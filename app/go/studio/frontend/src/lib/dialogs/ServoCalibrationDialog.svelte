@@ -229,8 +229,10 @@
                         title="Restore the original profile and close">Cancel</button>
                 <button class="small primary" on:click={saveServoCalibration}
                         disabled={state.busy || rangeError}
-                        title={rangeError ? 'Fix the range error first' : 'Push the new profile to /hubfx.yaml'}>
-                    Save
+                        title={rangeError ? 'Fix the range error first'
+                             : dirty ? 'Persist the new profile to the device (/hubfx.yaml) immediately'
+                             : 'The draft equals the saved profile — jogging alone does not change limits; use ⤓/⤒ Set as min/max or the numeric fields'}>
+                    {dirty ? 'Save' : 'Save (no changes)'}
                 </button>
             </div>
         </div>

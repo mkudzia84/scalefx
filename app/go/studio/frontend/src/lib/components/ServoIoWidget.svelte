@@ -63,10 +63,17 @@
             <span class="io-sub">{posUs} µs{showTgt && tgtUs !== posUs ? ` → ${tgtUs}` : ''}{live ? '' : ' · cmd'}{reversed ? ' · ↔ rev' : ''}</span>
         </div>
         <div class="servo-track" class:cmd-only={!live}
-             title="Servo at {posUs} µs{showTgt ? ` → target ${tgtUs} µs` : ''} · travel {minUs}–{maxUs} µs · centre {centerUs} µs">
+             title="Servo at {posUs} µs{showTgt ? ` → target ${tgtUs} µs` : ''} · travel {minUs}–{maxUs} µs · centre {centerUs} µs · open/deploy = {reversed ? 'MIN' : 'MAX'} end{reversed ? ' (reversed)' : ''}">
             <div class="servo-track-range"
                  style="left:{srvPct(minUs)}%; width:{Math.max(0.5, srvPct(maxUs) - srvPct(minUs))}%"></div>
             <div class="servo-track-center" style="left:{srvPct(centerUs)}%"></div>
+            <!-- OPEN-end marker: the µs end that "open/deploy" intent drives to.
+                 With ↔ Reversed this is the MIN end — the raw-µs bar is NOT
+                 mirrored, so without the marker an open door reading near min
+                 looks wrong even though it is right (bench confusion,
+                 2026-08-08: "the widget mirrors it"). -->
+            <div class="servo-track-open" style="left:{srvPct(reversed ? minUs : maxUs)}%"
+                 title="OPEN / DEPLOY end ({reversed ? minUs : maxUs} µs{reversed ? ' — reversed' : ''})">▾</div>
             {#if showTgt}
                 <div class="servo-track-target" style="left:{srvPct(tgtUs)}%" title="target {tgtUs} µs"></div>
             {/if}
@@ -99,6 +106,9 @@
     .servo-track::before { content: ''; position: absolute; left: 0; right: 0; top: 5px; height: 2px; background: var(--bg-input); border: 1px solid var(--border); border-radius: 1px; }
     .servo-track-range { position: absolute; top: 3px; height: 6px; background: color-mix(in srgb, var(--accent) 18%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 2px; pointer-events: none; }
     .servo-track-center { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed color-mix(in srgb, var(--text-dim) 60%, transparent); pointer-events: none; }
+    /* OPEN/DEPLOY-end marker (▾ above the band) — intent anchor so a
+       reversed servo sitting at MIN reads as "open" at a glance. */
+    .servo-track-open { position: absolute; top: -7px; margin-left: -4px; font-size: 8px; line-height: 8px; color: var(--success); cursor: help; }
     /* TARGET — dashed YELLOW line (where the servo is slewing to). */
     .servo-track-target { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--warning); opacity: 0.95; transition: left 0.06s linear; pointer-events: none; }
     /* ACTUAL — bright solid RED line (the live position, incl. recoil kick). */
