@@ -115,7 +115,24 @@ public:
     CommandHandleResult handle(uint8_t type,
                                const uint8_t* payload, size_t len);
 
-    void update() { /* mixer ticks itself on Core 1 */ }
+    void update() {
+        // The mixer ticks itself on Core 1; Core 0 only runs the SLOW codec
+        // rail governor here (battery plugged after boot → activation retry;
+        // pack swap / big sag → live AGAIN re-tune — see TAS5825MCodec::
+        // governRail for the full contract).  `quiet` = no channel playing,
+        // so a loudness-raising retune never steps mid-effect.  Compiles
+        // out for codec-less (passive DAC) mixers.
+        if constexpr (requires { TMixer::Codec::instance().governRail(true); }) {
+            const uint32_t now = SFX_MILLIS();
+            if (now - _lastRailGovMs < kRailGovIntervalMs) return;
+            _lastRailGovMs = now;
+            bool quiet = true;
+            for (int ch = 0; ch < AUDIO_MAX_CHANNELS; ++ch) {
+                if (mixer().isPlaying(ch)) { quiet = false; break; }
+            }
+            TMixer::Codec::instance().governRail(quiet);
+        }
+    }
 
     const char* getErrorMessage(uint8_t code) const {
         return AudioError::getMessage(code);
@@ -133,6 +150,11 @@ protected:
     uint8_t currentTag() const                                              { return _ctx->currentTag(); }
 
 private:
+    // Rail-governor cadence — slow: a pack swap is a human-timescale event,
+    // and each pass is one I²C register read when nothing changed.
+    static constexpr uint32_t kRailGovIntervalMs = 2000;
+    uint32_t _lastRailGovMs = 0;
+
     sfx_core::BoardServerBase* _ctx = nullptr;
 
     /// @brief Get mixer singleton

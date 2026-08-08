@@ -62,8 +62,8 @@
  *   media/README.md for the on-disk preset library.
  */
 
-#define FIRMWARE_VERSION "2.43.0-hubfx"
-#define BUILD_NUMBER     946
+#define FIRMWARE_VERSION "2.43.1-hubfx"
+#define BUILD_NUMBER     960
 
 // Developer-facing diagnostic emission gate (set in platformio.ini).
 // =1 keeps the periodic [mem]/[stack] snapshot, the boot static-
@@ -1299,6 +1299,39 @@ void loop() {
                 }
             }
 #endif
+
+            // Audio output power — sensor id 9 on the HubFx local device.
+            // Same sine-avg estimate Studio's Audio Power card computes
+            // (peak level × analog full-scale × digital vol into the 4 Ω
+            // speaker BOM), derived firmware-side from the radio's own
+            // since-last-read peak accumulator so the Studio poll and the
+            // radio never steal each other's window.
+            {
+                static constexpr float    kSpeakerOhms   = 4.0f;
+                static constexpr uint32_t kAudioTeleMs   = 500;
+                static bool     audioSensorReg = false;
+                static uint32_t audioLastMs    = 0;
+                const uint32_t  nowMsA         = SFX_MILLIS();
+                auto& codec = Mixer::Codec::instance();
+                if (nowMsA - audioLastMs >= kAudioTeleMs && codec.isInitialized()) {
+                    audioLastMs = nowMsA;
+                    if (!audioSensorReg) {
+                        audioSensorReg = true;
+                        jexp.setLocalSensor(9, "Audio", "W", 1, 0, nowMsA);
+                    }
+                    using namespace sfx_audio::tas5825;
+                    int32_t deciWatts = 0;
+                    const uint8_t volReg = codec.getVolumeRegister();
+                    if (codec.isActive() && !codec.getMuted() && volReg != VOL_MUTE) {
+                        const float level = Mixer::instance().outputPeakForRadio() / 32767.0f;
+                        const float fsVp  = AGAIN_FULLSCALE_MV[codec.getAgainRegister()] / 1000.0f;
+                        const float digDb = -0.5f * (float)(volReg - VOL_0DB);
+                        const float vpk   = fsVp * level * powf(10.0f, digDb / 20.0f);
+                        deciWatts = (int32_t)(vpk * vpk / (2.0f * kSpeakerOhms) * 10.0f);
+                    }
+                    jexp.setLocalValue(9, deciWatts, nowMsA);
+                }
+            }
         }
     }
 

@@ -460,6 +460,14 @@ public:
     uint16_t outputPeakSinceLastRead() {
         return _outPeak.exchange(0, std::memory_order_acq_rel);
     }
+
+    /// Radio-telemetry twin of outputPeakSinceLastRead() — a SEPARATE
+    /// since-last-read accumulator fed at the same consumer-scan site, so
+    /// the Jeti pump and Studio's CODEC_STATUS poll never steal each
+    /// other's window.
+    uint16_t outputPeakForRadio() {
+        return _outPeakRadio.exchange(0, std::memory_order_acq_rel);
+    }
     
     // Ring buffer stats
     uint32_t getRingAvailableRead() const;
@@ -900,6 +908,7 @@ private:
     std::atomic<uint32_t> _consumeLoops{0};   // Core 1 consumer writes, Core 0 reads
     std::atomic<uint32_t> _consumeFrames{0};  // Core 1 consumer writes, Core 0 reads
     std::atomic<uint16_t> _outPeak{0};        // Core 1 consumer writes peak; Core 0 exchange(0)s
+    std::atomic<uint16_t> _outPeakRadio{0};   // same feed, radio-telemetry consumer
 
     // Pace-log telemetry (Phase 7 polish, gated by SFX_AUDIO_PACE_TELEMETRY
     // in audio_config.h).  Saves ~50 bytes of DRAM atomics + the entire

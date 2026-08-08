@@ -7,6 +7,43 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.43.1 — 2026-08-07 — TAS5825M is the default codec + M activate fixed
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.43.1 | ESP32-S3 | `hubfx-v2.43.1` |
+
+PATCH: no wire change — default codec driver switches P → M, plus two M
+driver activate() fixes found on first bench contact with M silicon.
+
+### Bug Fixes
+- **TAS5825M activate() could never reach PLAY** — the FS_MON clock-lock
+  gate polled while the chip was still in the DEEP-SLEEP park state
+  phase 1 left it in, where the clock detector doesn't sample: the gate
+  timed out every boot (`FS_MON never locked, CLKDET_STATUS=0x00` with
+  clean I2S clocks) and the codec stayed silent.  The driver now enters
+  HiZ (DIS_DSP still held, muted) BEFORE the gate — the detector wakes,
+  lock lands in ~30 ms, and the DSP is still only released after a
+  proven lock.  Bench 9C6C: `FS_MON locked at 48kHz`, `PLAY OK`, chime
+  audible.
+- **Every activate() wait with an observable behind it is now a bounded
+  poll of that observable** (shared `pollUntil`, first check immediate):
+  FS_MON lock, the PVDD ADC sample (its first read right after deep sleep
+  is empty — previously fell back to −8 dB; bench: 16.13 V → the optimal
+  −5.5 dB step), and the HIZ→PLAY transition (each poll pass re-clears
+  the inrush PVDD_UV latch — the retry is the recovery).  Blind delays
+  remain only where the datasheet mandates a settle with nothing to
+  observe (post-reset 50 ms).  Activation is faster AND deterministic.
+
+### Internal
+- **`-DHUBFX_CODEC_TAS5825M` is now set in the stock hubfx build** — the
+  pcb-nextver board revision ships TAS5825M silicon, bench-confirmed on
+  HubFx-9C6C (`die id: 0x95`).  The M driver adds readback-verified
+  init, the DIE_ID identity gate, and M fault decode.  Older P-silicon
+  boards (e.g. 78A4, DIE_ID 0x97) drop the define to build the P driver.
+
+---
+
 ## 2.43.0 — 2026-08-07 — gear-motor rated-voltage cap
 
 | Component | Version | Platform | Tag |

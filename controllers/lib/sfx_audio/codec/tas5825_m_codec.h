@@ -79,6 +79,26 @@ public:
     // rail, then HIZ → PLAY with fault clears around the transitions.
     bool activate();
 
+    /// True once activate() reached PLAY (cleared again by reset()).
+    bool isActive() const { return active_; }
+
+    // ─── Runtime rail governor ────────────────────────────────────────
+    //
+    // The battery is a field-swappable part: it can be absent at boot
+    // (bench USB power), plugged after boot, or swapped 3S↔6S between
+    // flights.  activate() picks AGAIN from the rail it measured ONCE —
+    // this hook, called on a slow cadence (~2 s, AudioServicePolicy::
+    // update on Core 0), closes both gaps:
+    //   (a) not in PLAY + rail now plausible → retry the full activate()
+    //       (which re-picks the gain for the new rail);
+    //   (b) in PLAY + the live rail has moved ≥1 dB from the current
+    //       AGAIN step (2 consecutive sightings — sag jitter filtered):
+    //       a rail DROP applies immediately (full-scale above the rail
+    //       = clipping/UV risk, wrapped in the soft-mute ramp); a rail
+    //       RISE only makes things louder, so it waits for `quiet`
+    //       (no channel playing) and applies un-muted, click-free.
+    void governRail(bool quiet);
+
     // ─── AudioMixer contract ──────────────────────────────────────────
     bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
     void reset();
@@ -182,6 +202,8 @@ private:
     int      sclPin_      = -1;
     uint32_t sampleRate_  = 0;
     bool     initialized_ = false;
+    bool     active_      = false;   ///< activate() reached PLAY
+    uint8_t  retuneCandidate_ = 0xFF;   ///< rail-governor pending AGAIN step (0xFF = none)
     bool     muted_       = false;
     bool     smartAmpOn_  = false;
     uint8_t  currentVolume_ = sfx_audio::tas5825::VOL_0DB;

@@ -169,7 +169,84 @@ bool TAS5825PCodec::activate() {
     bool inPlay = (pwr == CTRL_PLAY);
     TAS5825_LOG("TAS5825P: %s (POWER_STATE=0x%02X)",
                 inPlay ? "PLAY OK" : "PLAY FAILED", pwr);
+    active_ = inPlay;
     return inPlay;
+}
+
+// ─── Runtime rail governor (contract: tas5825_m_codec.h) ─────────────────
+
+namespace {
+constexpr int      RETUNE_MIN_STEPS = 2;    // 1 dB hysteresis vs sag jitter
+constexpr uint32_t MUTE_RAMP_MS     = 15;   // soft-ramp settle (no ramp-done reg)
+}
+
+void TAS5825PCodec::governRail(bool quiet) {
+    if (!initialized_ || !i2c_) return;
+
+    // Verify the OBSERVABLE before trusting the cached flag — a live battery
+    // pull faults the stage out of PLAY and a new pack does not self-recover
+    // (see the M twin for the bench trail).  Demote and let the retry path
+    // re-activate once the rail reads plausible.
+    if (active_) {
+        uint8_t powerState = 0;
+        selectBookPage(BOOK_00, PAGE_00);
+        readRegister(REG_POWER_STATE, &powerState);
+        if (powerState != CTRL_PLAY) {
+            TAS5825_LOG("TAS5825P: dropped out of PLAY (POWER_STATE=0x%02X, "
+                        "GLOBAL_FAULT1=0x%02X) — re-activating once the rail returns",
+                        powerState, readFaultRegister());
+            active_ = false;
+            retuneCandidate_ = 0xFF;
+            return;
+        }
+    }
+
+    if (!active_) {
+        // Boot-time rail was absent (pack plugged after boot) — retry the
+        // full activate() once the ADC sees a plausible rail; it re-picks
+        // AGAIN for whatever pack arrived.
+        const uint32_t mv = readPvdd_mV();
+        if (mv >= PVDD_MIN_VALID_MV) {
+            TAS5825_LOG("TAS5825P: rail present (%lu.%02lu V) — retrying activation",
+                        (unsigned long)(mv / 1000), (unsigned long)((mv % 1000) / 10));
+            activate();
+        }
+        return;
+    }
+
+    const uint32_t mv = readPvdd_mV();
+    if (mv < PVDD_MIN_VALID_MV) return;   // transient/unplug — UV fault path owns real loss
+    const uint8_t step = againStepForPvdd_mV(mv);
+    const int delta = (int)step - (int)againReg_;
+    if (delta > -RETUNE_MIN_STEPS && delta < RETUNE_MIN_STEPS) {
+        retuneCandidate_ = 0xFF;
+        return;
+    }
+    if (retuneCandidate_ != step) {       // first sighting — confirm next pass
+        retuneCandidate_ = step;
+        return;
+    }
+    // Rail DROP (step > current) = clipping/UV risk → apply now; rail RISE
+    // only raises loudness → wait for silence.
+    if (step < againReg_ && !quiet) return;
+    retuneCandidate_ = 0xFF;
+
+    const uint16_t db10 = step * 5;
+    TAS5825_LOG("TAS5825P: rail moved to %lu.%02lu V — AGAIN -%u.%u dB (was -%u.%u dB)%s",
+                (unsigned long)(mv / 1000), (unsigned long)((mv % 1000) / 10),
+                db10 / 10, db10 % 10,
+                (againReg_ * 5) / 10, (againReg_ * 5) % 10,
+                quiet ? "" : " [mute-wrapped]");
+    selectBookPage(BOOK_00, PAGE_00);
+    if (!quiet) {
+        writeRegister(REG_DEVICE_CTRL2, CTRL_MUTE_BIT | CTRL_PLAY);
+        SFX_DELAY_MS(MUTE_RAMP_MS);
+    }
+    againReg_ = step;
+    writeRegister(REG_AGAIN, againReg_);
+    if (!quiet) {
+        writeRegister(REG_DEVICE_CTRL2, CTRL_PLAY);
+    }
 }
 
 // ─── Volume / mute / reset ────────────────────────────────────────────────

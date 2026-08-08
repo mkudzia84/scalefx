@@ -37,6 +37,35 @@ constexpr uint8_t SAP_CTRL1_FOR_BIT_DEPTH =
 constexpr uint32_t FS_MON_POLL_INTERVAL_MS = 5;
 constexpr uint32_t FS_MON_POLL_TIMEOUT_MS  = 500;
 
+// State-transition polling: every wait in activate() with an observable
+// register behind it (FS lock, PVDD ADC sample, POWER_STATE) is a bounded
+// poll of that observable, NOT a blind settle delay — converges as fast as
+// the silicon allows and times out only on a real fault.  Blind delays are
+// reserved for datasheet-mandated settle times with nothing to observe
+// (the post-reset 50 ms).
+constexpr uint32_t STATE_POLL_INTERVAL_MS   = 10;
+constexpr uint32_t PVDD_ADC_POLL_TIMEOUT_MS = 150;
+constexpr uint32_t PLAY_POLL_TIMEOUT_MS     = 200;
+
+// Rail governor: ignore rail moves smaller than 2 AGAIN steps (1 dB) —
+// normal 4S sag under load is well inside that; a pack swap is not.
+// The soft volume ramp is a fixed-rate blind settle (no ramp-done
+// register to observe) — the one legitimate delay in the retune path.
+constexpr int      RETUNE_MIN_STEPS = 2;
+constexpr uint32_t MUTE_RAMP_MS     = 15;
+
+// Poll `pred` every interval_ms until it returns true or timeout_ms
+// elapses.  First check is immediate — a condition that already holds
+// costs no delay.
+template <typename Pred>
+static bool pollUntil(Pred&& pred, uint32_t timeout_ms, uint32_t interval_ms) {
+    for (uint32_t elapsed = 0;; elapsed += interval_ms) {
+        if (pred()) return true;
+        if (elapsed >= timeout_ms) return false;
+        SFX_DELAY_MS(interval_ms);
+    }
+}
+
 // DEVICE_CTRL2 parking value while clocks are absent: DSP held in
 // reset + soft mute + deep sleep.
 constexpr uint8_t CTRL_PARKED = CTRL_DIS_DSP_BIT | CTRL_MUTE_BIT | CTRL_DEEP_SLEEP;
@@ -158,6 +187,17 @@ bool TAS5825MCodec::activate() {
     // Step 6: FS_MON gate — wait for a valid sample-rate code BEFORE
     // releasing the DSP and transitioning to PLAY. 48 kHz reports 0x09
     // (Table 9-19).
+    //
+    // The chip must be brought OUT of deep sleep first: FS_MON/CLKDET
+    // do not sample in the parked (deep-sleep) state phase 1 left it in
+    // — the gate then times out with CLKDET_STATUS=0x00 even though the
+    // I2S clocks are clean (bench 9C6C, every boot).  HiZ with DIS_DSP
+    // still held + muted wakes the serial-port clock detector while the
+    // DSP stays safely in reset until the lock is proven.
+    selectBookPage(BOOK_00, PAGE_00);
+    writeRegister(REG_DEVICE_CTRL2, CTRL_DIS_DSP_BIT | CTRL_MUTE_BIT | CTRL_HIZ);
+    // No settle delay — waitForFsLock IS the wait; it polls the observable.
+
     uint8_t fsCode = 0;
     if (!waitForFsLock(FS_MON_POLL_TIMEOUT_MS, &fsCode)) {
         uint8_t clkStat = 0;
@@ -173,28 +213,27 @@ bool TAS5825MCodec::activate() {
     // are proven stable), still soft-muted.
     selectBookPage(BOOK_00, PAGE_00);
     writeRegister(REG_DEVICE_CTRL2, CTRL_MUTE_BIT | CTRL_HIZ);
-    SFX_DELAY_MS(20);
 
     // Step 7b: analog gain auto-detected from the measured PVDD rail —
     // read here (HiZ, analog powered) rather than in deep sleep where
-    // the ADC may not sample.
+    // the ADC may not sample.  configureAnalogGain polls the ADC until
+    // it produces a plausible sample, so no settle delay here either.
     if (!configureAnalogGain()) {
         TAS5825_LOG("TAS5825M: analog-gain config failed");
         return false;
     }
 
-    // Step 8: HIZ → PLAY, un-muted.
+    // Step 8: HIZ → PLAY, un-muted, gated on the observable POWER_STATE.
+    // The modulator's inrush can briefly assert PVDD_UV and latch it, so
+    // each poll pass re-clears the fault latch before reading the state —
+    // the retry IS the recovery, no blind post-PLAY settle.
     writeRegister(REG_DEVICE_CTRL2, CTRL_PLAY);
-    SFX_DELAY_MS(20);
-
-    // Step 9: post-PLAY clear — modulator inrush can briefly assert
-    // PVDD_UV.
-    writeRegister(REG_FAULT_CLEAR, FAULT_CLEAR_CMD);
-    SFX_DELAY_MS(50);
-
     uint8_t powerState = 0;
-    readRegister(REG_POWER_STATE, &powerState);
-    bool inPlay = (powerState == CTRL_PLAY);
+    const bool inPlay = pollUntil([&] {
+        writeRegister(REG_FAULT_CLEAR, FAULT_CLEAR_CMD);
+        readRegister(REG_POWER_STATE, &powerState);
+        return powerState == CTRL_PLAY;
+    }, PLAY_POLL_TIMEOUT_MS, STATE_POLL_INTERVAL_MS);
 
     if (inPlay) {
         TAS5825_LOG("TAS5825M: PLAY OK (FS=%s)", fsMonStr(fsCode));
@@ -206,6 +245,7 @@ bool TAS5825MCodec::activate() {
                     "GLOBAL_FAULT1=0x%02X CHAN_FAULT=0x%02X",
                     powerState, powerStateStr(powerState), g1, chf);
     }
+    active_ = inPlay;
     return inPlay;
 }
 
@@ -436,8 +476,16 @@ bool TAS5825MCodec::configureAnalogGain() {
     // reading below the chip's 4.5 V operating floor means the ADC
     // isn't valid (or the rail is absent) — fall back to the safe
     // −8 dB setting.
-    uint32_t mv = readPvdd_mV();
-    if (mv < PVDD_MIN_VALID_MV) {
+    // The PVDD ADC may not have produced a sample yet this early after
+    // deep sleep (bench 9C6C: first read implausible on every boot, while
+    // the same register reads 16 V moments later) — poll the observable
+    // until a plausible sample lands before concluding the rail is absent.
+    uint32_t mv = 0;
+    const bool plausible = pollUntil([&] {
+        mv = readPvdd_mV();
+        return mv >= PVDD_MIN_VALID_MV;
+    }, PVDD_ADC_POLL_TIMEOUT_MS, STATE_POLL_INTERVAL_MS);
+    if (!plausible) {
         againReg_ = AGAIN_FALLBACK;
         TAS5825_LOG("TAS5825M: PVDD ADC implausible (%lu mV) — AGAIN "
                     "fallback -8.0 dB", (unsigned long)mv);
@@ -453,6 +501,83 @@ bool TAS5825MCodec::configureAnalogGain() {
     }
     selectBookPage(BOOK_00, PAGE_00);
     return writeRegister(REG_AGAIN, againReg_);
+}
+
+void TAS5825MCodec::governRail(bool quiet) {
+    if (!initialized_ || !i2c_) return;
+
+    // Verify the OBSERVABLE before trusting the cached flag: a LIVE battery
+    // pull faults the output stage (PVDD_UV → global fault) and the chip
+    // drops out of PLAY on its own — a fresh pack does NOT bring it back.
+    // Demote to inactive; the retry path below re-activates (full re-config,
+    // gain re-picked for the NEW pack, fault latch cleared by the PLAY poll)
+    // as soon as the rail reads plausible again.  Bench 9C6C 2026-08-07:
+    // live pull → GLOBAL_FAULT, different pack replugged, no recovery until
+    // this check existed.
+    if (active_) {
+        uint8_t powerState = 0;
+        selectBookPage(BOOK_00, PAGE_00);
+        readRegister(REG_POWER_STATE, &powerState);
+        if (powerState != CTRL_PLAY) {
+            TAS5825_LOG("TAS5825M: dropped out of PLAY (POWER_STATE=0x%02X %s, "
+                        "GLOBAL_FAULT1=0x%02X) — re-activating once the rail returns",
+                        powerState, powerStateStr(powerState), readFaultRegister());
+            active_ = false;
+            retuneCandidate_ = 0xFF;
+            return;   // next pass retries activation against the new rail
+        }
+    }
+
+    // (a) Activation never reached PLAY — the boot-time rail was absent
+    // (bench USB power, pack plugged later).  Retry the full activate()
+    // once the ADC sees a plausible rail; activate() re-picks AGAIN for
+    // whatever pack arrived.
+    if (!active_) {
+        const uint32_t mv = readPvdd_mV();
+        if (mv >= PVDD_MIN_VALID_MV) {
+            TAS5825_LOG("TAS5825M: rail present (%lu.%02lu V) — retrying activation",
+                        (unsigned long)(mv / 1000), (unsigned long)((mv % 1000) / 10));
+            activate();
+        }
+        return;
+    }
+
+    // (b) In PLAY — track the live rail against the current AGAIN step.
+    const uint32_t mv = readPvdd_mV();
+    if (mv < PVDD_MIN_VALID_MV) return;   // transient/unplug — UV fault path owns real loss
+    const uint8_t step = againStepForPvdd_mV(mv);
+    const int delta = (int)step - (int)againReg_;
+    if (delta > -RETUNE_MIN_STEPS && delta < RETUNE_MIN_STEPS) {
+        retuneCandidate_ = 0xFF;          // inside hysteresis — drop any candidate
+        return;
+    }
+    if (retuneCandidate_ != step) {       // first sighting — confirm next pass
+        retuneCandidate_ = step;
+        return;
+    }
+    // step > againReg_ = rail DROPPED (needs more attenuation): clipping/UV
+    // risk, apply now.  step < againReg_ = rail ROSE: loudness-only change,
+    // wait for silence so the level never steps mid-effect.
+    if (step < againReg_ && !quiet) return;
+    retuneCandidate_ = 0xFF;
+
+    const uint16_t db10 = step * 5;
+    TAS5825_LOG("TAS5825M: rail moved to %lu.%02lu V — AGAIN -%u.%u dB "
+                "(was -%u.%u dB)%s",
+                (unsigned long)(mv / 1000), (unsigned long)((mv % 1000) / 10),
+                db10 / 10, db10 % 10,
+                (againReg_ * 5) / 10, (againReg_ * 5) % 10,
+                quiet ? "" : " [mute-wrapped]");
+    selectBookPage(BOOK_00, PAGE_00);
+    if (!quiet) {                          // audible: wrap in the soft ramp
+        writeRegister(REG_DEVICE_CTRL2, CTRL_MUTE_BIT | CTRL_PLAY);
+        SFX_DELAY_MS(MUTE_RAMP_MS);
+    }
+    againReg_ = step;
+    writeRegister(REG_AGAIN, againReg_);
+    if (!quiet) {
+        writeRegister(REG_DEVICE_CTRL2, CTRL_PLAY);
+    }
 }
 
 #endif // SFX_HAS_AUDIO

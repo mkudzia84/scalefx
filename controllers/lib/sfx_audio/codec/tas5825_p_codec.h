@@ -67,6 +67,15 @@ public:
     // ─── Phase 2: post-clock activation ────────────────────────────────
     bool activate();
 
+    /// True once activate() reached PLAY.
+    bool isActive() const { return active_; }
+
+    /// Runtime rail governor — battery plugged-after-boot activation
+    /// retry + live AGAIN re-tune on pack swaps.  Same contract as
+    /// TAS5825MCodec::governRail (see that header for the full doc);
+    /// call on a slow cadence from AudioServicePolicy::update().
+    void governRail(bool quiet);
+
     // ─── AudioMixer contract ──────────────────────────────────────────
     bool begin(uint32_t sample_rate = AUDIO_SAMPLE_RATE);
     void reset();
@@ -171,6 +180,8 @@ private:
     int      sclPin_      = -1;
     uint32_t sampleRate_  = 0;
     bool     initialized_ = false;
+    bool     active_      = false;   ///< activate() reached PLAY
+    uint8_t  retuneCandidate_ = 0xFF;   ///< rail-governor pending AGAIN step (0xFF = none)
     bool     muted_       = false;
     bool     hybridProOn_ = false;
     uint16_t boostMinMv_  = 0;

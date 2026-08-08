@@ -1094,6 +1094,9 @@ void AudioMixer<TI2S, TCodec>::consumeAndOutput() {
         if ((uint16_t)blockPeak > _outPeak.load(std::memory_order_relaxed)) {
             _outPeak.store((uint16_t)blockPeak, std::memory_order_release);
         }
+        if ((uint16_t)blockPeak > _outPeakRadio.load(std::memory_order_relaxed)) {
+            _outPeakRadio.store((uint16_t)blockPeak, std::memory_order_release);
+        }
         TI2S::instance().writeSamples(frames, count);
         _consumeFrames.fetch_add(count, std::memory_order_relaxed);
     } else {
