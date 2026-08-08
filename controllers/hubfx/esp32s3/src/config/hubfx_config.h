@@ -338,6 +338,13 @@ struct HubFxConfigSchema {
                 const auto* item = portsNode->childAt(i);
                 if (!item) continue;
                 PortMapping& m = d.ports[d.numPorts];
+                // Reset the slot: `d` is re-populated IN PLACE on every
+                // CONFIG_RELOAD, and parseServoProfile's childAs defaults
+                // read the CURRENT field values — a stale occupant (from a
+                // prior load with a different port order) would silently
+                // donate its profile/esc fields to whatever port parses
+                // into this slot now.
+                m = PortMapping{};
                 const uint8_t k = hubfxPortKindFromName(
                     item->template childAs<const char*>("kind", ""));
                 if (k == 0) {
@@ -414,6 +421,7 @@ struct HubFxConfigSchema {
                         continue;
                     }
                     PortMapping& m = d.ports[d.numPorts];
+                    m = PortMapping{};   // clean slate — see the hub-local loop
                     m.kind = k;
                     m.idx  = (uint8_t)item->template childAs<int32_t>("idx", 0);
                     m.role = hubfxRoleKindFromName(

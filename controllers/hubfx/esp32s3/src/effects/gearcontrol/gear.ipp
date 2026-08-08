@@ -407,10 +407,14 @@ inline void Gear::startSeek() {
 
 inline void Gear::commandStrutServo() {
     if (!_send) return;
-    // Deploy drives the pulse to the calibrated MAX-µs end unless reversed —
-    // the same convention as doors and landing lights; direction/travel live
-    // in the servo role's calibration + this def's `reverse` flag.
-    const bool toMax = (_target == Target::Down) != _def.reverse;
+    // Deploy drives the pulse to the calibrated MAX-µs end — the same
+    // convention as doors and landing lights.  Direction lives SOLELY in the
+    // servo role's calibration (`reversed` reflects pos_norm, Rule 42); the
+    // def's `reverse` flag is hbridge-only.  Honouring it here COMPOUNDED
+    // with the profile flag (double reversal cancels out — "my calibration
+    // didn't apply"), and in servo_shared mode per-gear flags on the ONE
+    // shared port were last-write-wins.  2.45.1.
+    const bool toMax = (_target == Target::Down);
     uint8_t payload[3];
     payload[0] = _def.strutServo.portIdx;
     SfxWire::putU16LE(&payload[1], toMax ? RolePacket::kPosNormFull : 0);

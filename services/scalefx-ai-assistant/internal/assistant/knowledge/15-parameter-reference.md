@@ -45,7 +45,7 @@ by intent (deploy/retract or 0–100%); the role maps that onto these limits.
 
 | Control | What it does | Default |
 |---|---|---|
-| Live jog (slider / ± buttons / arrow keys) | Moves the servo across the calibration envelope; the big readout shows the current µs (arrows ±1 µs, Shift ×10; PageUp/Down ±50 µs). Jogging past the current min/max auto-expands them. | — |
+| Live jog (slider / ± buttons / arrow keys) | Moves the servo across the calibration envelope; the big readout shows the current µs (arrows ±1 µs, Shift ×10; PageUp/Down ±50 µs). Jogging never changes the saved limits — sweep freely to explore; only **Set as min/max** (or typing in the fields) changes them. | — |
 | Set as min / center / max | Captures the current jog position as that endpoint (center doubles as the neutral / failsafe position). | — |
 | Min / Center / Max µs | The two travel limits and the neutral, as fine numeric tweaks. | from the dialog |
 | Speed µs/s | Max slew rate; `0` = unlimited (snap straight to target). | from the dialog |
@@ -230,7 +230,7 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Motor port (H-bridge mode) | The H-bridge port (BiDcMotor role) that drives the leg. | unassigned |
 | Strut channel (Servo-per-strut mode) | This strut's own servo (PWM) channel to its integrated retract controller. | unassigned |
 | Travel time (Servo-per-strut mode) | Fixed stroke duration — the doors engage only after it elapses. | `5000ms` (min 500) |
-| Deploy direction | H-bridge: `Forward` = deploy runs the motor forward (retract reverses). Servo modes: deploy drives the pulse to the calibrated `Max end` (or `Min end` when flipped). | `Forward` / `Max end` |
+| Deploy direction (H-bridge mode only) | `Forward` = deploy runs the motor forward (retract reverses). Servo-driven struts have NO per-strut direction toggle: deploy always drives the pulse to the calibrated MAX end — if the mechanism moves the wrong way, flip **↔ Reversed** in that servo channel's **Calibrate Servo** window (same rule as doors). | `Forward` |
 | Travel timeout (H-bridge mode) | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
 
 ### Motor calibration window (the ⚙ Calibrate motor… popup)

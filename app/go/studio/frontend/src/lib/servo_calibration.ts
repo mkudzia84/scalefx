@@ -10,11 +10,12 @@
 //      can jog the servo across its full physical range to find the
 //      end-stops; Save commits the operator-picked min/max, Cancel
 //      restores the original profile.
-//   2. **Auto-expand on jog past limit** — if the operator jogs the
-//      target ABOVE the current `draft.maxUs`, the draft max moves
-//      with them.  Same for min in the other direction.  This keeps
-//      the "jog past the edge" gesture from being silently clamped
-//      out of view.
+//   2. **Explicit limit capture** — jogging NEVER changes the draft
+//      min/max; only ⤓ Set as min / ⤒ Set as max / the numeric fields
+//      do.  (The old "auto-expand on jog past limit" silently replaced
+//      the operator's limits with wherever they swept — a full-range
+//      sweep of a black-box retract controller always saved 800–2200,
+//      the calibration envelope.  Bit on the 2026-08 bench; removed.)
 //
 // Live position polling (SERVO_GET_STATUS) is intentionally skipped
 // today — the role's MotionProfile1D slews towards the commanded
@@ -23,7 +24,7 @@
 // loop the wire doesn't need.  Easy to layer in later.
 
 import { writable, get, type Writable } from 'svelte/store'
-import { ServoSetTarget, SetPortProfile } from '../../wailsjs/go/main/App'
+import { ServoSetTarget, SetPortProfile, ServoSetProfileLive } from '../../wailsjs/go/main/App'
 import { markHubDirty, type Port } from './devicemodel'
 import type { PortRefLike } from './components/port_keys'
 
@@ -116,10 +117,11 @@ export async function openServoCalibrationFor(
     })
     try {
         // Widen — so the jog buttons can travel the full range even if
-        // the operator's draft min/max are still narrow.  Push directly
-        // via SetPortProfile so the overlay also reflects it (cancelled
-        // on close).
-        await pushProfile(guid, portIdx, widenedFrom(origin))
+        // the operator's draft min/max are still narrow.  LIVE-ONLY push
+        // (role, not overlay): the envelope is session state and must
+        // never be persistable — an Apply or link drop mid-dialog used
+        // to write 800–2200/4000 into /hubfx.yaml as the servo's profile.
+        await pushProfileLive(guid, portIdx, widenedFrom(origin))
         // Park at the starting position so the operator's first jog
         // moves a known distance from a known point.
         await ServoSetTarget(guid, portIdx, startUs)
@@ -132,18 +134,29 @@ export async function openServoCalibrationFor(
 /** Cancel — restore the original profile + park at center.  The
  *  dialog closes regardless of whether the restore succeeded; a
  *  failure here just means the role is left at the widened envelope,
- *  which is unsafe-fast but functionally fine until the next reload. */
+ *  which is unsafe-fast but functionally fine until the next reload.
+ *  Live-only restore — the overlay never held the envelope, so there
+ *  is nothing to undo there. */
 export async function cancelServoCalibration(): Promise<void> {
     const s = get(openServoCalibration)
     if (!s) return
     try {
-        await pushProfile(s.guid, s.portIdx, s.origin)
+        await pushProfileLive(s.guid, s.portIdx, s.origin)
         await ServoSetTarget(s.guid, s.portIdx, s.origin.centerUs)
     } catch (e) {
         // Best-effort — log via the dialog's error banner before close.
         // eslint-disable-next-line no-console
         console.warn('servo calibration cancel restore failed', e)
     }
+    openServoCalibration.set(null)
+}
+
+/** Close the dialog WITHOUT any wire traffic — the disconnect path.
+ *  The link is gone, so the origin restore cannot be delivered; on
+ *  reconnect the role still runs the widened envelope until the next
+ *  calibrate/Apply, but the overlay (and thus /hubfx.yaml) was never
+ *  touched, so nothing persists. */
+export function closeServoCalibrationSilent(): void {
     openServoCalibration.set(null)
 }
 
@@ -175,23 +188,19 @@ export async function saveServoCalibration(): Promise<void> {
 
 // ─── Jog ──────────────────────────────────────────────────────────────
 
-/** Move the servo by `delta` µs from the current jog target.  If
- *  the new target would land outside the DRAFT's min/max range, the
- *  draft expands to include it — the operator's edge-finding gesture
- *  is the authoritative declaration of the limit.  Clamped to the
- *  CALIBRATION envelope so we never command outside the
- *  physically-safe range (300–2700 µs). */
+/** Move the servo by `delta` µs from the current jog target.  Clamped
+ *  to the CALIBRATION envelope so we never command outside the
+ *  physically-safe range.  Jogging NEVER touches the draft min/max —
+ *  exploring/sweeping is free; limits change only via the capture
+ *  buttons or the numeric fields (the old auto-expand silently saved
+ *  the sweep extents as the limits). */
 export async function jogServo(delta: number): Promise<void> {
     const s = get(openServoCalibration)
     if (!s || s.busy) return
     let next = s.currentUs + delta
     if (next < CAL_ENVELOPE.minUs) next = CAL_ENVELOPE.minUs
     if (next > CAL_ENVELOPE.maxUs) next = CAL_ENVELOPE.maxUs
-    // Auto-expand the draft min/max if the jog passes them.
-    const draft = { ...s.draft }
-    if (next < draft.minUs) draft.minUs = next
-    if (next > draft.maxUs) draft.maxUs = next
-    openServoCalibration.update(x => x ? { ...x, draft, currentUs: next } : x)
+    openServoCalibration.update(x => x ? { ...x, currentUs: next } : x)
     try {
         await ServoSetTarget(s.guid, s.portIdx, next)
     } catch (e) {
@@ -199,16 +208,13 @@ export async function jogServo(delta: number): Promise<void> {
     }
 }
 
-/** Jog directly to an absolute µs target (used by the slider + the
- *  "set as min" / "set as max" / "go to center" actions). */
+/** Jog directly to an absolute µs target (used by the slider).  Same
+ *  contract as jogServo: position only, never the draft limits. */
 export async function jogServoTo(targetUs: number): Promise<void> {
     const s = get(openServoCalibration)
     if (!s || s.busy) return
     const next = clamp(targetUs, CAL_ENVELOPE.minUs, CAL_ENVELOPE.maxUs)
-    const draft = { ...s.draft }
-    if (next < draft.minUs) draft.minUs = next
-    if (next > draft.maxUs) draft.maxUs = next
-    openServoCalibration.update(x => x ? { ...x, draft, currentUs: next } : x)
+    openServoCalibration.update(x => x ? { ...x, currentUs: next } : x)
     try {
         await ServoSetTarget(s.guid, s.portIdx, next)
     } catch (e) {
@@ -262,15 +268,12 @@ function clamp(v: number, lo: number, hi: number): number {
     return v < lo ? lo : v > hi ? hi : v
 }
 
-/** Internal — push a profile to a hub-local port directly via the
- *  SetPortProfile Wails surface (which also marks hub-config dirty).
- *  For calibration we WANT the dirty flag on Cancel too, because the
- *  cancel path restores ORIGIN — which itself differs from whatever
- *  was on the device before the operator started fiddling.  In
- *  practice ORIGIN === device-current at open, so the diff is zero
- *  and dirty stays at its prior value. */
-async function pushProfile(guid: string, portIdx: number, p: ServoProfileT): Promise<void> {
-    await SetPortProfile(guid, /*ServoKind=*/1, portIdx, p as any)
+/** Internal — TRANSIENT profile push (widen on open / origin restore on
+ *  cancel): goes to the ROLE only, never the overlay, never hub-dirty.
+ *  Only Save writes through SetPortProfile so /hubfx.yaml can only ever
+ *  receive an operator-confirmed profile. */
+async function pushProfileLive(guid: string, portIdx: number, p: ServoProfileT): Promise<void> {
+    await ServoSetProfileLive(guid, portIdx, p as any)
 }
 
 /** Format a profile as a one-line summary for the compact widget.

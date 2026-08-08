@@ -909,16 +909,14 @@
                             </div>
                         {/if}
                         {#if gch.strutServo?.kind}
-                            <div class="form-row">
-                                <span class="field-label">Deploy drives</span>
-                                <div class="seg-select">
-                                    <button class="seg" class:on={motorForward(gch)}
-                                            on:click={() => setMotorDirection(gch.id, true)} disabled={busy}
-                                            title="Deploy drives the pulse to the calibrated MAX end; retract to MIN.">Max end</button>
-                                    <button class="seg" class:on={!motorForward(gch)}
-                                            on:click={() => setMotorDirection(gch.id, false)} disabled={busy}
-                                            title="Deploy drives the pulse to the calibrated MIN end; retract to MAX.">Min end</button>
-                                </div>
+                            <!-- Direction lives SOLELY in the servo calibration's
+                                 ↔ Reversed flag (Rule 42 — the role owns the
+                                 mechanism).  The old per-gear "Deploy drives"
+                                 toggle COMPOUNDED with it (double reversal
+                                 cancels out), and in shared mode per-gear flags
+                                 on the one port were last-write-wins. -->
+                            <div class="form-row sub">
+                                <span class="hint">deploy = calibrated MAX end · retract = MIN — moves the wrong way? flip <b>↔ Reversed</b> in the port's <b>⚙ Calibrate</b> (IO tab).</span>
                             </div>
                             <div class="form-row">
                                 <span class="field-label">Travel time</span>

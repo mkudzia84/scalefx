@@ -351,6 +351,33 @@ func (a *App) SetPortProfile(guid string, kind, index byte, profile ServoMotionP
 	return a.deviceModelSnapshot()
 }
 
+// ServoSetProfileLive pushes a servo motion profile to the ROLE ONLY —
+// no overlay write, no hub-dirty flag.  This is the calibration dialog's
+// TRANSIENT path: the widened jog envelope on open and the origin restore
+// on cancel go through here, so the session-scoped envelope can never
+// leak into the studio overlay and from there into /hubfx.yaml (which is
+// exactly what happened when a link drop or an Apply landed while a
+// dialog was open — servos "lost" their calibration to 800–2200 µs).
+// Save still uses SetPortProfile (overlay + live push + Apply persists).
+func (a *App) ServoSetProfileLive(guid string, index byte, profile ServoMotionProfileDTO) error {
+	defer a.diag.Around("ServoSetProfileLive",
+		map[string]any{"guid": guid, "idx": index})()
+	c := a.snapshotClient()
+	if c == nil {
+		return fmt.Errorf("not connected")
+	}
+	cg, _ := a.canonGuid(guid)
+	return c.Role(cg).ServoSetProfile(index, client.ServoProfile{
+		MinUs:             profile.MinUs,
+		MaxUs:             profile.MaxUs,
+		MaxSpeedUsPerSec:  profile.MaxSpeedUsPerSec,
+		Reversed:          profile.Reversed,
+		CenterUs:          profile.CenterUs,
+		MaxAccelUsPerSec2: profile.MaxAccelUsPerSec2,
+		MaxJerkUsPerSec3:  profile.MaxJerkUsPerSec3,
+	})
+}
+
 // ServoSetTarget commands a servo to an absolute µs target on the
 // wire (SERVO_SET_TARGET, role-layer intent — the ServoActuatorRole
 // applies its motion profile to the slew).  Used by the calibration

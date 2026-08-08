@@ -486,6 +486,10 @@ export function SendCommand(arg1) {
   return window['go']['main']['App']['SendCommand'](arg1);
 }
 
+export function ServoSetProfileLive(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ServoSetProfileLive'](arg1, arg2, arg3);
+}
+
 export function ServoSetTarget(arg1, arg2, arg3) {
   return window['go']['main']['App']['ServoSetTarget'](arg1, arg2, arg3);
 }

@@ -7,7 +7,61 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
-## 2.45.0 — 2026-08-09 — customizable strut drive: integrated PWM retracts
+## 2.45.1 — 2026-08-08 — servo calibration integrity: envelope leak, auto-expand, double reversal
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.45.1 | ESP32-S3 | `hubfx-v2.45.1` |
+
+PATCH: bug fixes to the servo calibration flow + the day-old servo strut
+modes. No wire changes; Studio + HubFX flash recommended together.
+
+Root-caused from a live bench session log ("calibration doesn't stick /
+servos get mismatched"): every wire command was provably addressed to the
+right `(guid, idx)` — the corruption came from three flow bugs stacking.
+
+### Bug Fixes
+
+- **Studio: the calibration widen-envelope can no longer persist.** Opening
+  the Calibrate popup pushes a wide fast-slew envelope (800–2200 µs, 4000 µs/s)
+  so jogging can reach the end-stops. It used to go through `SetPortProfile`,
+  which ALSO wrote the Studio overlay — so an **Apply or a link drop while a
+  dialog was open silently saved the envelope to `/hubfx.yaml`** as that
+  servo's profile. The widen (and Cancel's origin restore) now use a new
+  live-only push (`ServoSetProfileLive` — role only, no overlay, no dirty
+  flag); only Save can put a profile where Apply persists it.
+- **Studio: jogging no longer auto-expands the draft limits.** Sweeping the
+  range to explore a mechanism (mandatory for a black-box integrated
+  retract) used to silently drag min/max to the sweep extents — Save then
+  committed 800–2200 instead of the operator's limits (bench log showed a
+  strut controller saved at exactly the envelope, twice). Limits now change
+  ONLY via ⤓/⤒ Set-as-min/max or the numeric fields.
+- **Gear (servo strut modes): direction now lives SOLELY in the servo
+  profile's `reversed`.** The per-gear `reverse:` flag (the "Deploy drives
+  Min/Max end" toggle) COMPOUNDED with the profile flag — both set cancels
+  out, one set in the "wrong" layer inverts a freshly-calibrated servo; in
+  `servo_shared` mode per-gear flags on the ONE shared port were
+  last-write-wins. The firmware ignores `reverse:` for servo-driven struts
+  (hbridge keeps it) and the toggle is gone from the servo-mode UI — same
+  single-source rule as doors and landing lights (Rule 42).
+- **Studio: an unexpected disconnect closes an open calibration dialog**
+  (its Cancel needs the wire; the session cannot survive the link).
+- **HubFX: `/hubfx.yaml` port slots are zeroed before each parse.** The
+  config data is re-populated in place on every reload and the profile
+  parser's field defaults read the current slot — a stale occupant from a
+  prior load with a different port order could donate its profile/ESC
+  fields to whatever port parses into that slot now. Never observed on the
+  wire, but it is exactly the "profiles jump between servos" failure mode;
+  closed as hardening.
+
+### Internal
+
+- Calibration dialog + parameter-reference / FAQ / assistant-context copy
+  updated to the new capture-only limit model (Rule 64).
+
+---
+
+## 2.45.0 — 2026-08-08 — customizable strut drive: integrated PWM retracts
 
 | Component | Version | Platform | Tag |
 |-----------|---------|----------|-----|

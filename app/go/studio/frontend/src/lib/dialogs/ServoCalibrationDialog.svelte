@@ -12,12 +12,12 @@
           across the full physical range without being clamped by
           the operator's prior min/max.  Parks at the current draft
           center.
-       2. Jog (+/- buttons OR slider) — sends SERVO_SET_TARGET.  If
-          the new target lands past the DRAFT min/max, the draft
-          expands; the operator's edge-finding gesture IS the limit
-          declaration.
+       2. Jog (+/- buttons OR slider) — sends SERVO_SET_TARGET.
+          Jogging never changes the draft limits — sweeping the range
+          to explore a mechanism is free.
        3. ⤓ Set as min / ⤒ Set as max / ◼ Set as center — capture
           the current jog target into the corresponding draft field.
+          These (plus the numeric inputs) are the ONLY limit writers.
        4. Edit speed / accel / jerk / reversed inline (no wire push;
           batched at Save).
        5. Save — pushes the draft via SetPortProfile (live to role +
@@ -155,7 +155,7 @@
                 <!-- ─── Limits & motion profile ─────────────────── -->
                 <div class="section-head">
                     Limits &amp; motion profile
-                    <span class="hint">jogging past min/max auto-expands them — these inputs are for fine numeric tweaks</span>
+                    <span class="hint">jog to the end-stop, then ⤓/⤒ capture it — jogging alone never changes the limits</span>
                 </div>
 
                 <div class="form-grid cols-3">
@@ -204,7 +204,7 @@
                                on:change={(e) => setDraftField('reversed', checkValue(e))} />
                         ↔ Reversed (mirror around center)
                     </label>
-                    <span class="hint">"open" maps to {state.draft.reversed ? 'min' : 'max'} µs after Save</span>
+                    <span class="hint">open / deploy drives the {state.draft.reversed ? 'MIN' : 'MAX'} µs end after Save — flip this if the mechanism moves the wrong way</span>
                 </div>
 
                 {#if rangeError}

@@ -312,7 +312,12 @@ gears:
   - id: 0
     name: nose
     motor: { kind: hbridge, idx: 0 }       # guid omitted = hub-local; expander → guid:"3225"
-    reverse: false                         # deploy runs the H-bridge reversed
+    reverse: false                         # deploy runs the H-bridge reversed.  HBRIDGE-ONLY
+                                           # (2.45.1): servo-driven struts take direction from
+                                           # the servo profile's `reversed` alone — honouring
+                                           # both COMPOUNDED (double reversal cancels), and in
+                                           # servo_shared per-gear flags on the one port were
+                                           # last-write-wins.
     motor_voltage_mv: 6000                 # motor DRIVE voltage — full-scale seek capped
                                            # to this on any pack (2.44.0; raw duties RETIRED)
     timeout_ms: 20000

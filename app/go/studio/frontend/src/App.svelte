@@ -9,6 +9,7 @@
     import FileManagerDialog from './lib/dialogs/FileManagerDialog.svelte'
     import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
     import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
+    import { closeServoCalibrationSilent } from './lib/servo_calibration'
     import MotorCalibrationDialog from './lib/dialogs/MotorCalibrationDialog.svelte'
     import ConfigWizard from './lib/dialogs/ConfigWizard.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
@@ -138,6 +139,10 @@
                 $boardState = 'disconnected'
                 $connectPopupOpen = true
                 $activeTab = 0
+                // A calibration session cannot survive the link: its cancel
+                // path needs the wire (origin restore).  Close it silently —
+                // the widened envelope was live-only, nothing persists.
+                closeServoCalibrationSilent()
                 resetDeviceModel()
             }
         })

@@ -22,9 +22,11 @@ for LEDs (and the smoke heater/fan), motor ports for gear legs. The wizard only
 offers compatible free ports and sets them up for you.
 
 **Q: My gear deploys the wrong way / stops short.**
-Flip the deploy *direction* in the gear leg settings, and make sure the servo and
-travel are calibrated. If the travel *timeout* is too short, the leg stops before
-it reaches the end.
+For an H-bridge motor leg, flip the deploy *direction* in the gear leg settings.
+For a servo-driven strut (integrated retract) or a door, direction lives in the
+servo itself: open **Calibrate Servo** for that channel and flip **↔ Reversed**.
+If the travel *timeout* (or servo *travel time*) is too short, the leg stops
+before it reaches the end.
 
 **Q: Can I use off-the-shelf / integrated retracts instead of the ScaleFX motor driver?**
 Yes. Set **Strut drive** on the gear tab: `Servo per strut` gives every strut
