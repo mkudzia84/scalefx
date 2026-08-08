@@ -269,8 +269,9 @@ gears:
     name: left_main
     motor: { kind: hbridge, idx: 0, guid: GC01 }
     leds: []
-    deploy_duty:   20000
-    retract_duty: -20000
+    reverse: false           # deploy runs the H-bridge reversed
+    motor_voltage_mv: 6000   # motor DRIVE voltage (voltage-first, 2.44.0 —
+                             # raw deploy_duty/retract_duty RETIRED)
     timeout_ms:   4000
   # ...
 

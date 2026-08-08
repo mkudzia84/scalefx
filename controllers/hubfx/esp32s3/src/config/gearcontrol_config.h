@@ -31,12 +31,14 @@
  *     - id: 0
  *       name: nose
  *       motor: { guid: "AB12", kind: hbridge, idx: 0 }
- *       deploy_duty:  20000      # signed H-bridge duty for "going down"
- *       retract_duty: -20000     # signed duty for "going up"
+ *       reverse: false           # deploy runs the H-bridge reversed
  *       timeout_ms:   30000      # full-travel watchdog
- *       motor_voltage_mv: 6000   # motor rated voltage — duty capped at
- *                                # maxDuty × this / rail_mV (0 = no cap;
- *                                # absent = 6000)
+ *       motor_voltage_mv: 6000   # motor DRIVE voltage — the strut seeks
+ *                                # full-scale and the role cap delivers
+ *                                # exactly this at the motor on any pack
+ *                                # (absent = 6000; floor 1000).  The raw
+ *                                # deploy_duty/retract_duty keys are
+ *                                # RETIRED (2.44.0) and ignored.
  *       doors:                   # ≤2 ServoActuator door servos
  *         - { port: { kind: servo, idx: 0 }, open: 10000, close: 0 }
  *         - { port: { kind: servo, idx: 1 }, open: 10000, close: 0 }
@@ -183,13 +185,20 @@ struct GearControlConfigSchema {
                 continue;
             }
 
-            def.deployDuty  = (int16_t) g->template childAs<int32_t>("deploy_duty",   20000);
-            def.retractDuty = (int16_t) g->template childAs<int32_t>("retract_duty", -20000);
-            def.timeoutMs   = (uint32_t)g->template childAs<int32_t>("timeout_ms",    30000);
-            // Motor rated voltage — the role caps |duty| at maxDuty × this /
-            // rail_mV so a 6 V gear motor survives a 2S/6S pack.  Explicit
-            // `motor_voltage_mv: 0` disables the cap (drive at raw duty).
-            def.motorVoltageMv = (uint16_t)g->template childAs<int32_t>("motor_voltage_mv", 6000);
+            def.reverse   = g->template childAs<bool>("reverse", false);
+            def.timeoutMs = (uint32_t)g->template childAs<int32_t>("timeout_ms", 30000);
+            // Motor DRIVE voltage — the strut seeks at full scale and the
+            // role's cap delivers exactly this average at the motor on any
+            // pack (sag-compensated).  The legacy raw deploy_duty /
+            // retract_duty keys are RETIRED (2.44.0) and ignored.  Floor at
+            // 1 V: 0 would mean "no cap" = full pack voltage into the motor.
+            int32_t mv = g->template childAs<int32_t>("motor_voltage_mv", 6000);
+            if (mv < 1000) {
+                SFX_LOG_WARN("[gearcontrol-config] gears[%d]: motor_voltage_mv=%d "
+                             "below the 1 V floor — using 6000", i, (int)mv);
+                mv = 6000;
+            }
+            def.motorVoltageMv = (uint16_t)mv;
 
             // guard: { mode, ratio_x100, sample_ms, window_ms, threshold_ma,
             //   ceiling_ma } — persisted stall-guard calibration (Studio's

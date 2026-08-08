@@ -184,9 +184,7 @@ export function buildAssistantContext(): string {
         fx.push(`Retractable gear: ON — ${head.join('; ')}.`)
         for (const g of gear.gears) {
             const lp: string[] = []
-            const mvTag = g.motorVoltageMv === 0 ? ', voltage cap off'
-                : g.motorVoltageMv ? `, motor rated \`${(g.motorVoltageMv / 1000).toFixed(1)}V\` (duty capped vs rail)` : ''
-            lp.push(`motor \`${refName(g.motor, pidx)}\` (deploy duty \`${g.deployDuty}\`, retract duty \`${g.retractDuty}\`, timeout \`${g.timeoutMs}ms\`${mvTag})`)
+            lp.push(`motor \`${refName(g.motor, pidx)}\` (drive \`${((g.motorVoltageMv || 6000) / 1000).toFixed(1)}V\` voltage-first, direction \`${g.reverse ? 'reversed' : 'forward'}\`, timeout \`${g.timeoutMs}ms\`)`)
             const gd = g.guard || {}
             lp.push(`stall guard \`${gd.mode}\` (ratio \`${(gd.ratioX100 / 100).toFixed(2)}×\`, threshold \`${gd.thresholdMa}mA\`${gd.ceilingMa ? `, ceiling \`${gd.ceilingMa}mA\`` : ''})`)
             if (g.doors && g.doors.length) {

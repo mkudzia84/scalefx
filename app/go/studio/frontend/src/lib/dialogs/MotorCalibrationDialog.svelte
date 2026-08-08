@@ -11,9 +11,10 @@
        3. STALL GUARD — LiveRatio (auto-baseline, recommended) or Fixed (mA
           threshold) that decides when the motor has hit the endstop.
 
-     Save to strut writes the working duty (deploy +, retract −) and the
-     suggested travel timeout (full-stroke travel × 1.5) back into the gear
-     channel draft; the stall guard is a live push only (not a YAML field). -->
+     Save to strut writes the motor drive voltage and the suggested travel
+     timeout (full-stroke travel × 1.5) back into the gear channel draft;
+     every move here (sweep / to-end / jog) requests full scale and the
+     role's cap delivers exactly Motor V at the motor — like a real deploy. -->
 <script lang="ts">
     import { onDestroy } from 'svelte'
     import {
@@ -87,25 +88,19 @@
                 </div>
 
                 <!-- ─── Drive ───────────────────────────────────────── -->
-                <div class="section-head">Drive<span class="hint">port-native duty (same scale as the strut's deploy duty)</span></div>
-                <div class="form-grid cols-3">
+                <div class="section-head">Drive<span class="hint">every move runs at the motor voltage — on any pack, sag-compensated</span></div>
+                <div class="form-grid cols-2">
                     <div class="form-field">
-                        <span class="field-label" title="Seek / jog duty magnitude (port-native, 0..32767)">Duty</span>
-                        <input class="field-input narrow" type="number" min="0" max="32767" step="500"
-                               value={state.duty} disabled={state.busy}
-                               on:change={(e) => setMotorField('duty', Math.round(numValue(e)))} />
+                        <span class="field-label" title="The voltage every move delivers at the motor (average, via PWM against the live supply rail). Set it to what the mechanism was tuned for — e.g. 6 V retracts happily run at 9 V. Change + Apply guard to push live.">Motor V</span>
+                        <input class="field-input narrow" type="number" min="1" max="48" step="0.5"
+                               value={state.motorVoltageMv / 1000} disabled={state.busy}
+                               on:change={(e) => setMotorField('motorVoltageMv', Math.max(1000, Math.round(numValue(e) * 1000)))} />
                     </div>
                     <div class="form-field">
                         <span class="field-label" title="Per-leg seek timeout — the seek aborts to TIMEOUT after this">Timeout (s)</span>
                         <input class="field-input narrow" type="number" min="1" max="60" step="1"
                                value={state.timeoutS} disabled={state.busy}
                                on:change={(e) => setMotorField('timeoutS', Math.round(numValue(e)))} />
-                    </div>
-                    <div class="form-field">
-                        <span class="field-label" title="Motor rated voltage — caps the effective duty at maxDuty × this / supply rail (live per-motor voltage sense when wired), so a 6 V motor survives a 2S–6S pack. 0 = no cap (raw duty).">Motor V</span>
-                        <input class="field-input narrow" type="number" min="0" max="48" step="0.5"
-                               value={state.motorVoltageMv / 1000} disabled={state.busy}
-                               on:change={(e) => setMotorField('motorVoltageMv', Math.max(0, Math.round(numValue(e) * 1000)))} />
                     </div>
                 </div>
 
@@ -199,12 +194,12 @@
 
             <div class="modal-footer">
                 <span class="commit-hint">
-                    Save writes deploy +{Math.abs(state.duty)} / retract −{Math.abs(state.duty)} duty{suggested > 0 ? ` · timeout ${suggested} ms` : ''} to the strut
+                    Save writes drive {(state.motorVoltageMv / 1000).toFixed(1)} V{suggested > 0 ? ` · timeout ${suggested} ms` : ''} + guard to the strut
                 </span>
                 <button class="small" on:click={closeMotorCalibration} disabled={state.busy}
                         title="Brake the motor and close without changing the strut">Close</button>
                 <button class="small primary" on:click={saveMotorToStrut} disabled={state.busy}
-                        title="Apply the working duty + travel timeout to the strut (persisted on Apply)">Save to strut</button>
+                        title="Apply the drive voltage + travel timeout + stall guard to the strut (persisted on Apply)">Save to strut</button>
             </div>
         </div>
     </div>

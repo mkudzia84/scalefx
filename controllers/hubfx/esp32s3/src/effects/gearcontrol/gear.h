@@ -62,10 +62,12 @@ struct GearDef {
     char     name[16]      = {};
     PortRef  motor;                            ///< must have BiDcMotor role
 
-    // Motor speed when running (-32767..32767 signed duty).  Negative
-    // values reverse the H-bridge polarity at runtime.
-    int16_t  deployDuty    = +20000;            ///< signed duty for "going down"
-    int16_t  retractDuty   = -20000;            ///< signed duty for "going up"
+    // Drive model (2.44.0): the strut commands FULL-SCALE duty and the
+    // BiDcMotor role's voltage cap turns that into exactly motorVoltageMv
+    // average at the motor — on any pack, battery-sag compensated.  The
+    // raw per-strut duty numbers are GONE (they silently re-meant
+    // themselves on every pack change; the 2026-08-07 6S bench stall).
+    bool     reverse       = false;             ///< deploy runs the H-bridge reversed
     uint32_t timeoutMs     = 30000;             ///< full-travel timeout
 
     // ── Stall guard (persisted calibration; pushed to the motor before each
@@ -78,8 +80,11 @@ struct GearDef {
     uint16_t guardWindowMs   = 80;      ///< sustained-over-threshold confirm window
     uint16_t guardThresholdMa = 1000;   ///< Fixed: |I| trip threshold (mA)
     uint16_t guardCeilingMa  = 0;       ///< absolute over-current ceiling (0 = none)
-    uint16_t motorVoltageMv  = 6000;    ///< motor rated voltage — the role CAPS |duty|
-                                        ///< at maxDuty × this / rail_mV (0 = cap off)
+    uint16_t motorVoltageMv  = 6000;    ///< motor DRIVE voltage — the role caps the
+                                        ///< full-scale seek at maxDuty × this / rail_mV,
+                                        ///< so this IS the motor's drive level.  Never 0
+                                        ///< (full-scale would hit raw pack voltage) —
+                                        ///< the config parser enforces a floor.
 
     // ── Door sequencing (instructions/29) ────────────────────────────
     DoorDef  doors[2]      = {};
@@ -247,7 +252,11 @@ private:
         return (_target == Target::Down) ? GearPhase::MovingDown : GearPhase::MovingUp;
     }
     int16_t seekDuty() const {
-        return (_target == Target::Down) ? _def.deployDuty : _def.retractDuty;
+        // Full-scale request; the role's voltage cap clamps it to the
+        // strut's drive voltage (Rule 42 — intent here, mechanism there).
+        constexpr int16_t kFullScale = 32767;
+        const bool forward = (_target == Target::Down) != _def.reverse;
+        return forward ? kFullScale : (int16_t)-kFullScale;
     }
 
     GearDef       _def{};

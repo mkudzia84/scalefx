@@ -305,8 +305,9 @@ gears:
   - id: 0
     name: nose
     motor: { kind: hbridge, idx: 0 }       # guid omitted = hub-local; expander → guid:"3225"
-    deploy_duty: 600
-    retract_duty: -600
+    reverse: false                         # deploy runs the H-bridge reversed
+    motor_voltage_mv: 6000                 # motor DRIVE voltage — full-scale seek capped
+                                           # to this on any pack (2.44.0; raw duties RETIRED)
     timeout_ms: 20000
     doors:
       - { port: { kind: servo, idx: 0 }, open: 10000, close: 0 }

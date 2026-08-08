@@ -56,15 +56,16 @@ type GearGuardDTO struct {
 // firmware DoorMode enum (sync | delay | sequence | single | none);
 // close_policy onto ClosePolicy (both | first | none).
 type GearChannelDTO struct {
-	ID          uint8         `yaml:"id"                       json:"id"`
-	Name        string        `yaml:"name,omitempty"           json:"name"`
-	Motor       PortRefDTO    `yaml:"motor"                    json:"motor"`
-	DeployDuty  int16         `yaml:"deploy_duty"              json:"deployDuty"`
-	RetractDuty int16         `yaml:"retract_duty"             json:"retractDuty"`
-	TimeoutMs   uint32        `yaml:"timeout_ms"               json:"timeoutMs"`
-	// Motor rated voltage — the role caps |duty| at maxDuty × this / rail_mV.
-	// Pointer: absent key = firmware default (6000 mV); explicit 0 = cap off.
-	MotorVoltageMv *uint16 `yaml:"motor_voltage_mv,omitempty" json:"motorVoltageMv,omitempty"`
+	ID      uint8      `yaml:"id"             json:"id"`
+	Name    string     `yaml:"name,omitempty" json:"name"`
+	Motor   PortRefDTO `yaml:"motor"          json:"motor"`
+	// Voltage-first drive (2.44.0): deploy/retract seek at full scale and
+	// the motor role's cap delivers exactly MotorVoltageMv at the motor on
+	// any pack.  Reverse flips the deploy direction.  The raw
+	// deploy_duty/retract_duty keys are RETIRED and never written.
+	Reverse        bool   `yaml:"reverse"          json:"reverse"`
+	TimeoutMs      uint32 `yaml:"timeout_ms"       json:"timeoutMs"`
+	MotorVoltageMv uint16 `yaml:"motor_voltage_mv" json:"motorVoltageMv"`
 	Guard       *GearGuardDTO `yaml:"guard,omitempty"          json:"guard,omitempty"` // persisted stall guard (append-only)
 	Doors       []GearDoorDTO `yaml:"doors,omitempty"          json:"doors"`
 	DoorMode    string        `yaml:"door_mode"                json:"doorMode"`     // sync | delay | sequence

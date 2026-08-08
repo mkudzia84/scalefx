@@ -1650,10 +1650,9 @@ export namespace main {
 	    id: number;
 	    name: string;
 	    motor: PortRefDTO;
-	    deployDuty: number;
-	    retractDuty: number;
+	    reverse: boolean;
 	    timeoutMs: number;
-	    motorVoltageMv?: number;
+	    motorVoltageMv: number;
 	    guard?: GearGuardDTO;
 	    doors: GearDoorDTO[];
 	    doorMode: string;
@@ -1669,8 +1668,7 @@ export namespace main {
 	        this.id = source["id"];
 	        this.name = source["name"];
 	        this.motor = this.convertValues(source["motor"], PortRefDTO);
-	        this.deployDuty = source["deployDuty"];
-	        this.retractDuty = source["retractDuty"];
+	        this.reverse = source["reverse"];
 	        this.timeoutMs = source["timeoutMs"];
 	        this.motorVoltageMv = source["motorVoltageMv"];
 	        this.guard = this.convertValues(source["guard"], GearGuardDTO);

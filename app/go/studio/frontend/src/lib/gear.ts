@@ -57,11 +57,13 @@ export interface GearChannelT {
     id: number
     name: string
     motor: PortRefT
-    deployDuty: number
-    retractDuty: number
+    /** Deploy runs the H-bridge reversed (voltage-first drive, 2.44.0 —
+     *  the strut seeks full-scale; direction is this flag). */
+    reverse: boolean
     timeoutMs: number
-    /** Motor rated voltage — firmware caps |duty| at maxDuty × this / rail_mV
-     *  (live per-motor vSense, else declared rail).  0 = cap off. */
+    /** Motor DRIVE voltage — firmware delivers exactly this average at the
+     *  motor on any pack (full-scale seek clamped by the role's cap, live
+     *  per-motor vSense).  Never 0; firmware floors at 1000 mV. */
     motorVoltageMv: number
     guard: GearGuardT
     doors: GearDoorT[]
@@ -151,8 +153,7 @@ export function defaultGearChannel(id: number): GearChannelT {
         id,
         name: `gear${id}`,
         motor: emptyPort('hbridge'),
-        deployDuty: 20000,
-        retractDuty: -20000,
+        reverse: false,
         timeoutMs: 30000,
         motorVoltageMv: 6000,
         guard: defaultGearGuard(),
@@ -348,12 +349,10 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         id:          g.id ?? 0,
         name:        g.name ?? '',
         motor:       g.motor ?? emptyPort('hbridge'),
-        deployDuty:  g.deployDuty ?? 20000,
-        retractDuty: g.retractDuty ?? -20000,
+        reverse:     g.reverse ?? false,
         timeoutMs:   g.timeoutMs ?? 30000,
-        // Absent key (pre-cap file / backend omitempty) = firmware default
-        // 6000 mV; explicit 0 = cap off and survives the round-trip.
-        motorVoltageMv: g.motorVoltageMv ?? 6000,
+        // 0/absent = pre-2.44 file — firmware floors at 1 V, mirror its 6 V default.
+        motorVoltageMv: g.motorVoltageMv || 6000,
         guard:       g.guard ? {
             mode:        g.guard.mode === 'fixed' ? 'fixed' : 'live',
             ratioX100:   g.guard.ratioX100 ?? 250,

@@ -19,12 +19,9 @@
     const numValue = (e: Event) => Number((e.target as HTMLInputElement).value)
     const strVal   = (e: Event) => (e.target as HTMLInputElement).value
     const boolValue = (e: Event) => (e.target as HTMLInputElement).checked
-    const fwd = (g: GearChannelT) => (g.deployDuty ?? 0) >= 0
+    const fwd = (g: GearChannelT) => !g.reverse
     function setDir(id: number, forward: boolean) {
-        updateGearChannel(id, g => {
-            const d = Math.abs(g.deployDuty) || 20000, r = Math.abs(g.retractDuty) || d
-            return { ...g, deployDuty: forward ? d : -d, retractDuty: forward ? -r : r }
-        })
+        updateGearChannel(id, g => ({ ...g, reverse: !forward }))
     }
 </script>
 

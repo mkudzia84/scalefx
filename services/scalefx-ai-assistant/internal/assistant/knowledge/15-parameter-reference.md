@@ -233,13 +233,12 @@ and tune the stall guard.
 | Control | What it does | Default |
 |---|---|---|
 | Live status (~2 Hz) | Shows duty, voltage, **current (mA)** (the stall-current anchor), position, stall state, and the active voltage cap (V-cap) while you drive. | — |
-| Duty | The seek/jog drive magnitude (port-native, 0…32767). | from the dialog |
+| Motor V | The motor DRIVE voltage — every move (deploy, retract, calibration sweep, jog) delivers exactly this average at the motor, on any pack, battery-sag compensated (the firmware drives full-scale PWM capped against the live per-motor supply reading). Set it to what the mechanism was tuned for — e.g. nominal-6 V retracts often run at 9 V deliberately. Minimum 1 V (there is no "raw duty" mode any more). Saved to the strut as `motor_voltage_mv`. | `6 V` |
 | Timeout (s) | Per-leg seek timeout; the seek aborts to TIMEOUT after this. | `30s` |
-| Motor V | The motor's RATED voltage. Firmware caps the effective duty at maxDuty × rated / supply-rail volts (using the live per-motor voltage sensor when wired, else the declared port rail) — so a 6 V gear motor survives a 2S–6S pack. `0` = no cap (raw duty). Saved to the strut as `motor_voltage_mv`. | `6 V` |
 | Calibrate (A→B sweep) | Drives to end A then end B, measuring each leg's travel-time and peak current; the full-stroke time auto-suggests the strut's travel timeout (≈ stroke × 1.5). | — |
 | To End A / To End B | Drive to one endstop (+duty / −duty) until stall or timeout. | — |
 | Stop / Manual jog | Stop hard-brakes (always available); Manual jog drives raw while held (no stall guard). | — |
-| Save to strut | Applies the working duty + travel timeout to the strut (persisted on the next Apply). | — |
+| Save to strut | Applies the drive voltage + travel timeout + stall guard to the strut (persisted on the next Apply). | — |
 
 **Stall guard** (tune here; "Apply guard" pushes it live):
 | Control | What it does | Default |

@@ -420,16 +420,12 @@
         updateGearChannel(id, g => ({ ...g, motor: port }))
     }
     // Deploy DIRECTION — which way the H-bridge drives to LOWER the gear.
-    // The firmware contract stays signed deploy/retract duties; the toggle
-    // only flips their SIGN, preserving each magnitude (the working duty is
-    // tuned in Calibrate).  forward = deploy positive / retract negative.
-    function motorForward(g: GearChannelT): boolean { return (g.deployDuty ?? 0) >= 0 }
+    // Voltage-first (2.44.0): the strut always seeks full-scale and the
+    // role cap sets the drive level, so direction is just the `reverse`
+    // flag.  forward = deploy drives the bridge positive.
+    function motorForward(g: GearChannelT): boolean { return !g.reverse }
     function setMotorDirection(id: number, forward: boolean) {
-        updateGearChannel(id, g => {
-            const dMag = Math.abs(g.deployDuty) || 20000
-            const rMag = Math.abs(g.retractDuty) || dMag
-            return { ...g, deployDuty: forward ? dMag : -dMag, retractDuty: forward ? -rMag : rMag }
-        })
+        updateGearChannel(id, g => ({ ...g, reverse: !forward }))
     }
     function setDoorPort(id: number, idx: number, port: PortRefT) {
         updateGearChannel(id, g => ({ ...g, doors: g.doors.map((d, i) => i === idx ? { ...d, port } : d) }))
@@ -470,20 +466,18 @@
     }
 
     /** Open the motor calibration popup for a strut; Save there commits the
-     *  working duty + suggested travel timeout back into the channel draft. */
+     *  drive voltage + suggested travel timeout back into the channel draft. */
     function openMotorCal(gch: GearChannelT) {
         if (!gch.motor || !gch.motor.kind) return
         openMotorCalibrationFor({
             guid: gch.motor.guid,
             portIdx: gch.motor.idx,
             label: labelForPort(gch.motor) || `Motor idx ${gch.motor.idx}`,
-            deployDuty: gch.deployDuty,
-            retractDuty: gch.retractDuty,
             timeoutMs: gch.timeoutMs,
             motorVoltageMv: gch.motorVoltageMv,
             guard: gch.guard,    // seed the dialog from the strut's saved guard
-            onCommit: ({ deployDuty, retractDuty, timeoutMs, motorVoltageMv, guard }) => {
-                updateGearChannel(gch.id, g => ({ ...g, deployDuty, retractDuty, timeoutMs, motorVoltageMv, guard }))
+            onCommit: ({ timeoutMs, motorVoltageMv, guard }) => {
+                updateGearChannel(gch.id, g => ({ ...g, timeoutMs, motorVoltageMv, guard }))
             },
         }).catch(e => { error = String(e) })
     }
@@ -842,7 +836,7 @@
                                        on:change={(e) => setField(gch.id, 'timeoutMs', Math.max(0, Math.round(numValue(e))))}
                                        disabled={busy} title="Full-travel watchdog (ms) — the endstop seek aborts to ERROR after this. 0 = seek until stall." />
                                 <span class="unit">ms</span>
-                                <span class="hint compact">flip direction if deploy/retract are swapped; tune the duty in Calibrate.</span>
+                                <span class="hint compact">flip direction if deploy/retract are swapped; set the motor drive voltage in Calibrate.</span>
                             </div>
                             <!-- Motor summary + Calibrate popup + LIVE readout
                                  (current mA / duty / position / stall) — Rule 44
@@ -851,8 +845,8 @@
                             <div class="form-row motor-widget-row">
                                 <MotorWidget
                                     hasMotor={true}
-                                    deployDuty={gch.deployDuty}
-                                    retractDuty={gch.retractDuty}
+                                    motorVoltageMv={gch.motorVoltageMv}
+                                    reverse={gch.reverse}
                                     timeoutMs={gch.timeoutMs}
                                     live={mLive}
                                     busy={busy}

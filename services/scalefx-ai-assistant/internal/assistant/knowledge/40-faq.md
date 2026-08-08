@@ -27,12 +27,13 @@ travel are calibrated. If the travel *timeout* is too short, the leg stops befor
 it reaches the end.
 
 **Q: My gear motor is rated 6 V but the model runs a bigger pack — will it burn out?**
-No — set **Motor V** (the motor's rated voltage) in the strut's **Calibrate
-motor…** window. The firmware then caps the motor's effective drive at
-rated ÷ supply volts, using the live per-motor voltage reading when the board
-has one, so the motor never sees more than its rated average voltage even on a
-6S pack. The default is 6 V; set it to `0` only if you really want raw,
-uncapped drive.
+No — the gear drive is voltage-first: each strut declares its **Motor V**
+(drive voltage, set in the **Calibrate motor…** window) and the firmware
+delivers exactly that average at the motor on ANY pack, using the live
+per-motor voltage reading — it even compensates as the battery sags during
+flight. Set it to the voltage the mechanism was actually tuned for (e.g.
+nominal-6 V retracts are often happily driven at 9 V). Default 6 V, minimum
+1 V; there are no raw duty numbers to tune any more.
 
 **Q: Can I open/close the gear doors or move the strut by hand during setup?**
 Yes. Each strut card has a **Manual / maintenance** section with Open/Close doors

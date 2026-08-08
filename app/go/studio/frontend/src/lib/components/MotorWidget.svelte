@@ -3,7 +3,7 @@
      strut motor card.  The H-bridge analogue of ServoWidget.
 
      Layout:
-       [ deploy/retract duty · timeout summary ]      [ ⚙ Calibrate motor… ]
+       [ drive V · direction · timeout summary ]      [ ⚙ Calibrate motor… ]
        [ live:  <I> mA · duty <d> · <pos> · <stall> ]   (when a live sample exists)
 
      The mA is the headline — it's the operator's stall-current readout
@@ -16,8 +16,8 @@
     /** Whether the strut has a resolved BiDcMotor port (else the buttons
      *  disable + the widget shows a placeholder). */
     export let hasMotor: boolean = false
-    export let deployDuty: number = 0
-    export let retractDuty: number = 0
+    export let motorVoltageMv: number = 6000
+    export let reverse: boolean = false
     export let timeoutMs: number = 0
     /** Latest live sample for this motor (from the motorStatus store) or null. */
     export let live: MotorLive | null = null
@@ -26,7 +26,7 @@
      *  openMotorCalibrationFor(...) with the strut's onCommit. */
     export let onCalibrate: () => void = () => {}
 
-    $: summary = `deploy ${deployDuty} · retract ${retractDuty} · timeout ${timeoutMs} ms`
+    $: summary = `drive ${(motorVoltageMv / 1000).toFixed(1)} V · ${reverse ? 'reversed' : 'forward'} · timeout ${timeoutMs} ms`
     // Stale after ~2 s with no fresh sample (poll cadence is ~0.7–2 Hz).
     $: stale = !live || (Date.now() - live.ts) > 2500
 </script>

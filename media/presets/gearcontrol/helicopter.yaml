@@ -19,16 +19,14 @@
 # Motor idx maps to the expander's H-bridge ports:
 #   hbridge idx 0/1/2 → motors on GP15/16, 17/18, 19/20
 #
-# deploy_duty / retract_duty are SIGNED H-bridge duties; the sign sets
-# polarity (down vs up).  timeout_ms is the full-travel watchdog — the
-# motor runs until the INA226 reports a stall (mechanical endpoint) or
-# this elapses (→ ERROR).
-#
-# motor_voltage_mv is the motor's RATED voltage: the BiDcMotor role caps
-# the effective |duty| at maxDuty × motor_voltage_mv / rail_mV (live
-# per-motor INA226 voltage when present, else the declared port rail) so
-# a 6 V gear motor survives a 2S–6S pack.  Absent = 6000; explicit 0 =
-# no cap (raw duty).
+# Voltage-first drive (2.44.0): each strut declares its motor DRIVE
+# voltage (motor_voltage_mv) — the firmware seeks at full scale and the
+# BiDcMotor role's cap delivers exactly that average at the motor on ANY
+# pack (live per-motor INA226 rail, battery-sag compensated).  `reverse`
+# flips the deploy direction.  The old raw deploy_duty / retract_duty
+# keys are RETIRED and ignored.  timeout_ms is the full-travel watchdog —
+# the motor runs until the INA226 reports a stall (mechanical endpoint)
+# or this elapses (→ ERROR).
 
 schema_version: 1
 enabled: true
@@ -37,23 +35,20 @@ gears:
   - id: 0
     name: nose
     motor: { board: gear1, kind: hbridge, idx: 0 }
-    deploy_duty:   20000
-    retract_duty: -20000
-    timeout_ms:    4000
+    reverse: false
+    timeout_ms: 4000
     motor_voltage_mv: 6000
 
   - id: 1
     name: left_main
     motor: { board: gear1, kind: hbridge, idx: 1 }
-    deploy_duty:   20000
-    retract_duty: -20000
-    timeout_ms:    4000
+    reverse: false
+    timeout_ms: 4000
     motor_voltage_mv: 6000
 
   - id: 2
     name: right_main
     motor: { board: gear1, kind: hbridge, idx: 2 }
-    deploy_duty:   20000
-    retract_duty: -20000
-    timeout_ms:    4000
+    reverse: false
+    timeout_ms: 4000
     motor_voltage_mv: 6000
