@@ -352,6 +352,53 @@ separate re-entrant gear-event dispatch, fixed in 2.44.3).
 data pair + VBUS; keep H-bridge return copper away from the USB
 connector ground; (joins §7's low-side-shunt/INA240 sensing fix).
 
+## 9. 🔴 OPEN — digital servos on the 6 V rail jitter randomly + overheat (3.3 V signal margin)
+
+**Symptom (2026-08-08, board 9C6C).** Servos plugged into the hub's
+SRV1..SRV10 headers move RANDOMLY and run EXTREMELY HOT — but only some
+models (digital/brushless-controller servos); a different servo on the
+same header is clean. Persisted through an exhaustive firmware
+elimination: zero effect commands on the wire (RC routing disabled, diag
+ring silent), zero resets (uptime spans the episodes), steady clean
+50 Hz/1500 µs MCPWM pulses on every header (quiet-attach reverted,
+2.45.3), and across three firmware builds. Sound + lights (separate
+rails/signals) unaffected throughout. The all-day "servos randomly open
+and shut" reports trace back to this, compounded by (now fixed) firmware
+issues riding on top.
+
+**Suspected cause — SIGNAL INTEGRITY, source TBD.** (The affected servos
+are HV/8 V-capable, so the 6 V rail rating itself is NOT the issue —
+operator-confirmed 2026-08-08.) A malformed or noise-corrupted pulse
+train (runt pulses, extra edges per frame, unstable width, ground bounce
+riding the 3.3 V signal) decodes as randomly-shifting targets → the
+servo hunts continuously at near-stall current → random motion + extreme
+heat.  Model dependence matches: decoders that filter glitches stay
+clean, ones that trust every edge go mad.  Two candidate sources, in
+test order:
+1. **The pure-IDF `EspServo` MCPWM driver** (esp_servo.h) — new with the
+   ESP-IDF migration, correct on paper (1 MHz tick / 20 ms period /
+   high-on-tez, low-on-compare), NEVER verified on real pins.
+2. **Board-level noise** — buck ripple / ground bounce coupling into the
+   direct GPIO→header signal lines under load.
+
+**Bench confirmation plan.**
+1. UNPLUG the affected servos; inspect for heat damage before reuse.
+2. **Self-scope the driver (no instruments):** jumper one SRV header's
+   signal pin to the INP header, attach the rc-pwm input role on IN_1
+   (live role attach — no config change), read the measured width /
+   frame rate / glitch count via `input-verbose` + `subscribe`.  Clean
+   steady 1500 µs @ 50 Hz ⇒ driver exonerated at the pin; jitter or
+   extra edges ⇒ firmware driver bug — fix in esp_servo.h.
+3. Meter the 6 V buck: DC level + ripple (AC range), idle vs loaded.
+4. If a scope is available: signal at the servo connector under buck
+   load — look for noise riding the 3.3 V pulse + ground bounce.
+
+**REV C action (pending root cause).** If board-level noise: buffer the
+ten servo signal lines (line driver at the headers) + review the servo
+ground return path; if driver: firmware-only fix, no board change.
+
+---
+
 ## Firmware/tooling changes made during this bring-up
 
 - `HUBFX_PCB_REV` compile-time pin-map switch (rev B default; `=1`
