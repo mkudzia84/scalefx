@@ -40,8 +40,11 @@ channel empty means manual control only.
 ### Servo calibration window (the ⚙ Calibrate… popup)
 
 Opens for any servo port (gun turret, gear doors, landing, IO tab). It jogs the
-servo live and saves a motion profile to `/hubfx.yaml`. Effects command the servo
-by intent (deploy/retract or 0–100%); the role maps that onto these limits.
+servo live and saves a motion profile to `/hubfx.yaml` (persisted immediately on
+Save). Since 2.46.0 the profile is a pure MOTION ENVELOPE — min/max are hard
+caps and speed/accel/jerk shape every move. Named positions (door open/close,
+strut deploy/retract, landing open/close) are separate ABSOLUTE µs values set
+per effect with the ◧ Positions window.
 
 | Control | What it does | Default |
 |---|---|---|
@@ -51,7 +54,6 @@ by intent (deploy/retract or 0–100%); the role maps that onto these limits.
 | Speed µs/s | Max slew rate; `0` = unlimited (snap straight to target). | from the dialog |
 | Accel µs/s² | Ramp accel/decel (symmetric); `0` = full speed instantly. | from the dialog |
 | Jerk µs/s³ | S-curve smoothing; `0` = a plain trapezoidal profile (most servos don't need jerk). | from the dialog |
-| Reversed | Swaps the role's open/close direction; after Save, "open" maps to the min end instead of the max end. | off |
 | Save / Cancel | Save pushes the profile to `/hubfx.yaml`; Cancel restores the original. | — |
 
 The Travel summary shows max − min µs and the time to cross it at the chosen speed.
@@ -194,7 +196,7 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Setting | What it does | Default |
 |---|---|---|
 | Name | Label for the group. | `landing<id>` |
-| Deploy direction | There is NO per-group direction toggle (removed 2.45.4): deploy always drives each servo to its calibrated MAX end, retract to MIN. If a servo moves the wrong way, flip **↔ Reversed** in that servo's **Calibrate Servo** window — the same single rule as gear doors and servo struts. | deploy → MAX end |
+| Positions (◧ Positions… window) | The group's OPEN and CLOSED positions as ABSOLUTE µs (2.46.0 — no direction flags anywhere: which number is bigger IS the direction). Live-jog the servo inside its calibrated range, "Set as Open" / "Set as Closed", Save — persisted to /landing.yaml immediately. Unset positions default to the servo's calibrated max (open) / min (closed). | open → cal. max · closed → cal. min |
 | Servo port(s) | The servo(s) that deploy/retract the light. | none |
 | LED port(s) + Brightness | The searchlight LED(s) and their brightness % when deployed. | none / per LED |
 | Fade-in | LED soft-start: ramp 0→brightness over this many ms once the servo is fully deployed (0 = hard on). | `400ms` |
@@ -230,7 +232,8 @@ Defaults: kind `on`, duration `0`, cycle `0`, brightness `100%`, min `0%`, max `
 | Motor port (H-bridge mode) | The H-bridge port (BiDcMotor role) that drives the leg. | unassigned |
 | Strut channel (Servo-per-strut mode) | This strut's own servo (PWM) channel to its integrated retract controller. | unassigned |
 | Travel time (Servo-per-strut mode) | Fixed stroke duration — the doors engage only after it elapses. | `5000ms` (min 500) |
-| Deploy direction (H-bridge mode only) | `Forward` = deploy runs the motor forward (retract reverses). Servo-driven struts have NO per-strut direction toggle: deploy always drives the pulse to the calibrated MAX end — if the mechanism moves the wrong way, flip **↔ Reversed** in that servo channel's **Calibrate Servo** window (same rule as doors). | `Forward` |
+| Deploy direction (H-bridge mode only) | `Forward` = deploy runs the motor forward (retract reverses). Servo-driven struts use the ◧ Positions window instead: DEPLOY and RETRACT are absolute µs you capture by jogging — no direction flag. | `Forward` |
+| Positions (◧ Positions… window, servo strut modes) | The strut's DEPLOY and RETRACT pulse positions as ABSOLUTE µs. Live-jog, capture each, Save — persisted immediately. Shared mode has ONE pair for the whole undercarriage. Unset = calibrated max (deploy) / min (retract). | deploy → cal. max · retract → cal. min |
 | Travel timeout (H-bridge mode) | Full-travel watchdog: the endstop seek aborts to ERROR after this. 0 = seek until stall. | `30000ms` |
 
 ### Motor calibration window (the ⚙ Calibrate motor… popup)

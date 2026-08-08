@@ -38,7 +38,7 @@ inline void LandingLight::deploy() {
     // together so the servos start moving in lock-step.
     if (_begin && _sendCtx) _begin(_sendCtx);
     enterPhase(LandingLightPhase::Deploying);
-    commandAllServos(deployPosNorm());
+    commandAllServos(deployTargetUs());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // Arm the travel-timeout backstop so a dropped SERVO_TARGET_REACHED
     // can't hang DEPLOYING forever (servos have no position feedback).
@@ -73,7 +73,7 @@ inline void LandingLight::retract() {
     if (_begin && _sendCtx) _begin(_sendCtx);
     commandLedsOff();
     enterPhase(LandingLightPhase::Retracting);
-    commandAllServos(retractPosNorm());
+    commandAllServos(retractTargetUs());
     if (_commit && _sendCtx) _commit(_sendCtx);
     // Arm the travel-timeout backstop (same rationale as deploy()).
     _travelDeadlineMs = sfx_core::EffectClock::instance().nowMs() + kTravelTimeoutMs;
@@ -137,15 +137,14 @@ inline void LandingLight::enterPhase(uint8_t newPhase) {
     if (_phase) _phase(_phaseCtx, _def.id, newPhase);
 }
 
-inline void LandingLight::commandAllServos(uint16_t posNorm) {
+inline void LandingLight::commandAllServos(uint16_t targetUs) {
     if (!_send) return;
-    // SERVO_SET_POS_NORM — the role maps this normalised fraction onto its
-    // LIVE calibrated [min,max], so deploy/retract always reach the exact
-    // endpoint and follow re-calibration (see deployPosNorm/retractPosNorm).
+    // SERVO_SET_TARGET — ABSOLUTE µs (2.46.0); the role clamps into its
+    // calibrated caps, so the 0xFFFF/0 defaults land on the calibrated ends.
     for (uint8_t i = 0; i < _def.numServos; ++i) {
         const PortRef& s = _def.servos[i];
-        if (!rolecmd::u16(_send, _sendCtx, s, RolePacket::SERVO_SET_POS_NORM, posNorm)) {
-            SFX_LOG_WARN("[ll] %u: servo[%u] SET_POS_NORM failed", _def.id, (unsigned)i);
+        if (!rolecmd::u16(_send, _sendCtx, s, RolePacket::SERVO_SET_TARGET, targetUs)) {
+            SFX_LOG_WARN("[ll] %u: servo[%u] SET_TARGET failed", _def.id, (unsigned)i);
         }
     }
 }

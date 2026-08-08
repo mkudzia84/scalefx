@@ -49,12 +49,18 @@ using SendRoleCmdFn = bool (*)(void* ctx, const PortRef& addr,
                                const uint8_t* payload, size_t len);
 
 /// One door servo on a gear — a ServoActuator role addressed by PortRef.
-/// A door drives its servo to the calibrated MAX-µs end on OPEN
-/// (kPosNormFull) and the MIN-µs end on CLOSE (0); the servo role honours
-/// its own REV flag + calibration for the travel + direction.  No per-door
-/// position — same parametrisation as a landing-light servo.
+/// OPEN/CLOSE are explicit absolute µs targets (SERVO_SET_TARGET); the
+/// servo's calibration caps them.  Same parametrisation as a landing-light
+/// servo (2.46.0).
 struct DoorDef {
     PortRef  servo;                ///< ServoActuator role port; empty = none
+    /// ABSOLUTE µs positions (2.46.0 — explicit beats implicit): "open" and
+    /// "closed" are numbers the operator sets with the endpoints widget, not
+    /// a direction flag.  Defaults degrade gracefully: 0xFFFF/0 clamp to the
+    /// servo's calibrated max/min at the role, so an unconfigured door keeps
+    /// the old open=max/close=min behaviour.
+    uint16_t openUs  = 0xFFFF;     ///< pulse at "doors open"  (default → calibrated max)
+    uint16_t closeUs = 0;          ///< pulse at "doors closed" (default → calibrated min)
 };
 
 /// How the strut MOVES (2.45.0 — the strut stage is customizable; doors are
@@ -91,6 +97,10 @@ struct GearDef {
     PortRef  strutServo;                        ///< Servo modes: the retract's signal port
     uint32_t travelMs      = 5000;              ///< Servo modes: FIXED stroke duration —
                                                 ///< doors wait this long after the command
+    /// Servo modes: ABSOLUTE pulse targets (2.46.0 — same explicit model as
+    /// doors).  Defaults clamp to the servo's calibrated ends at the role.
+    uint16_t deployUs      = 0xFFFF;            ///< pulse at "gear down" (default → calibrated max)
+    uint16_t retractUs     = 0;                 ///< pulse at "gear up"   (default → calibrated min)
 
     // Drive model (2.44.0): the strut commands FULL-SCALE duty and the
     // BiDcMotor role's voltage cap turns that into exactly motorVoltageMv

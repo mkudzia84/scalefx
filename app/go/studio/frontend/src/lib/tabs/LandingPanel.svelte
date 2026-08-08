@@ -18,7 +18,7 @@
     import {
         landingDraft, landingDirty, landingPhases,
         loadLandingConfig, refreshLandingStatus,
-        addLandingLight, removeLandingLight, updateLandingLight,
+        addLandingLight, removeLandingLight, updateLandingLight, saveLandingConfig,
         landingActivate, landingDeactivate,
         landingItemErrors,
         installLandingPhaseListener,
@@ -38,6 +38,7 @@
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import { collectChannelOptions } from '../channels'
     import { makeProfileForPort } from '../servo_calibration'
+    import { openEndpointsFor, resolveEndpointUs, summariseEndpoints, US_CAL_MAX } from '../endpoint_setter'
 
     // Shared reactive servo-profile factory (servo_calibration.ts) — rebuilds
     // on $deviceModel change so a Calibrate→Save isn't frozen on the old value.
@@ -84,6 +85,26 @@
     })
 
     function mark(): void { landingDraft.set(cfg) }
+
+    /** Endpoints dialog for a landing group's open/close positions (all
+     *  servos in the group get the same targets; the FIRST servo is used
+     *  for the live jog).  Save persists /landing.yaml immediately. */
+    function openLandingEndpoints(light: LandingLightT) {
+        const first = light.servos[0]?.port
+        if (!first || !first.kind) return
+        const prof = profileForPort(first) ?? { minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 }
+        openEndpointsFor({
+            guid: first.guid ?? '', portIdx: first.idx,
+            portLabel: labelFor(first),
+            labelA: 'Open', labelB: 'Closed',
+            minUs: prof.minUs, maxUs: prof.maxUs,
+            aUs: light.openUs, bUs: light.closeUs,
+            onSave: async (aUs, bUs) => {
+                updateLandingLight(light.id, l => ({ ...l, openUs: aUs, closeUs: bUs }))
+                await saveLandingConfig()
+            },
+        })
+    }
 
     // ─── Named-channel option list (Rule 43) ─────────────────────────
     // Reused for the activation-source "input channel" picker.
@@ -343,14 +364,15 @@
                 <span class="hint">all move together; LEDs come on only once EVERY servo reaches its open position</span>
                 <!-- "no free servos" warning is on the + Add row below, not duplicated here. -->
             </div>
-            <!-- Direction lives SOLELY in each servo's calibration (↔ Reversed)
-                 — Rule 42, same single-source rule as gear doors/struts.  The
-                 old "Deploy direction" toggle wrote swapped openUs/closeUs
-                 sentinels, a workaround from the era when the role's REV
-                 reflection was broken; with the reflection restored (2.45.2)
-                 the two mechanisms compounded (2.45.4 cleanup). -->
-            <div class="form-row sub">
-                <span class="hint">deploy = calibrated MAX end · retract = MIN — moves the wrong way? flip <b>↔ Reversed</b> in that servo's <b>⚙ Calibrate</b> below.</span>
+            <!-- 2.46.0 explicit-position model: open/close are ABSOLUTE µs
+                 (group-wide, all servos get the same targets) set with the
+                 endpoints widget.  No direction flags anywhere. -->
+            <div class="form-row">
+                <span class="field-label">Positions</span>
+                <span class="hint compact">{summariseEndpoints('Open', light.openUs, 'Closed', light.closeUs, 0, 0)}</span>
+                <button class="small btn-slot" on:click={() => openLandingEndpoints(light)}
+                        disabled={busy || light.servos.length === 0}
+                        title="Live-jog the servo and capture the OPEN and CLOSED positions as absolute µs — saved to /landing.yaml immediately.">◧ Positions…</button>
             </div>
             {#each light.servos as s, i (i)}
                 <div class="form-row">
@@ -366,7 +388,7 @@
                     <button class="small danger btn-slot" on:click={() => removeServo(light.id, i)} disabled={busy}>× Remove</button>
                 </div>
                 {#if s.port && s.port.kind}
-                    {@const prof = profileForPort(s.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                    {@const prof = profileForPort(s.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                     {@const sv   = $servoStatus[servoStatusKey(s.port.guid, s.port.idx)]}
                     <!-- Live servo output bar (same ServoIoWidget GunFx yaw/pitch
                          uses; input side hidden — a landing servo is deploy/retract
@@ -379,12 +401,12 @@
                             hasInput={false}
                             hasServo={true}
                             outputLabel="Servo #{i + 1} output"
-                            minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+                            minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} openUs={resolveEndpointUs(light.openUs ?? US_CAL_MAX, prof.minUs, prof.maxUs)}
                             servo={sv ?? null} />
                     </div>
                 {/if}
                 <!-- Per-servo profile widget (Rule 44 + new popup pattern):
-                     compact summary + reversed toggle + Calibrate button.
+                     compact summary + Calibrate button.
                      Profile data flows through the device model (server-
                      authoritative); jog + save go through the popup. -->
                 <div class="form-row servo-widget-row">

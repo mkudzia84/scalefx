@@ -15,9 +15,14 @@
  * resulting µs to the hardware.  Effects don't integrate motion
  * profiles themselves — they push a target and let the role shape it.
  *
- * Limits (calibration) and reversed flag live in the role — the port
- * only knows hardware-safe absolute bounds.  Role-level limits are
- * narrower than port-level limits.
+ * Limits (calibration) live in the role — the port only knows
+ * hardware-safe absolute bounds.  Role-level limits are narrower than
+ * port-level limits.  There is NO direction concept here (2.46.0):
+ * limits are pure motion CAPS.  Effects that need named positions
+ * (door open/close, strut deploy/retract) store ABSOLUTE µs targets in
+ * their own config and command setTarget() — explicit beats implicit;
+ * the old `reversed` flag split direction across three layers and was
+ * retired after the 2026-08-08 bench saga.
  *
  * `TARGET_REACHED` fires once via the registered callback when the
  * commanded position first equals the target after motion.
@@ -60,9 +65,6 @@ public:
     /// values outside are clamped silently).
     void setLimits(uint16_t minUs, uint16_t maxUs);
 
-    /// Reversed flag — swaps which calibration endpoint is "open".
-    void setReversed(bool reversed) { _reversed = reversed; }
-
     /// Replace the full motion profile.  Speed / accel / jerk all in
     /// one shot — this is the canonical configuration entry-point;
     /// the legacy velocity-only setter below stays for back-compat
@@ -82,18 +84,13 @@ public:
     /// via `MotionProfile1D` and writes the resulting µs to the port.
     void setTarget(uint16_t target_us);
 
-    /// NORMALISED-position setter — INTENT layer (Rule 42).  `pos` is a
-    /// fraction in `[0, kPosNormFull]` in INTENT space: `kPosNormFull` =
-    /// open/deploy, 0 = close/retract.  The REV reflection is applied HERE
-    /// (reversed maps intent-full onto the MIN-µs end — see openEndpoint()),
-    /// then the fraction maps LINEARLY onto the LIVE calibrated
-    /// `[minUs, maxUs]` and drives setTarget() for the motion shaping.
-    /// Callers express "where in the travel" without knowing the limits —
-    /// GunFx yaw/pitch (RC pulse → fraction), landing/gear deploy
-    /// (`kPosNormFull`) / retract (`0`) — and a later live re-calibration is
-    /// honoured automatically because the role owns the limits.  Out-of-range
-    /// `pos` saturates at the ends.  (Raw setTarget() is SERVO space and
-    /// never reflects — the calibration dialog jogs absolute µs.)
+    /// NORMALISED-position setter.  `pos` is a fraction in
+    /// `[0, kPosNormFull]` mapped LINEARLY onto the LIVE calibrated
+    /// `[minUs, maxUs]` — a pure range map, no direction semantics
+    /// (2.46.0).  Used by continuous-tracking consumers (GunFx yaw/pitch:
+    /// RC pulse → fraction) that want the full calibrated span without
+    /// knowing the limits.  Positional effects (doors, struts, landing)
+    /// use setTarget() with their configured ABSOLUTE µs instead.
     void setNormalizedTarget(uint16_t pos);
 
     /// Full-scale value for `setNormalizedTarget()` (mirrors RolePacket::kPosNormFull).
@@ -105,10 +102,6 @@ public:
     /// moving or stationary and never fights the aim.  GunFx calls this once
     /// per shot with a random ± offset.  Calling again restarts the window.
     void applyRecoil(int16_t offsetUs, uint16_t durationMs);
-
-    /// Endpoints honour the REV flag.
-    uint16_t openEndpoint()  const { return _reversed ? _minUs : _maxUs; }
-    uint16_t closeEndpoint() const { return _reversed ? _maxUs : _minUs; }
 
     // `position()` reports the ACTUAL output µs (aim + active recoil offset), so
     // telemetry/UI show the kick; `target()` stays the aim the profile slews to.
@@ -132,7 +125,6 @@ private:
 
     uint16_t _minUs                = 500;
     uint16_t _maxUs                = 2500;
-    bool     _reversed             = false;
 
     ServoMotionProfile _profile;          ///< speed/accel/jerk shape
     MotionProfile1D    _mp;               ///< runtime integrator

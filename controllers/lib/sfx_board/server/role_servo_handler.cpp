@@ -28,17 +28,23 @@ bool ServoRoleHandler::attach(ServoBinding& b, uint8_t portIdx,
     ServoMotionProfile prof = role.profile();          // initFromPort defaults
     ServoProfileWire::unpack(cfg, cfgLen, prof);
     role.setLimits(prof.minUs, prof.maxUs);
-    role.setReversed(prof.inverted);
     role.setProfile(prof);
+    // Park at the calibrated CENTER until an effect commands an explicit
+    // position (2.46.0 operator request): a freshly-attached servo holds a
+    // known neutral instead of whatever pulse the port carried, and the move
+    // there is PROFILED (the integrator seeds from the port's last pulse and
+    // slews at the calibrated speed — no snap).
+    if (cfgLen > 0) role.setTarget(prof.centerUs);
     role.onTargetReached([this, portIdx](uint16_t pos) { _emit->emitServoTargetReached(portIdx, pos); });
     // SERVO_MOTION_DONE — monitored completion for gear door sequencing
     // (instructions/29 decision #1).  Same rising edge as TARGET_REACHED;
     // a separate, lighter [portIdx] async the hub gear service routes to
     // the right Gear's DoorSequencer.
     role.onMotionDone([this, portIdx]() { _emit->emitServoMotionDone(portIdx); });
-    SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u rev=%u  (cfgLen=%u)",
+    SFX_LOG_INFO("[servo] attach idx=%u  min=%u max=%u center=%u  (cfgLen=%u)",
                  (unsigned)portIdx, (unsigned)role.profile().minUs,
-                 (unsigned)role.profile().maxUs, (unsigned)prof.inverted, (unsigned)cfgLen);
+                 (unsigned)role.profile().maxUs, (unsigned)role.profile().centerUs,
+                 (unsigned)cfgLen);
     return true;
 }
 
@@ -128,15 +134,14 @@ void ServoRoleHandler::handleSetProfile(const uint8_t* p, size_t len) {
 
     // Same ServoProfileWire codec as the role-attach path (profile body starts
     // at p[1], after the portIdx). Seed from the live profile, overlay the wire
-    // fields, push limits + REV + profile in lock-step.
+    // fields, push limits + profile in lock-step.
     ServoMotionProfile prof = r->profile();
     ServoProfileWire::unpack(&p[1], len - 1, prof);
     r->setLimits(prof.minUs, prof.maxUs);
-    r->setReversed(prof.inverted);
     r->setProfile(prof);
-    SFX_LOG_INFO("[servo] setprofile idx=%u  min=%u max=%u rev=%u  (live calibrate)",
+    SFX_LOG_INFO("[servo] setprofile idx=%u  min=%u max=%u  (live calibrate)",
                  (unsigned)idx, (unsigned)r->profile().minUs,
-                 (unsigned)r->profile().maxUs, (unsigned)prof.inverted);
+                 (unsigned)r->profile().maxUs);
     _ctx->sendAck();
 }
 
@@ -154,7 +159,7 @@ void ServoRoleHandler::handleGetProfileReq(const uint8_t* p, size_t len) {
     SfxWire::putU16LE(&out[1],  prof.minUs);
     SfxWire::putU16LE(&out[3],  prof.maxUs);
     SfxWire::putU16LE(&out[5],  prof.maxSpeedUsPerSec);
-    out[7] = prof.inverted ? 1 : 0;
+    out[7] = 0;   // RESERVED (was reversed — retired 2.46.0)
     SfxWire::putU16LE(&out[8],  prof.centerUs);
     SfxWire::putU16LE(&out[10], prof.maxAccelUsPerSec2);
     SfxWire::putU16LE(&out[12], prof.maxJerkUsPerSec3);

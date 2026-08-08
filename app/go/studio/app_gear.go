@@ -36,6 +36,10 @@ import (
 // calibration, NOT here (same parametrisation as a landing-light servo).
 type GearDoorDTO struct {
 	Port PortRefDTO `yaml:"port" json:"port"`
+	// ABSOLUTE µs positions (2.46.0 — set with the endpoints widget).
+	// 0xFFFF/0 = "calibrated end" defaults (the servo role clamps).
+	OpenUs  uint16 `yaml:"open_us,omitempty"  json:"openUs"`
+	CloseUs uint16 `yaml:"close_us,omitempty" json:"closeUs"`
 }
 
 // GearGuardDTO — persisted stall-guard calibration for a strut's motor
@@ -64,6 +68,9 @@ type GearChannelDTO struct {
 	// the FIXED stroke duration (black box — doors wait for it).
 	StrutServo PortRefDTO `yaml:"strut_servo,omitempty" json:"strutServo"`
 	TravelMs   uint32     `yaml:"travel_ms,omitempty"   json:"travelMs"`
+	// ABSOLUTE deploy/retract pulses for the per-strut servo (2.46.0).
+	DeployUs   uint16     `yaml:"deploy_us,omitempty"   json:"deployUs"`
+	RetractUs  uint16     `yaml:"retract_us,omitempty"  json:"retractUs"`
 	// Voltage-first drive (2.44.0): deploy/retract seek at full scale and
 	// the motor role's cap delivers exactly MotorVoltageMv at the motor on
 	// any pack.  Reverse flips the deploy direction.  The raw
@@ -103,6 +110,9 @@ type GearSoundsDTO struct {
 type GearStrutSharedDTO struct {
 	Port     PortRefDTO `yaml:"port"      json:"port"`
 	TravelMs uint32     `yaml:"travel_ms" json:"travelMs"`
+	// ABSOLUTE deploy/retract pulses (2.46.0) — one pair for the ONE channel.
+	DeployUs  uint16 `yaml:"deploy_us,omitempty"  json:"deployUs"`
+	RetractUs uint16 `yaml:"retract_us,omitempty" json:"retractUs"`
 }
 
 // GearConfig mirrors /gearcontrol.yaml (schema v2 + the append-only
@@ -232,9 +242,22 @@ func (a *App) LoadGearConfig() (GearConfig, error) {
 		g := &cfg.Gears[i]
 		foldRef(fmt.Sprintf("gear[%d].motor", i), &g.Motor)
 		foldRef(fmt.Sprintf("gear[%d].strutServo", i), &g.StrutServo)
+		// yaml-absent open/deploy µs load as 0, but 0 means "close/retract
+		// end" — normalise the OPEN-side zeros to the 0xFFFF "calibrated
+		// end" sentinel so the UI and the firmware agree (a literal 0 µs
+		// pulse is not a real servo position).
+		if g.DeployUs == 0 {
+			g.DeployUs = 0xFFFF
+		}
 		for j := range g.Doors {
 			foldRef(fmt.Sprintf("gear[%d].door[%d]", i, j), &g.Doors[j].Port)
+			if g.Doors[j].OpenUs == 0 {
+				g.Doors[j].OpenUs = 0xFFFF
+			}
 		}
+	}
+	if cfg.StrutShared != nil && cfg.StrutShared.DeployUs == 0 {
+		cfg.StrutShared.DeployUs = 0xFFFF
 	}
 	if cfg.StrutShared != nil {
 		foldRef("strutShared.port", &cfg.StrutShared.Port)

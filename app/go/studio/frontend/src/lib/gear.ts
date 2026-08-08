@@ -31,9 +31,13 @@ export interface PortRefT { board: string; guid: string; kind: string; idx: numb
 /** One door servo on a gear.  Open drives the servo to its calibrated MAX
  *  end, close to its calibrated MIN end (the per-door REV flag in the servo
  *  calibration flips the physical direction) — same parametrisation as a
- *  landing-light servo: travel lives in the servo calibration, not here. */
+ *  landing-light servo: travel shape lives in the servo calibration. */
 export interface GearDoorT {
     port: PortRefT
+    /** ABSOLUTE open/close pulse positions (2.46.0 — the endpoints widget).
+     *  Sentinels 0xFFFF/0 = the servo's calibrated max/min end. */
+    openUs:  number
+    closeUs: number
 }
 
 export type DoorMode    = 'sync' | 'delay' | 'sequence'
@@ -63,6 +67,9 @@ export type StrutMode = 'hbridge' | 'servo' | 'servo_shared'
 export interface GearStrutSharedT {
     port: PortRefT
     travelMs: number
+    /** ABSOLUTE deploy/retract pulses (2.46.0) — sentinels 0xFFFF/0 = ends. */
+    deployUs:  number
+    retractUs: number
 }
 
 export interface GearChannelT {
@@ -71,6 +78,9 @@ export interface GearChannelT {
     motor: PortRefT
     /** `servo` strut mode: this strut's own signal channel. */
     strutServo: PortRefT
+    /** ABSOLUTE deploy/retract pulses (2.46.0) — sentinels 0xFFFF/0 = ends. */
+    deployUs:  number
+    retractUs: number
     /** Servo strut modes: fixed stroke duration — doors engage only after
      *  this elapses (the controller is a black box, no feedback). */
     travelMs: number
@@ -162,7 +172,7 @@ export const StrutMoving  = 3
 const emptyPort = (kind: string): PortRefT => ({ board: '', guid: '', kind, idx: 0 })
 
 export function defaultGearDoor(): GearDoorT {
-    return { port: emptyPort('servo') }
+    return { port: emptyPort('servo'), openUs: 0xFFFF, closeUs: 0 }
 }
 
 /** Default stall guard = the firmware/role LiveRatio default (2.5×). */
@@ -401,8 +411,11 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
     // The shared block exists exactly when the mode needs it — normalise both ways.
     out.strutShared = out.strutMode === 'servo_shared'
         ? {
-            port:     out.strutShared?.port ?? emptyPort('servo'),
-            travelMs: out.strutShared?.travelMs || 5000,
+            port:      out.strutShared?.port ?? emptyPort('servo'),
+            travelMs:  out.strutShared?.travelMs || 5000,
+            deployUs:  (out.strutShared?.deployUs && out.strutShared.deployUs > 0)
+                       ? out.strutShared.deployUs : 0xFFFF,
+            retractUs: out.strutShared?.retractUs ?? 0,
           }
         : undefined
     out.gears         = (out.gears ?? []).map(g => ({
@@ -411,6 +424,8 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
         motor:       g.motor ?? emptyPort('hbridge'),
         strutServo:  g.strutServo ?? emptyPort('servo'),
         travelMs:    g.travelMs || 5000,
+        deployUs:    (g.deployUs && g.deployUs > 0) ? g.deployUs : 0xFFFF,
+        retractUs:   g.retractUs ?? 0,
         reverse:     g.reverse ?? false,
         timeoutMs:   g.timeoutMs ?? 30000,
         // 0/absent = pre-2.44 file — firmware floors at 1 V, mirror its 6 V default.
@@ -424,7 +439,9 @@ function normaliseGearConfig(c: GearConfigT | null): GearConfigT {
             ceilingMa:   g.guard.ceilingMa ?? 0,
         } : defaultGearGuard(),
         doors:       Array.isArray(g.doors) ? g.doors.map(d => ({
-            port:  d.port ?? emptyPort('servo'),
+            port:    d.port ?? emptyPort('servo'),
+            openUs:  (d.openUs && d.openUs > 0) ? d.openUs : 0xFFFF,
+            closeUs: d.closeUs ?? 0,
         })) : [],
         doorMode:    (g.doorMode ?? 'sync') as DoorMode,
         doorDelayMs: g.doorDelayMs ?? 500,
@@ -566,7 +583,7 @@ export function setGearStrutMode(mode: StrutMode): void {
         ...c,
         strutMode: mode,
         strutShared: mode === 'servo_shared'
-            ? (c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000 })
+            ? (c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000, deployUs: 0xFFFF, retractUs: 0 })
             : undefined,
     }))
 }
@@ -574,7 +591,7 @@ export function setGearStrutMode(mode: StrutMode): void {
 export function updateGearStrutShared(mutate: (s: GearStrutSharedT) => GearStrutSharedT): void {
     gearDraft.update(c => ({
         ...c,
-        strutShared: mutate(c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000 }),
+        strutShared: mutate(c.strutShared ?? { port: emptyPort('servo'), travelMs: 5000, deployUs: 0xFFFF, retractUs: 0 }),
     }))
 }
 

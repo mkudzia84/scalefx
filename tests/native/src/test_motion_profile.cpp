@@ -1,7 +1,7 @@
 // Tests for controllers/lib/sfx_board/motion/motion_profile.h
 //
 // Locks in the math of ServoMotionProfile + MotionProfile1D:
-//   - clamp + inverted mapping
+//   - clamp (pure cap since 2.46.0 — the inverted mirror is retired)
 //   - hasSlew() gate (zero limits → write-through, no integration)
 //   - trapezoidal motion (no jerk cap): cruise at max speed, decel
 //     to land on target
@@ -27,7 +27,6 @@ TEST_CASE("ServoMotionProfile default values are servo-safe") {
     CHECK(p.minUs == 1000);
     CHECK(p.maxUs == 2000);
     CHECK(p.centerUs == 1500);
-    CHECK(p.inverted == false);
     CHECK(p.maxSpeedUsPerSec  == 800);
     CHECK(p.maxAccelUsPerSec2 == 1600);
     CHECK(p.maxJerkUsPerSec3  == 0);
@@ -43,16 +42,16 @@ TEST_CASE("clamp() bounds within [min, max]") {
     CHECK(p.clamp(1900) == 1900);
 }
 
-TEST_CASE("clamp() honours inverted") {
-    // Inverted: minUs+maxUs - target so a "high" input becomes a "low" output.
-    ServoMotionProfile p; p.minUs = 1100; p.maxUs = 1900; p.inverted = true;
-    CHECK(p.clamp(1100) == 1900);  // min input → max output
-    CHECK(p.clamp(1900) == 1100);  // max input → min output
-    CHECK(p.clamp(1500) == 1500);  // centre stays centre
-    // Clamp happens BEFORE invert, so an out-of-range input still
-    // clamps + then inverts.
-    CHECK(p.clamp(500)  == 1900);  // clamps to 1100, then inverts to 1900
-    CHECK(p.clamp(2500) == 1100);
+TEST_CASE("clamp() is a pure cap — no hidden mapping (2.46.0)") {
+    // The old `inverted` mirror (min+max−target) inside clamp() was one of
+    // the THREE stacked direction layers behind the 2026-08-08 "double
+    // reverse" saga.  clamp() must never remap — only bound.
+    ServoMotionProfile p; p.minUs = 1100; p.maxUs = 1900;
+    CHECK(p.clamp(1100) == 1100);
+    CHECK(p.clamp(1900) == 1900);
+    CHECK(p.clamp(1500) == 1500);
+    CHECK(p.clamp(500)  == 1100);
+    CHECK(p.clamp(2500) == 1900);
 }
 
 TEST_CASE("hasSlew is false only when BOTH speed and accel are 0") {
@@ -151,17 +150,19 @@ TEST_CASE("trapezoidal ramp respects clamp on the input side") {
     CHECK(m.current() == 1900);
 }
 
-TEST_CASE("trapezoidal ramp respects inverted mapping") {
+TEST_CASE("trapezoidal ramp lands EXACTLY on the commanded absolute target") {
+    // 2.46.0 explicit-position model: setTarget is absolute — no mapping
+    // anywhere between the commanded µs and the settled position.
     ServoMotionProfile p;
-    p.minUs = 1100; p.maxUs = 1900; p.inverted = true;
+    p.minUs = 1100; p.maxUs = 1900;
     p.maxSpeedUsPerSec  = 1000;
     p.maxAccelUsPerSec2 = 4000;
     MotionProfile1D m;
     m.setProfile(p);
     m.snapTo(1500);
-    m.setTarget(1100);   // input "low" → output should be "high" (1900)
+    m.setTarget(1100);
     for (int i = 0; i < 2000; ++i) m.tick(1);
-    CHECK(m.current() == 1900);
+    CHECK(m.current() == 1100);
 }
 
 TEST_CASE("trapezoidal max-speed bound respected at cruise") {

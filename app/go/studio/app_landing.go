@@ -134,6 +134,11 @@ func (a *App) GetLandingConfig() (LandingConfigDTO, error) {
 	// populate when loading from config" gap).
 	folds := 0
 	for i := range cfg.Lights {
+		// yaml-absent open_us loads as 0 = "retract end" — normalise the
+		// OPEN-side zero to the 0xFFFF "calibrated end" sentinel (2.46.0).
+		if cfg.Lights[i].OpenUs == 0 {
+			cfg.Lights[i].OpenUs = 0xFFFF
+		}
 		for j := range cfg.Lights[i].Servos {
 			p := &cfg.Lights[i].Servos[j].Port
 			if c, was := a.canonGuid(p.Guid); was {

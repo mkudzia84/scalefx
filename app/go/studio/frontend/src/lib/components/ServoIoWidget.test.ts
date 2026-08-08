@@ -19,13 +19,13 @@ describe('ServoIoWidget', () => {
         expect(getByText('1500 µs')).toBeTruthy()
     })
 
-    it('renders the live servo position + the reversed tag', () => {
+    it('renders the live servo position + the OPEN-position marker', () => {
         const { container } = render(ServoIoWidget, {
-            hasServo: true, minUs: 1100, maxUs: 1900, reversed: true,
+            hasServo: true, minUs: 1100, maxUs: 1900, openUs: 1850,
             servo: { posUs: 1600, targetUs: 1600, velUsPerS: 0 },
         })
         expect(container.textContent).toContain('1600 µs')
-        expect(container.textContent).toContain('↔ rev')
+        expect(container.querySelector('.servo-track-open')).toBeTruthy()
     })
 
     it('reactively updates when props change (the reactivity-trap class)', async () => {

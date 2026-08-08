@@ -244,7 +244,8 @@ inline void parseServoProfile(const TNode* item, PortMapping& m) {
     m.profile.minUs             = (uint16_t)pn->template childAs<int32_t>("min_us",                m.profile.minUs);
     m.profile.maxUs             = (uint16_t)pn->template childAs<int32_t>("max_us",                m.profile.maxUs);
     m.profile.centerUs          = (uint16_t)pn->template childAs<int32_t>("center_us",             m.profile.centerUs);
-    m.profile.inverted          =           pn->template childAs<bool>   ("reversed",              m.profile.inverted);
+    // (`reversed:` retired 2.46.0 — old files' key is simply ignored; the
+    // profile is a pure motion envelope, direction lives in effect configs.)
     m.profile.maxSpeedUsPerSec  = (uint16_t)pn->template childAs<int32_t>("max_speed_us_per_sec",  m.profile.maxSpeedUsPerSec);
     m.profile.maxAccelUsPerSec2 = (uint16_t)pn->template childAs<int32_t>("max_accel_us_per_sec2", m.profile.maxAccelUsPerSec2);
     m.profile.maxJerkUsPerSec3  = (uint16_t)pn->template childAs<int32_t>("max_jerk_us_per_sec3",  m.profile.maxJerkUsPerSec3);

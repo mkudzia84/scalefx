@@ -25,7 +25,9 @@
     export let minUs = 1000
     export let maxUs = 2000
     export let centerUs = 1500
-    export let reversed = false
+    /** ABSOLUTE µs of the "open/deploy" position (2.46.0 explicit model) —
+     *  renders the ▾ OPEN marker.  Omit to hide the marker. */
+    export let openUs: number | null = null
 
     // Live servo telemetry ({posUs,...}) or null when not streaming yet.
     export let servo: { posUs: number; targetUs: number; velUsPerS: number } | null = null
@@ -60,20 +62,20 @@
 
     {#if hasServo}
         <div class="io-label">{outputLabel}
-            <span class="io-sub">{posUs} µs{showTgt && tgtUs !== posUs ? ` → ${tgtUs}` : ''}{live ? '' : ' · cmd'}{reversed ? ' · ↔ rev' : ''}</span>
+            <span class="io-sub">{posUs} µs{showTgt && tgtUs !== posUs ? ` → ${tgtUs}` : ''}{live ? '' : ' · cmd'}</span>
         </div>
         <div class="servo-track" class:cmd-only={!live}
-             title="Servo at {posUs} µs{showTgt ? ` → target ${tgtUs} µs` : ''} · travel {minUs}–{maxUs} µs · centre {centerUs} µs · open/deploy = {reversed ? 'MIN' : 'MAX'} end{reversed ? ' (reversed)' : ''}">
+             title="Servo at {posUs} µs{showTgt ? ` → target ${tgtUs} µs` : ''} · travel {minUs}–{maxUs} µs · centre {centerUs} µs{openUs != null ? ` · open/deploy = ${openUs} µs` : ''}">
             <div class="servo-track-range"
                  style="left:{srvPct(minUs)}%; width:{Math.max(0.5, srvPct(maxUs) - srvPct(minUs))}%"></div>
             <div class="servo-track-center" style="left:{srvPct(centerUs)}%"></div>
-            <!-- OPEN-end marker: the µs end that "open/deploy" intent drives to.
-                 With ↔ Reversed this is the MIN end — the raw-µs bar is NOT
-                 mirrored, so without the marker an open door reading near min
-                 looks wrong even though it is right (bench confusion,
-                 2026-08-08: "the widget mirrors it"). -->
-            <div class="servo-track-open" style="left:{srvPct(reversed ? minUs : maxUs)}%"
-                 title="OPEN / DEPLOY end ({reversed ? minUs : maxUs} µs{reversed ? ' — reversed' : ''})">▾</div>
+            <!-- OPEN-position marker (2.46.0): the configured open/deploy µs
+                 from the effect config — a raw-µs anchor so "is it open?"
+                 reads at a glance. -->
+            {#if openUs != null}
+                <div class="servo-track-open" style="left:{srvPct(openUs)}%"
+                     title="OPEN / DEPLOY position ({openUs} µs)">▾</div>
+            {/if}
             {#if showTgt}
                 <div class="servo-track-target" style="left:{srvPct(tgtUs)}%" title="target {tgtUs} µs"></div>
             {/if}

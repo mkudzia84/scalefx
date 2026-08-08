@@ -1,8 +1,10 @@
 // servo_calibration.ts — store + helpers for the ServoCalibrationDialog.
 //
 // The dialog is a modal overlay (driven by `openServoCalibration`) that
-// gives the operator live ±µs jog buttons + min/max/speed/accel/jerk/
-// reversed editing + Save / Cancel — for one port at a time.
+// gives the operator live ±µs jog buttons + min/max/speed/accel/jerk
+// editing + Save / Cancel — for one port at a time.  (The reversed flag
+// was retired in 2.46.0 — direction lives as absolute open/close µs in
+// each effect's config, set with the ServoEndpointsDialog.)
 //
 // Two key UX patterns from the archived dialog (kept here):
 //   1. **Widen-during-calibration** — on open we push a temporary
@@ -34,7 +36,6 @@ export interface ServoProfileT {
     minUs:              number
     maxUs:              number
     centerUs:           number
-    reversed:           boolean
     maxSpeedUsPerSec:   number
     maxAccelUsPerSec2:  number
     maxJerkUsPerSec3:   number
@@ -43,7 +44,6 @@ export interface ServoProfileT {
 export function defaultServoProfile(): ServoProfileT {
     return {
         minUs: 1000, maxUs: 2000, centerUs: 1500,
-        reversed: false,
         maxSpeedUsPerSec: 800, maxAccelUsPerSec2: 1600, maxJerkUsPerSec3: 0,
     }
 }
@@ -92,11 +92,7 @@ export const openServoCalibration: Writable<OpenServoCalT | null> = writable(nul
  *  dialog's SLIDER_MIN/MAX.) */
 const CAL_ENVELOPE: ServoProfileT = {
     minUs: 800, maxUs: 2200, centerUs: 1500,
-    reversed: false,                          // direction matters for the operator's mental model — keep their setting
     maxSpeedUsPerSec: 4000, maxAccelUsPerSec2: 8000, maxJerkUsPerSec3: 0,
-}
-function widenedFrom(origin: ServoProfileT): ServoProfileT {
-    return { ...CAL_ENVELOPE, reversed: origin.reversed }
 }
 
 /** Open the calibration dialog for `(guid, portIdx)`.  Seeds the
@@ -121,7 +117,7 @@ export async function openServoCalibrationFor(
         // (role, not overlay): the envelope is session state and must
         // never be persistable — an Apply or link drop mid-dialog used
         // to write 800–2200/4000 into /hubfx.yaml as the servo's profile.
-        await pushProfileLive(guid, portIdx, widenedFrom(origin))
+        await pushProfileLive(guid, portIdx, { ...CAL_ENVELOPE })
         // Park at the starting position so the operator's first jog
         // moves a known distance from a known point.
         await ServoSetTarget(guid, portIdx, startUs)
@@ -241,32 +237,12 @@ export function captureAsCenter(): void {
         : s)
 }
 
-/** Edit a single draft field (speed / accel / jerk / reversed / etc).
+/** Edit a single draft field (speed / accel / jerk / etc).
  *  No wire push here — Save batches the full profile in one shot. */
 export function setDraftField<K extends keyof ServoProfileT>(key: K, val: ServoProfileT[K]): void {
     openServoCalibration.update(s => s
         ? { ...s, draft: { ...s.draft, [key]: val } }
         : s)
-}
-
-// ─── Lightweight outside-dialog reversed toggle ──────────────────────
-//
-// The compact ServoWidget on the form has a "↔ Reversed" button that
-// flips `profile.reversed` and saves immediately without opening the
-// dialog — same single round-trip as any other live-push field.
-
-export async function toggleReversed(
-    guid: string, portIdx: number, current: ServoProfileT,
-): Promise<ServoProfileT> {
-    const next = { ...current, reversed: !current.reversed }
-    await SetPortProfile(guid, /*ServoKind=*/1, portIdx, next as any)
-    // Persist immediately — same rationale as saveServoCalibration: a
-    // direction flag that only lives on the live role until the next
-    // global Apply evaporates on a board unplug and the next boot runs
-    // the OLD direction.
-    await SaveHubConfig()
-    clearHubDirty()
-    return next
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────
@@ -291,6 +267,5 @@ export function summariseProfile(p: ServoProfileT | null | undefined): string {
     const speed = p.maxSpeedUsPerSec > 0 ? ` · ${p.maxSpeedUsPerSec} µs/s` : ' · unlimited'
     const accel = p.maxAccelUsPerSec2 > 0 ? ` · a${p.maxAccelUsPerSec2}` : ''
     const jerk  = p.maxJerkUsPerSec3  > 0 ? ` · j${p.maxJerkUsPerSec3}` : ''
-    const rev   = p.reversed ? ' · ↔ rev' : ''
-    return range + speed + accel + jerk + rev
+    return range + speed + accel + jerk
 }

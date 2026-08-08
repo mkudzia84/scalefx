@@ -65,7 +65,7 @@ export interface Port {
      *  `devicemodel.ServoMotionProfile` json shape. Overlaid by the
      *  backend from the studio's portProfiles map. */
     profile?: {
-        minUs: number; maxUs: number; centerUs: number; reversed: boolean
+        minUs: number; maxUs: number; centerUs: number
         maxSpeedUsPerSec: number; maxAccelUsPerSec2: number; maxJerkUsPerSec3: number
     }
     /** offline = a "ghost" port reconstructed from /hubfx.yaml for an

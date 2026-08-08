@@ -293,7 +293,6 @@ export namespace devicemodel {
 	    minUs: number;
 	    maxUs: number;
 	    centerUs: number;
-	    reversed: boolean;
 	    maxSpeedUsPerSec: number;
 	    maxAccelUsPerSec2: number;
 	    maxJerkUsPerSec3: number;
@@ -307,7 +306,6 @@ export namespace devicemodel {
 	        this.minUs = source["minUs"];
 	        this.maxUs = source["maxUs"];
 	        this.centerUs = source["centerUs"];
-	        this.reversed = source["reversed"];
 	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
 	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
 	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];
@@ -1596,6 +1594,8 @@ export namespace main {
 	}
 	export class GearDoorDTO {
 	    port: PortRefDTO;
+	    openUs: number;
+	    closeUs: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new GearDoorDTO(source);
@@ -1604,6 +1604,8 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.port = this.convertValues(source["port"], PortRefDTO);
+	        this.openUs = source["openUs"];
+	        this.closeUs = source["closeUs"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -1652,6 +1654,8 @@ export namespace main {
 	    motor: PortRefDTO;
 	    strutServo: PortRefDTO;
 	    travelMs: number;
+	    deployUs: number;
+	    retractUs: number;
 	    reverse: boolean;
 	    timeoutMs: number;
 	    motorVoltageMv: number;
@@ -1672,6 +1676,8 @@ export namespace main {
 	        this.motor = this.convertValues(source["motor"], PortRefDTO);
 	        this.strutServo = this.convertValues(source["strutServo"], PortRefDTO);
 	        this.travelMs = source["travelMs"];
+	        this.deployUs = source["deployUs"];
+	        this.retractUs = source["retractUs"];
 	        this.reverse = source["reverse"];
 	        this.timeoutMs = source["timeoutMs"];
 	        this.motorVoltageMv = source["motorVoltageMv"];
@@ -1737,6 +1743,8 @@ export namespace main {
 	export class GearStrutSharedDTO {
 	    port: PortRefDTO;
 	    travelMs: number;
+	    deployUs: number;
+	    retractUs: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new GearStrutSharedDTO(source);
@@ -1746,6 +1754,8 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.port = this.convertValues(source["port"], PortRefDTO);
 	        this.travelMs = source["travelMs"];
+	        this.deployUs = source["deployUs"];
+	        this.retractUs = source["retractUs"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -2724,7 +2734,6 @@ export namespace main {
 	    minUs: number;
 	    maxUs: number;
 	    centerUs: number;
-	    reversed: boolean;
 	    maxSpeedUsPerSec: number;
 	    maxAccelUsPerSec2: number;
 	    maxJerkUsPerSec3: number;
@@ -2738,7 +2747,6 @@ export namespace main {
 	        this.minUs = source["minUs"];
 	        this.maxUs = source["maxUs"];
 	        this.centerUs = source["centerUs"];
-	        this.reversed = source["reversed"];
 	        this.maxSpeedUsPerSec = source["maxSpeedUsPerSec"];
 	        this.maxAccelUsPerSec2 = source["maxAccelUsPerSec2"];
 	        this.maxJerkUsPerSec3 = source["maxJerkUsPerSec3"];

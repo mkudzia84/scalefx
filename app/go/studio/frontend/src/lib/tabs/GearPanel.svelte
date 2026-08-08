@@ -38,8 +38,9 @@
         gearItemErrors, installGearPhaseListener,
         gearDeploy, gearRetract, gearStop, gearReset, gearAll, gearEStopAll,
         gearDoors, gearMoveStrut, gearDoorsAll, gearMoveStrutAll,
+        saveGearConfig,
         GearAllDeploy, GearAllRetract, StrutUp, StrutMoving,
-        type GearConfigT, type GearChannelT, type CoordMode, type StrutMode,
+        type GearConfigT, type GearChannelT, type GearDoorT, type CoordMode, type StrutMode,
         type PortRefT, type GearPhaseT,
     } from '../gear'
     import {
@@ -60,6 +61,7 @@
     import ChannelToggleCluster from '../components/ChannelToggleCluster.svelte'
     import { servoStatus, servoStatusKey, installServoStatusListener, setServoLiveView } from '../servo_status'
     import { makeProfileForPort } from '../servo_calibration'
+    import { openEndpointsFor, resolveEndpointUs, summariseEndpoints, US_CAL_MAX } from '../endpoint_setter'
     import { motorStatus, motorStatusKey, pollMotors } from '../motor_status'
     import { openMotorCalibrationFor } from '../motor_calibration'
 
@@ -475,6 +477,58 @@
     function setMotorDirection(id: number, forward: boolean) {
         updateGearChannel(id, g => ({ ...g, reverse: !forward }))
     }
+    /** Open the endpoints dialog for a DOOR (Open/Closed positions).
+     *  Save persists the whole gear config immediately (device state). */
+    function openDoorEndpoints(gchId: number, doorIdx: number, d: GearDoorT) {
+        const prof = profileForPort(d.port) ?? { minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 }
+        openEndpointsFor({
+            guid: d.port.guid ?? '', portIdx: d.port.idx,
+            portLabel: labelForPort(d.port),
+            labelA: 'Open', labelB: 'Closed',
+            minUs: prof.minUs, maxUs: prof.maxUs,
+            aUs: d.openUs, bUs: d.closeUs,
+            onSave: async (aUs, bUs) => {
+                updateGearChannel(gchId, g => ({
+                    ...g,
+                    doors: g.doors.map((dd, i) => i === doorIdx ? { ...dd, openUs: aUs, closeUs: bUs } : dd),
+                }))
+                await saveGearConfig()
+            },
+        })
+    }
+    /** Endpoints dialog for a per-strut servo (Deploy/Retract positions). */
+    function openStrutEndpoints(gch: GearChannelT) {
+        const prof = profileForPort(gch.strutServo) ?? { minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 }
+        openEndpointsFor({
+            guid: gch.strutServo.guid ?? '', portIdx: gch.strutServo.idx,
+            portLabel: labelForPort(gch.strutServo),
+            labelA: 'Deploy', labelB: 'Retract',
+            minUs: prof.minUs, maxUs: prof.maxUs,
+            aUs: gch.deployUs, bUs: gch.retractUs,
+            onSave: async (aUs, bUs) => {
+                updateGearChannel(gch.id, g => ({ ...g, deployUs: aUs, retractUs: bUs }))
+                await saveGearConfig()
+            },
+        })
+    }
+    /** Endpoints dialog for the SHARED strut channel. */
+    function openSharedStrutEndpoints() {
+        const sh = cfg?.strutShared
+        if (!sh || !sh.port?.kind) return
+        const prof = profileForPort(sh.port) ?? { minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 }
+        openEndpointsFor({
+            guid: sh.port.guid ?? '', portIdx: sh.port.idx,
+            portLabel: labelForPort(sh.port),
+            labelA: 'Deploy', labelB: 'Retract',
+            minUs: prof.minUs, maxUs: prof.maxUs,
+            aUs: sh.deployUs, bUs: sh.retractUs,
+            onSave: async (aUs, bUs) => {
+                updateGearStrutShared(shd => ({ ...shd, deployUs: aUs, retractUs: bUs }))
+                await saveGearConfig()
+            },
+        })
+    }
+
     function setDoorPort(id: number, idx: number, port: PortRefT) {
         updateGearChannel(id, g => ({ ...g, doors: g.doors.map((d, i) => i === idx ? { ...d, port } : d) }))
     }
@@ -492,7 +546,7 @@
     }
     function addGearDoorWithPort(id: number, port: PortRefT) {
         updateGearChannel(id, g => g.doors.length >= 2 ? g
-            : ({ ...g, doors: [...g.doors, { port }] }))
+            : ({ ...g, doors: [...g.doors, { port, openUs: 0xFFFF, closeUs: 0 }] }))
     }
 
     async function safe(fn: () => Promise<void>) {
@@ -704,6 +758,9 @@
                                disabled={busy}
                                title="Fixed travel time — the controller is a black box, so the sequencer waits this long before the doors engage. Time a full stroke and add margin." />
                         <span class="unit">ms</span>
+                        <button class="small" on:click={openSharedStrutEndpoints}
+                                disabled={busy || !(cfg?.strutShared?.port?.kind)}
+                                title="Live-jog the shared strut channel and capture DEPLOY / RETRACT positions as absolute µs — saved immediately.">◧ Positions…</button>
                     </div>
                 </div>
                 {#if sharedStrutEmpty}
@@ -916,7 +973,9 @@
                                  cancels out), and in shared mode per-gear flags
                                  on the one port were last-write-wins. -->
                             <div class="form-row sub">
-                                <span class="hint">deploy = calibrated MAX end · retract = MIN — moves the wrong way? flip <b>↔ Reversed</b> in the port's <b>⚙ Calibrate</b> (IO tab).</span>
+                                <span class="hint">{summariseEndpoints('Deploy', gch.deployUs, 'Retract', gch.retractUs, 0, 0)}</span>
+                                <button class="small btn-slot" on:click={() => openStrutEndpoints(gch)} disabled={busy}
+                                        title="Live-jog the strut and capture its DEPLOY and RETRACT positions as absolute µs — saved immediately.">◧ Positions…</button>
                             </div>
                             <div class="form-row">
                                 <span class="field-label">Travel time</span>
@@ -1031,7 +1090,9 @@
                                  Calibrate flips the physical direction.  No
                                  redundant per-door position inputs. -->
                             <div class="form-row sub">
-                                <span class="hint">open = calibrated MAX end · close = MIN end — set the travel (and reverse) in <b>⚙ Calibrate</b> below.</span>
+                                <span class="hint">{summariseEndpoints('Open', d.openUs, 'Closed', d.closeUs, 0, 0)}</span>
+                                <button class="small btn-slot" on:click={() => openDoorEndpoints(gch.id, i, d)} disabled={busy}
+                                        title="Live-jog the door and capture its OPEN and CLOSED positions as absolute µs — saved to the gear config immediately.">◧ Positions…</button>
                             </div>
                             <!-- Calibration/setup (Rule 44). -->
                             <div class="form-row servo-widget-row">
@@ -1046,7 +1107,7 @@
                                  widget stays with its element; full-width is for
                                  panel/unit-level bars).  Grows to the column. -->
                             {#if d.port && d.port.kind}
-                                {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                                {@const dProf = profileForPort(d.port) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const dSv = $servoStatus[servoStatusKey(d.port.guid, d.port.idx)]}
                                 <div class="form-row live-row">
                                     <span class="field-label">Live</span>
@@ -1057,7 +1118,7 @@
                                             inputValid={false}
                                             neutralUs={1500}
                                             hasServo={true}
-                                            minUs={dProf.minUs} maxUs={dProf.maxUs} centerUs={dProf.centerUs} reversed={dProf.reversed}
+                                            minUs={dProf.minUs} maxUs={dProf.maxUs} centerUs={dProf.centerUs} openUs={resolveEndpointUs(d.openUs ?? US_CAL_MAX, dProf.minUs, dProf.maxUs)}
                                             servo={dSv ?? null} />
                                     </div>
                                 </div>

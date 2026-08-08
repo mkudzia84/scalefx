@@ -887,7 +887,7 @@
                                  reusable widget.  Position comes from the generic
                                  servo_status stream (20 Hz, upload-gated). -->
                             {#if axis.input || (axis.servoPort && axis.servoPort.kind)}
-                                {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, reversed: false, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
+                                {@const prof = profileForPort(axis.servoPort) ?? ({ minUs: 1000, maxUs: 2000, centerUs: 1500, maxSpeedUsPerSec: 0, maxAccelUsPerSec2: 0, maxJerkUsPerSec3: 0 })}
                                 {@const liveAx = liveUsFor(axis.input)}
                                 {@const sv = (axis.servoPort && axis.servoPort.kind) ? $servoStatus[servoStatusKey(axis.servoPort.guid, axis.servoPort.idx)] : undefined}
                                 <ServoIoWidget
@@ -896,7 +896,7 @@
                                     inputValid={liveAx?.valid ?? false}
                                     neutralUs={axis.neutralUs}
                                     hasServo={!!(axis.servoPort && axis.servoPort.kind)}
-                                    minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs} reversed={prof.reversed}
+                                    minUs={prof.minUs} maxUs={prof.maxUs} centerUs={prof.centerUs}
                                     servo={sv ?? null} />
                             {/if}
 

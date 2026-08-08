@@ -5,14 +5,12 @@
      lives in the popup ServoCalibrationDialog.
 
      Layout:
-       [ <profile summary text> ]  [ ↔ Reversed ]  [ ⚙ Calibrate… ]
+       [ <profile summary text> ]  [ ⚙ Calibrate… ]
 
-     The Reversed toggle is a one-click writer — it flips
-     `profile.reversed`, pushes via SetPortProfile (live to role +
-     /hubfx.yaml dirty), and refreshes the summary.  No dialog
-     needed; the operator gets immediate feedback.  The Calibrate
-     button opens the full popup for everything else (limits, speed,
-     accel, jerk, live jog).
+     The Calibrate button opens the popup (limits, speed, accel,
+     jerk, live jog).  Direction is NOT here (2.46.0): open/close
+     positions are absolute µs set per effect with the endpoints
+     widget.
 
      Cross-board servos: today the dialog only jogs hub-local ports
      (the Wails ServoSetTarget NACKs guid != '').  The widget still
@@ -22,7 +20,7 @@
 <script lang="ts">
     import type { PortRefT } from '../landing'
     import {
-        openServoCalibrationFor, toggleReversed, summariseProfile,
+        openServoCalibrationFor, summariseProfile,
         defaultServoProfile, type ServoProfileT,
     } from '../servo_calibration'
 
@@ -41,12 +39,6 @@
     /** Disable both buttons (mirrors the parent's `busy` flag). */
     export let busy: boolean = false
 
-    /** Parent callback fired after a successful reversed toggle so
-     *  the panel can refresh its draft / device-model view.  Optional
-     *  — when omitted, the widget assumes the parent already subscribes
-     *  to `$deviceModel.ports` for live updates. */
-    export let onProfileChanged: ((next: ServoProfileT) => void) | null = null
-
     let localBusy = false
     let error = ''
     $: portRef = port
@@ -63,18 +55,6 @@
             /*startingTargetUs=*/ prof.centerUs,
         )
     }
-    async function onToggleReversed() {
-        if (!hasPort || !portRef) return
-        localBusy = true; error = ''
-        try {
-            const next = await toggleReversed(portRef.guid ?? '', portRef.idx, prof)
-            if (onProfileChanged) onProfileChanged(next)
-        } catch (e) {
-            error = String(e)
-        } finally {
-            localBusy = false
-        }
-    }
 </script>
 
 <div class="servo-widget">
@@ -83,14 +63,6 @@
     {:else}
         <span class="summary" title={summary}>{summary}</span>
     {/if}
-    <button class="small rev-btn" class:on={prof.reversed}
-            on:click={onToggleReversed}
-            disabled={busy || localBusy || !hasPort}
-            title={prof.reversed
-                ? 'Direction is REVERSED — "open" maps to min µs.  Click to un-reverse.'
-                : 'Direction is NORMAL — "open" maps to max µs.  Click to reverse so open maps to min instead.'}>
-        ↔ {prof.reversed ? 'Reversed' : 'Normal'}
-    </button>
     <button class="small" on:click={onCalibrate}
             disabled={busy || localBusy || !hasPort}
             title="Open the calibration popup — live jog, set limits, edit speed / accel / jerk.">
@@ -111,10 +83,6 @@
     }
     .placeholder { color: var(--text-dim); font-style: italic; }
 
-    /* The reversed-toggle reads as a STATEFUL chip — text changes,
-       colour cue when on.  Mirrors the speaker-routing button pattern. */
-    .rev-btn { min-width: 80px; }
-    .rev-btn.on { color: var(--warning); font-weight: 600; }
 
     .err { color: var(--error); font-weight: 700; cursor: help; }
 </style>

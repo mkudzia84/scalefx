@@ -9,23 +9,27 @@
 
 namespace hubfx::effects::gearctrl {
 
-inline void DoorSequencer::commandDoor(uint8_t i, uint16_t posNorm) {
+inline void DoorSequencer::commandDoor(uint8_t i, bool toOpen) {
     if (i >= _numDoors) return;
     _commanded[i] = true;
-    const int8_t targetEnd = (posNorm == RolePacket::kPosNormFull) ? 1 : 0;
+    const int8_t targetEnd = toOpen ? 1 : 0;
     const bool   noop      = (_doorEnd[i] == targetEnd);   // already at this end
     _doorEnd[i] = targetEnd;                               // optimistic: heading there
     _done[i]    = false;
     if (!_send) { _done[i] = true; return; }   // no transport — treat as instant
-    // Re-assert the position even on a no-op (cheap, guarantees the door is at
-    // the commanded end before the strut moves) — but DON'T wait for a
-    // SERVO_MOTION_DONE that won't come because the servo doesn't actually move
-    // (the close_policy=none retract re-opening already-open doors = the pause).
+    // ABSOLUTE µs target (2.46.0 — explicit open/close positions from the
+    // config; the servo role clamps into its calibrated caps, so the 0xFFFF/0
+    // defaults land on the calibrated ends).  Re-assert even on a no-op
+    // (cheap, guarantees the door is at the commanded end before the strut
+    // moves) — but DON'T wait for a SERVO_MOTION_DONE that won't come because
+    // the servo doesn't actually move (the close_policy=none retract
+    // re-opening already-open doors = the pause).
+    const uint16_t targetUs = toOpen ? _doors[i].openUs : _doors[i].closeUs;
     uint8_t payload[3];
     payload[0] = _doors[i].servo.portIdx;
-    SfxWire::putU16LE(&payload[1], posNorm);
+    SfxWire::putU16LE(&payload[1], targetUs);
     _send(_sendCtx, _doors[i].servo,
-          RolePacket::SERVO_SET_POS_NORM, payload, sizeof(payload));
+          RolePacket::SERVO_SET_TARGET, payload, sizeof(payload));
     if (noop) {
         _done[i] = true;
         SFX_LOG_DEBUG("[gear-door] door %u already %s — no-op (no wait)",
@@ -56,23 +60,21 @@ inline void DoorSequencer::begin(bool opening, uint8_t doorMask) {
 
     _state = opening ? State::Opening : State::Closing;
 
-    // Open → calibrated MAX-µs end, close → MIN-µs end (the servo role's REV
-    // flag flips direction); travel lives in the servo calibration, not here.
-    auto targetFor = [&](uint8_t /*i*/) -> uint16_t {
-        return opening ? RolePacket::kPosNormFull : (uint16_t)0;
-    };
+    // Targets are the doors' configured ABSOLUTE open/close µs — commandDoor
+    // looks them up per door (2.46.0); travel shape lives in the servo
+    // calibration, positions live here.
 
     const bool d0 = (doorMask & 0x01) != 0;
     const bool d1 = (doorMask & 0x02) != 0 && _numDoors >= 2;
 
     switch (_openMode) {
         case DoorMode::SINGLE:
-            if (d0) commandDoor(0, targetFor(0));
+            if (d0) commandDoor(0, opening);
             break;
 
         case DoorMode::DUAL_SYNC:
-            if (d0) commandDoor(0, targetFor(0));
-            if (d1) commandDoor(1, targetFor(1));
+            if (d0) commandDoor(0, opening);
+            if (d1) commandDoor(1, opening);
             break;
 
         case DoorMode::DUAL_DELAY:
@@ -87,10 +89,9 @@ inline void DoorSequencer::begin(bool opening, uint8_t doorMask) {
             _firstIdx  = first;
             _secondIdx = second;
             if (firstWanted) {
-                commandDoor(first, targetFor(first));
+                commandDoor(first, opening);
                 if (secondWanted) {
                     _secondPending = true;
-                    _secondTarget  = targetFor(second);
                     if (_openMode == DoorMode::DUAL_DELAY) {
                         _delayDeadlineMs =
                             sfx_core::EffectClock::instance().nowMs() + _doorDelayMs;
@@ -99,14 +100,14 @@ inline void DoorSequencer::begin(bool opening, uint8_t doorMask) {
                 }
             } else if (secondWanted) {
                 // Only the second door participates (masked first) — just run it.
-                commandDoor(second, targetFor(second));
+                commandDoor(second, opening);
             }
             break;
         }
 
         default:
-            if (d0) commandDoor(0, targetFor(0));
-            if (d1) commandDoor(1, targetFor(1));
+            if (d0) commandDoor(0, opening);
+            if (d1) commandDoor(1, opening);
             break;
     }
 
@@ -143,7 +144,7 @@ inline void DoorSequencer::update() {
         const uint32_t now = sfx_core::EffectClock::instance().nowMs();
         if (_delayDeadlineMs != 0 && (int32_t)(now - _delayDeadlineMs) >= 0) {
             _secondPending = false;
-            commandDoor(_secondIdx, _secondTarget);
+            commandDoor(_secondIdx, _opening);
         }
     }
 
@@ -162,7 +163,7 @@ inline void DoorSequencer::onServoMotionDone(uint8_t portIdx) {
             if (_secondPending && _openMode == DoorMode::DUAL_SEQ &&
                 i == _firstIdx) {
                 _secondPending = false;
-                commandDoor(_secondIdx, _secondTarget);
+                commandDoor(_secondIdx, _opening);
             }
             break;
         }

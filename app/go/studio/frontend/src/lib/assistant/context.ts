@@ -189,7 +189,7 @@ export function buildAssistantContext(): string {
             if ((gear.strutMode ?? 'hbridge') === 'hbridge') {
                 lp.push(`motor \`${refName(g.motor, pidx)}\` (drive \`${((g.motorVoltageMv || 6000) / 1000).toFixed(1)}V\` voltage-first, direction \`${g.reverse ? 'reversed' : 'forward'}\`, timeout \`${g.timeoutMs}ms\`)`)
             } else if (gear.strutMode === 'servo') {
-                lp.push(`strut channel \`${refName(g.strutServo, pidx)}\` (integrated retract, fixed travel \`${g.travelMs}ms\`, deploy → calibrated max end; flip the servo's Reversed to invert)`)
+                lp.push(`strut channel \`${refName(g.strutServo, pidx)}\` (integrated retract, fixed travel \`${g.travelMs}ms\`, deploy \`${(g.deployUs ?? 0xFFFF) >= 0xFFFF ? 'cal.max' : g.deployUs + 'us'}\` / retract \`${(g.retractUs ?? 0) <= 0 ? 'cal.min' : g.retractUs + 'us'}\`)`)
             } else {
                 lp.push(`strut driven by the shared servo channel (see head)`)
             }

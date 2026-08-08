@@ -93,7 +93,7 @@ export function defaultLandingLight(id: number): LandingLightT {
         // own calibrated min/max, so "deploy" always lands on the real endpoint
         // (open ≥ close ⇒ deploy-at-max; toggled in the panel's Deploy direction).
         id, name: `landing${id}`, owner: 'landing-light',
-        servos: [], openUs: 2500, closeUs: 500,
+        servos: [], openUs: 0xFFFF, closeUs: 0,
         leds: [],
         fadeInMs: 400,
         activation: { ...defaultActivation },
@@ -189,8 +189,8 @@ function normaliseLanding(c: any): LandingConfigT {
         name:      l?.name ?? '',
         owner:     l?.owner ?? 'landing-light',
         servos:    Array.isArray(l?.servos) ? l.servos : [],
-        openUs:    l?.openUs ?? 1900,
-        closeUs:   l?.closeUs ?? 1100,
+        openUs:    (l?.openUs && l.openUs > 0) ? l.openUs : 0xFFFF,
+        closeUs:   l?.closeUs ?? 0,
         leds:      Array.isArray(l?.leds) ? l.leds : [],
         activation: { ...defaultActivation, ...(l?.activation ?? {}) },
     }))

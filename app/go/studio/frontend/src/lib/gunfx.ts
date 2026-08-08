@@ -76,7 +76,6 @@ export interface ServoMotionProfileT {
     minUs: number
     maxUs: number
     centerUs: number
-    reversed: boolean
     maxSpeedUsPerSec: number
     maxAccelUsPerSec2: number
     maxJerkUsPerSec3: number

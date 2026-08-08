@@ -23,10 +23,11 @@ offers compatible free ports and sets them up for you.
 
 **Q: My gear deploys the wrong way / stops short.**
 For an H-bridge motor leg, flip the deploy *direction* in the gear leg settings.
-For a servo-driven strut (integrated retract) or a door, direction lives in the
-servo itself: open **Calibrate Servo** for that channel and flip **↔ Reversed**.
-If the travel *timeout* (or servo *travel time*) is too short, the leg stops
-before it reaches the end.
+For a servo-driven strut or a door, open **◧ Positions** and set the two
+positions explicitly — DEPLOY/OPEN and RETRACT/CLOSED are absolute pulse values
+you capture by jogging the servo; swap the numbers to swap the direction (there
+are no direction flags anywhere). If the travel *timeout* (or servo *travel
+time*) is too short, the leg stops before it reaches the end.
 
 **Q: Can I use off-the-shelf / integrated retracts instead of the ScaleFX motor driver?**
 Yes. Set **Strut drive** on the gear tab: `Servo per strut` gives every strut
@@ -54,8 +55,10 @@ is out, and you can't move the strut unless the doors are open — the matching
 button greys out and tells you why.
 
 **Q: How do I calibrate a servo?**
-In the effect's panel, use **Calibrate Servo…**. Set the end-points, centre, and
-direction; re-calibrating takes effect on the next move.
+In the effect's panel, use **Calibrate Servo…**. Set the travel limits (hard
+caps), centre, and motion speed; it saves immediately. Then set each function's
+actual positions (door open/close, strut deploy/retract) with that effect's
+**◧ Positions** window — jog to the spot, capture, save.
 
 **Q: My expander board's ports aren't showing.**
 Make sure it's plugged into the controller and powered. A configured-but-

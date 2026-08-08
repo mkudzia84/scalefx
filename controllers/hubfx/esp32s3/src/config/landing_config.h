@@ -25,15 +25,14 @@
  *         threshold_us: 1500          # ≥ threshold ⇒ deploy, < ⇒ retract
  *         hysteresis_us: 50
  *
- * NOTE (2.45.4): `open_us` / `close_us` are VESTIGIAL — parsed for config
- * compat, ignored.  Deploy/retract drive each servo via `SERVO_SET_POS_NORM`
- * (full = deploy / 0 = retract) that the ROLE maps onto its own LIVE
- * calibrated [min,max] (Rule 42/44), with the profile's `reversed` flag as
- * the ONLY direction mechanism (full → MIN end when reversed).  The old
- * `open_us >= close_us` ordering trick was the direction workaround from the
- * era when the role's REV reflection was silently broken (2.45.2 notes);
- * once restored, the two mechanisms compounded.  The travel limits live in
- * the servo's `/hubfx.yaml` ports[].profile, never here.
+ * NOTE (2.46.0): `open_us` / `close_us` are LIVE ABSOLUTE µs targets —
+ * deploy sends `SERVO_SET_TARGET(open_us)`, retract `close_us`, set with
+ * the Studio endpoints widget.  The servo's `/hubfx.yaml` ports[].profile
+ * is a pure motion CAP (min/max/speed) that clamps these targets — absent
+ * keys default to 0xFFFF/0, which clamp to the calibrated ends.  There is
+ * NO direction flag anywhere: which number is bigger IS the direction
+ * (the three-layer `reversed` stack was retired after the 2026-08-08
+ * bench saga — explicit beats implicit).
  *
  * `activation:` drives the light from an RC channel (resolved + wired by
  * the sketch's LandingActivationDriver, mirroring the EngineFx toggle).
@@ -163,8 +162,8 @@ struct LandingConfigSchema {
                     if (!s) continue;
                     def.servos[def.numServos++] = portRefFromNode(s->child("port"));
                 }
-                def.openUs  = (uint16_t)ll->template childAs<int32_t>("open_us",  1900);
-                def.closeUs = (uint16_t)ll->template childAs<int32_t>("close_us", 1100);
+                def.openUs  = (uint16_t)ll->template childAs<int32_t>("open_us",  0xFFFF);
+                def.closeUs = (uint16_t)ll->template childAs<int32_t>("close_us", 0);
             } else {
                 // Legacy single-servo form — kept indefinitely so
                 // operator-authored /landing.yaml files don't have to
@@ -172,8 +171,8 @@ struct LandingConfigSchema {
                 const auto* servoNode = ll->child("servo");
                 if (servoNode) {
                     def.servos[def.numServos++] = portRefFromNode(servoNode->child("port"));
-                    def.openUs  = (uint16_t)servoNode->template childAs<int32_t>("open_us",  1900);
-                    def.closeUs = (uint16_t)servoNode->template childAs<int32_t>("close_us", 1100);
+                    def.openUs  = (uint16_t)servoNode->template childAs<int32_t>("open_us",  0xFFFF);
+                    def.closeUs = (uint16_t)servoNode->template childAs<int32_t>("close_us", 0);
                 }
             }
 

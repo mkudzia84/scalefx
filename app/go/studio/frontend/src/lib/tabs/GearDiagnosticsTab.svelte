@@ -319,7 +319,7 @@
                                 <input class="slider" type="range" min={p.minUs} max={p.maxUs} step="1"
                                     bind:value={servoUs[idx]}
                                     on:input={() => servoTarget(idx, servoUs[idx])} />
-                                <span class="live mono">{servoUs[idx]} µs <span class="text-dim">[{p.minUs}–{p.maxUs}{p.reversed ? ' REV' : ''}]</span></span>
+                                <span class="live mono">{servoUs[idx]} µs <span class="text-dim">[{p.minUs}–{p.maxUs}]</span></span>
                             </div>
                         {:else}
                             <p class="hint compact">Load profile to enable the travel slider.</p>

@@ -187,14 +187,19 @@ struct GearControlConfigSchema {
                 else                                           strutMode = StrutDrive::HBridge;
             }
         }
-        // servo_shared: strut_shared: { port: {kind: servo, idx}, travel_ms }
-        auto     sharedPort     = portRefFromNode(nullptr);   // empty PortRef
-        uint32_t sharedTravelMs = 5000;
+        // servo_shared: strut_shared: { port: {kind: servo, idx}, travel_ms,
+        //   deploy_us, retract_us } — ONE channel, ONE pair of positions.
+        auto     sharedPort      = portRefFromNode(nullptr);   // empty PortRef
+        uint32_t sharedTravelMs  = 5000;
+        uint16_t sharedDeployUs  = 0xFFFF;   // defaults → calibrated ends
+        uint16_t sharedRetractUs = 0;
         if (strutMode == StrutDrive::ServoShared) {
             const auto* sh = root ? root->child("strut_shared") : nullptr;
             if (sh) {
-                sharedPort     = portRefFromNode(sh->child("port"));
-                sharedTravelMs = (uint32_t)sh->template childAs<int32_t>("travel_ms", 5000);
+                sharedPort      = portRefFromNode(sh->child("port"));
+                sharedTravelMs  = (uint32_t)sh->template childAs<int32_t>("travel_ms", 5000);
+                sharedDeployUs  = (uint16_t)sh->template childAs<int32_t>("deploy_us",  0xFFFF);
+                sharedRetractUs = (uint16_t)sh->template childAs<int32_t>("retract_us", 0);
             }
             if (sharedPort.portKind == 0) {
                 SFX_LOG_WARN("[gearcontrol-config] strut_mode=servo_shared but "
@@ -222,6 +227,10 @@ struct GearControlConfigSchema {
                 // strut_servo: { guid?, kind: servo, idx } + travel_ms per strut
                 def.strutServo = portRefFromNode(g->child("strut_servo"));
                 def.travelMs   = (uint32_t)g->template childAs<int32_t>("travel_ms", 5000);
+                // ABSOLUTE deploy/retract pulses (2.46.0) — absent keys keep
+                // the 0xFFFF/0 defaults, which clamp to the calibrated ends.
+                def.deployUs   = (uint16_t)g->template childAs<int32_t>("deploy_us",  0xFFFF);
+                def.retractUs  = (uint16_t)g->template childAs<int32_t>("retract_us", 0);
                 if (def.strutServo.portKind == 0) {
                     SFX_LOG_WARN("[gearcontrol-config] gears[%d] (id=%u): strut_mode=servo "
                                  "but `strut_servo` is missing/invalid", i, (unsigned)def.id);
@@ -230,6 +239,8 @@ struct GearControlConfigSchema {
             } else if (strutMode == StrutDrive::ServoShared) {
                 def.strutServo = sharedPort;      // every strut drives the ONE channel
                 def.travelMs   = sharedTravelMs;
+                def.deployUs   = sharedDeployUs;  // ONE channel ⇒ ONE pair of positions
+                def.retractUs  = sharedRetractUs;
                 if (sharedPort.portKind == 0) continue;   // warned above
             }
 
@@ -271,10 +282,11 @@ struct GearControlConfigSchema {
                 def.guardCeilingMa   = (uint16_t)gd->template childAs<int32_t>("ceiling_ma",     0);
             }
 
-            // ── Door servos (v2) ──────────────────────────────────────
-            // doors: [ { port: {kind: servo, idx} }, … ] — a door opens to its
-            // servo's calibrated MAX end, closes to MIN (REV flips); no per-door
-            // position.  Any legacy `open:`/`close:` keys are simply ignored.
+            // ── Door servos (2.46.0 — explicit absolute positions) ────
+            // doors: [ { port: {kind: servo, idx}, open_us: N, close_us: M }, … ]
+            // Open/close are ABSOLUTE µs targets set with the endpoints
+            // widget; absent keys keep the 0xFFFF/0 defaults, which the
+            // servo role clamps to its calibrated ends (the old behaviour).
             def.numDoors = 0;
             const auto* doorsNode = g->child("doors");
             if (doorsNode && doorsNode->type == YamlNode::Sequence) {
@@ -283,7 +295,9 @@ struct GearControlConfigSchema {
                     const auto* dNode = doorsNode->childAt(di);
                     if (!dNode) continue;
                     DoorDef& door = def.doors[def.numDoors];
-                    door.servo = portRefFromNode(dNode->child("port"));
+                    door.servo   = portRefFromNode(dNode->child("port"));
+                    door.openUs  = (uint16_t)dNode->template childAs<int32_t>("open_us",  0xFFFF);
+                    door.closeUs = (uint16_t)dNode->template childAs<int32_t>("close_us", 0);
                     if (door.servo.portKind == 0) {
                         SFX_LOG_WARN("[gearcontrol-config] gears[%d].doors[%d]: missing/invalid `port`",
                                      i, di);

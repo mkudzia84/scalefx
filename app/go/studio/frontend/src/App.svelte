@@ -10,6 +10,8 @@
     import PcbOverlayDialog from './lib/dialogs/PcbOverlayDialog.svelte'
     import ServoCalibrationDialog from './lib/dialogs/ServoCalibrationDialog.svelte'
     import { closeServoCalibrationSilent } from './lib/servo_calibration'
+    import { closeEndpointsSilent } from './lib/endpoint_setter'
+    import ServoEndpointsDialog from './lib/dialogs/ServoEndpointsDialog.svelte'
     import MotorCalibrationDialog from './lib/dialogs/MotorCalibrationDialog.svelte'
     import ConfigWizard from './lib/dialogs/ConfigWizard.svelte'
     import MainLayout from './lib/layout/MainLayout.svelte'
@@ -143,6 +145,7 @@
                 // path needs the wire (origin restore).  Close it silently —
                 // the widened envelope was live-only, nothing persists.
                 closeServoCalibrationSilent()
+                closeEndpointsSilent()
                 resetDeviceModel()
             }
         })
@@ -216,6 +219,10 @@
      `openServoCalibrationFor(...)`.  Replaces the inline
      ServoProfileEditor so feature rows stay compact. -->
 <ServoCalibrationDialog />
+
+<!-- Endpoints popup (2.46.0 explicit-position model) — opened from the
+     Gear / Landing panels via `openEndpointsFor(...)`. -->
+<ServoEndpointsDialog />
 
 <!-- Gear-motor (H-bridge) calibration popup — opened from the GearPanel
      strut motor card via `openMotorCalibrationFor(...)`. -->

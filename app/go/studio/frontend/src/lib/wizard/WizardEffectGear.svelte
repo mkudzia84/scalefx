@@ -78,7 +78,7 @@
             {#each (g.doors) as d, di (di)}
                 <div class="door">
                     <WizardPortPicker label={`Door ${di + 1}`} kind="servo" role={RoleKind.ServoActuator} value={d.port}
-                        onChange={(ref) => updateGearChannel(g.id, x => ({ ...x, doors: x.doors.map((dd, i) => i === di ? { port: ref } : dd) }))} />
+                        onChange={(ref) => updateGearChannel(g.id, x => ({ ...x, doors: x.doors.map((dd, i) => i === di ? { ...dd, port: ref } : dd) }))} />
                     <button class="small danger rm" on:click={() => removeGearDoor(g.id, di)}>×</button>
                 </div>
             {/each}

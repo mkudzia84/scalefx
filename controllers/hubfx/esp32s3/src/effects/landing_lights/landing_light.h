@@ -62,8 +62,11 @@ struct LandingLightDef {
     uint8_t   numServos     = 0;
     PortRef   leds[kMaxLedsPerLanding];             ///< each must have LedAnimator role
     uint8_t   numLeds       = 0;
-    uint16_t  openUs        = 1900;
-    uint16_t  closeUs       = 1100;
+    /// ABSOLUTE deploy/retract pulse targets (2.46.0 — live again, as real
+    /// µs numbers set by the endpoints widget).  Defaults clamp to the
+    /// servo's calibrated ends at the role (0xFFFF → max, 0 → min).
+    uint16_t  openUs        = 0xFFFF;
+    uint16_t  closeUs       = 0;
     uint8_t   brightnessPct = 100;                   ///< LED brightness when deployed
     /// Soft-start ramp for the LEDs once the servo is fully deployed:
     /// 0 = hard on (legacy), >0 = fade in 0→brightness over this many ms
@@ -146,34 +149,23 @@ private:
     /// for deploy, RETRACTED for retract) and disarm the travel backstop.
     /// Shared by the all-servos-arrived path and the timeout backstop.
     void completeTravel();
-    void commandAllServos(uint16_t posNorm);   ///< normalised pos → role maps to calibrated endpoint
+    void commandAllServos(uint16_t targetUs);  ///< ABSOLUTE µs → SERVO_SET_TARGET (role clamps to calibration)
     void commandLedsOn();
     void commandLedsOff();
 
-    /// Deploy / retract drive each servo to its CALIBRATED endpoint via the
-    /// role's normalised-position command (`SERVO_SET_POS_NORM`): a full / zero
-    /// fraction maps onto the servo's LIVE calibrated [min,max] (Rule 42/44 —
-    /// the role owns calibration), so the servo always lands exactly on the
-    /// calibrated end AND a later re-calibration is picked up automatically (the
-    /// role re-maps on the next command).
-    ///
-    /// DIRECTION lives SOLELY in the servo profile's `reversed` (2.45.4 —
-    /// same single-source rule as gear doors + servo struts).  The old
-    /// `openUs >= closeUs` ordering trick was the direction workaround from
-    /// the era when the role's REV reflection was silently broken (see the
-    /// 2.45.2 notes); with the reflection restored the two mechanisms
-    /// COMPOUNDED — both set cancels out, either alone flips deploy under
-    /// the operator's feet.  `openUs`/`closeUs` are now fully vestigial
-    /// (parsed for config compat, ignored).
-    static constexpr uint16_t kPosOpenEnd  = RolePacket::kPosNormFull;      ///< → calibrated MAX-µs end (MIN when profile reversed)
-    static constexpr uint16_t kPosCloseEnd = 0;                              ///< → calibrated MIN-µs end (MAX when profile reversed)
+    /// Deploy / retract drive each servo to the group's configured ABSOLUTE
+    /// open/close µs via `SERVO_SET_TARGET` (2.46.0 — explicit beats
+    /// implicit).  The servo's calibration is a pure motion cap: the role
+    /// clamps the target, so the 0xFFFF/0 defaults land on the calibrated
+    /// ends and a later re-calibration re-caps automatically.  No direction
+    /// flag anywhere — which number is bigger IS the direction.
     /// Travel-timeout backstop for a servo move with no position feedback —
     /// mirrors the gear door sequencer's kDoorTravelTimeoutMs.  If every
     /// servo hasn't reported SERVO_TARGET_REACHED within this window the
     /// phase is force-completed (see update()).
     static constexpr uint32_t kTravelTimeoutMs = 4000;
-    uint16_t deployPosNorm()  const { return kPosOpenEnd;  }
-    uint16_t retractPosNorm() const { return kPosCloseEnd; }
+    uint16_t deployTargetUs()  const { return _def.openUs;  }
+    uint16_t retractTargetUs() const { return _def.closeUs; }
     /// All-arrived mask = (1 << numServos) - 1.  Computed once per
     /// deploy/retract to avoid recomputing on every event.
     uint8_t allServosMask() const {

@@ -7,6 +7,51 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.46.0 — 2026-08-08 — explicit servo positions: the direction concept is GONE
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.46.0 | ESP32-S3 | `hubfx-v2.46.0` |
+
+MINOR: config-schema additions + a conceptual simplification of the whole
+servo position model (operator-requested after the 2026-08-08 "double
+reverse" saga).  NO wire changes — `SERVO_SET_TARGET` was already there;
+the profile codec keeps its 13-byte layout (byte 6 now reserved).
+
+### New Features / Breaking behaviour ⚠
+
+- **Named servo positions are EXPLICIT ABSOLUTE µs.**  Gear door
+  `open_us`/`close_us`, servo-strut `deploy_us`/`retract_us` (per-strut
+  or one pair on `strut_shared:`), landing `open_us`/`close_us` — all set
+  with the new **◧ Positions** widget (live-jog inside the calibrated
+  range → capture each position → Save persists to the effect config
+  immediately) and driven via `SERVO_SET_TARGET`.  Which number is
+  bigger IS the direction; swap them to swap it.
+- **The `reversed` flag is REMOVED at every layer.**  Direction was
+  smeared across THREE stacked mechanisms — the profile `reversed`, a
+  hidden mirror inside `MotionProfile1D::clamp` (`min+max−target`!), and
+  per-effect flags/ordering tricks — which silently compounded into the
+  bench "double reverse".  All three are gone: the calibration is now a
+  pure MOTION ENVELOPE (min/max caps + speed/accel/jerk + centre), and
+  `reversed:` in old configs is ignored.
+- **Park-at-centre on attach.**  A servo role attaching WITH a profile
+  parks at its calibrated `center_us` (profiled slew, no snap) until the
+  first effect command — a freshly-booted board holds a known neutral.
+- **Graceful defaults.**  Unset positions use the sentinels 0xFFFF/0,
+  which the role clamps to the calibrated max/min — i.e. exactly the old
+  open=max/close=min behaviour, so existing configs work unchanged.
+
+### Studio
+
+- New `ServoEndpointsDialog` (◧ Positions…) on gear doors, servo struts
+  (own + shared), and landing groups — jog, capture, preview (◈ Go),
+  numeric fine-tune; Save persists immediately.
+- ↔ Reversed removed from the calibration dialog + servo widgets; the
+  live servo bar's ▾ OPEN marker now sits at the configured open/deploy
+  µs.
+
+---
+
 ## 2.45.4 — 2026-08-08 — landing-light direction single-sourced + servo-path audit
 
 | Component | Version | Platform | Tag |

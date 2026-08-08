@@ -50,7 +50,6 @@ type ServoMotionProfileDTO struct {
 	MinUs             uint16 `yaml:"min_us"               json:"minUs"`
 	MaxUs             uint16 `yaml:"max_us"               json:"maxUs"`
 	CenterUs          uint16 `yaml:"center_us"            json:"centerUs"`
-	Reversed          bool   `yaml:"reversed"             json:"reversed"`
 	MaxSpeedUsPerSec  uint16 `yaml:"max_speed_us_per_sec" json:"maxSpeedUsPerSec"`
 	MaxAccelUsPerSec2 uint16 `yaml:"max_accel_us_per_sec2" json:"maxAccelUsPerSec2"`
 	MaxJerkUsPerSec3  uint16 `yaml:"max_jerk_us_per_sec3" json:"maxJerkUsPerSec3"`

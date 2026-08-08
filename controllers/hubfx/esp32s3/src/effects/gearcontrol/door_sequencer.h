@@ -121,9 +121,9 @@ public:
 private:
     enum class State : uint8_t { Idle, Opening, Closing, Complete };
 
-    /// Send SERVO_SET_POS_NORM to door `i` for the given normalised target,
-    /// and mark it as a commanded door awaiting completion.
-    void commandDoor(uint8_t i, uint16_t posNorm);
+    /// Send SERVO_SET_TARGET to door `i` — the door's configured ABSOLUTE
+    /// open/close µs (2.46.0) — and mark it as commanded awaiting completion.
+    void commandDoor(uint8_t i, bool toOpen);
 
     /// True once every door we commanded this sequence has reported done.
     bool allCommandedDone() const;
@@ -160,7 +160,6 @@ private:
     bool          _secondPending = false;   ///< second door not yet dispatched
     uint8_t       _firstIdx      = 0;       ///< first door dispatched
     uint8_t       _secondIdx     = 1;       ///< second door (deferred)
-    uint16_t      _secondTarget  = 0;       ///< normalised target for the second door
     uint32_t      _delayDeadlineMs = 0;     ///< EffectClock deadline for DUAL_DELAY
 };
 

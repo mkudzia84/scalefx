@@ -456,9 +456,8 @@ func EncodeServoProfileBody(p ServoMotionProfile) []byte {
 	binary.LittleEndian.PutUint16(b[0:2],  p.MinUs)
 	binary.LittleEndian.PutUint16(b[2:4],  p.MaxUs)
 	binary.LittleEndian.PutUint16(b[4:6],  p.MaxSpeedUsPerSec)
-	if p.Reversed {
-		b[6] = 1
-	}
+	// b[6] RESERVED (was the reversed flag — retired 2.46.0; direction now
+	// lives as absolute open/close µs in each effect's config).  Always 0.
 	binary.LittleEndian.PutUint16(b[7:9],   p.CenterUs)
 	binary.LittleEndian.PutUint16(b[9:11],  p.MaxAccelUsPerSec2)
 	binary.LittleEndian.PutUint16(b[11:13], p.MaxJerkUsPerSec3)

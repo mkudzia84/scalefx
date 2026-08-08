@@ -306,8 +306,11 @@ strut_mode: hbridge            # hbridge | servo | servo_shared (2.45.0)
 #   servo        — each strut is an integrated retract on its OWN servo channel:
 #                  per-gear `strut_servo:` port + `travel_ms` (fixed stroke —
 #                  the door stage waits for it; the controller is a black box)
+#                  + `deploy_us`/`retract_us` ABSOLUTE pulse positions (2.46.0;
+#                  absent = 0xFFFF/0 → the servo's calibrated ends)
 #   servo_shared — ONE channel drives all struts:
-#                    strut_shared: { port: { kind: servo, idx: N }, travel_ms: 5000 }
+#                    strut_shared: { port: { kind: servo, idx: N }, travel_ms: 5000,
+#                                    deploy_us: 2050, retract_us: 1390 }
 gears:
   - id: 0
     name: nose
@@ -321,15 +324,18 @@ gears:
     motor_voltage_mv: 6000                 # motor DRIVE voltage — full-scale seek capped
                                            # to this on any pack (2.44.0; raw duties RETIRED)
     timeout_ms: 20000
-    doors:
-      - { port: { kind: servo, idx: 0 }, open: 10000, close: 0 }
-      - { port: { kind: servo, idx: 1 }, open: 10000, close: 0 }
+    doors:                                 # open_us/close_us = ABSOLUTE pulse positions
+      - { port: { kind: servo, idx: 0 }, open_us: 2050, close_us: 1390 }
+      - { port: { kind: servo, idx: 1 }, open_us: 1200, close_us: 1900 }  # opposed mount: just swap the numbers
     door_mode: sequence          # sync | delay | sequence
     door_delay_ms: 500           # delay mode only
     close_policy: first          # both | first | none
 ```
-Door `reversed` is NOT here — it lives on the servo's profile in `/hubfx.yaml`
-`ports[]` (Rule 44).
+2.46.0 position model: door/strut positions are EXPLICIT absolute µs set with
+Studio's ◧ Positions widget (SERVO_SET_TARGET; the servo profile in
+`/hubfx.yaml ports[]` is a pure motion cap).  There is NO direction flag at
+any layer — swap the two numbers to swap the direction.  Absent keys default
+to 0xFFFF/0 = the calibrated ends.
 
 `input:` is wired by the standalone `GearActivationDriver`
 (`config/gear_activation.h`, the gear twin of `LandingActivationDriver`) so the

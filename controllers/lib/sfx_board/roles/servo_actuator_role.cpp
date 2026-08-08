@@ -53,12 +53,6 @@ void ServoActuatorRole::setLimits(uint16_t minUs, uint16_t maxUs) {
 
 void ServoActuatorRole::setProfile(const ServoMotionProfile& p) {
     _profile = p;
-    // Keep the role's open/close endpoint flag coherent with the profile's
-    // `inverted` bit — both encode "reversed" and come from the same YAML
-    // `reversed` field.  Without this, a caller that sets the profile but not
-    // setReversed() leaves _reversed (used by open/closeEndpoint) stale, so
-    // deploy/retract would drive the wrong calibrated end.
-    _reversed = p.inverted;
     rebuildProfileLimits();
 }
 
@@ -95,21 +89,12 @@ void ServoActuatorRole::setTarget(uint16_t target_us) {
 }
 
 void ServoActuatorRole::setNormalizedTarget(uint16_t pos) {
-    // Saturate the fraction, apply the REV reflection, then map LINEARLY onto
-    // the CURRENT calibrated [_minUs, _maxUs] (live — so a re-calibration is
-    // picked up on the next command).
-    //
-    // THE REFLECTION LIVES HERE AND ONLY HERE.  pos is INTENT space (full =
-    // open/deploy, zero = close/retract); `reversed` maps intent-full onto the
-    // min-µs end.  Raw setTarget() stays unreflected — its argument is SERVO
-    // space (the calibration dialog jogs absolute µs).  NOTE 2.45.2: the
-    // reflection was silently LOST in the Phase 2.9 MotionProfile refactor —
-    // this function mapped linearly and the only reversed-aware code
-    // (open/closeEndpoint) had no callers, so the profile's `reversed` flag
-    // did NOTHING on the wire path (doors/struts/landing/gun all ignored it)
-    // while every doc and the Studio dialog claimed otherwise.
+    // Saturate the fraction, then map LINEARLY onto the CURRENT calibrated
+    // [_minUs, _maxUs] (live — a re-calibration is picked up on the next
+    // command).  Pure range map — direction semantics were REMOVED in 2.46.0
+    // (positional effects command absolute µs via setTarget; see the class
+    // comment).
     if (pos > kPosNormFull) pos = kPosNormFull;
-    if (_reversed) pos = kPosNormFull - pos;
     const uint16_t us = static_cast<uint16_t>(
         _minUs + static_cast<uint32_t>(_maxUs - _minUs) * pos / kPosNormFull);
     setTarget(us);

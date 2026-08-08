@@ -18,7 +18,7 @@
        3. ⤓ Set as min / ⤒ Set as max / ◼ Set as center — capture
           the current jog target into the corresponding draft field.
           These (plus the numeric inputs) are the ONLY limit writers.
-       4. Edit speed / accel / jerk / reversed inline (no wire push;
+       4. Edit speed / accel / jerk inline (no wire push;
           batched at Save).
        5. Save — pushes the draft via SetPortProfile (live to role +
           marks /hubfx.yaml dirty); parks at center.
@@ -55,7 +55,6 @@
 
     function selValue(e: Event): string { return (e.target as HTMLSelectElement).value }
     function numValue(e: Event): number { return Number((e.target as HTMLInputElement).value) }
-    function checkValue(e: Event): boolean { return (e.target as HTMLInputElement).checked }
 
     // Jog deltas — chosen to span "fine" (1, 10) and "coarse" (50, 100)
     // tweaks.  Operators jog by 100 to find the rough end-stop, then
@@ -198,14 +197,6 @@
                     </div>
                 </div>
 
-                <div class="form-row">
-                    <label class="rev-toggle" title="Swap the role's open/close direction — applies after Save.">
-                        <input type="checkbox" checked={state.draft.reversed}
-                               on:change={(e) => setDraftField('reversed', checkValue(e))} />
-                        ↔ Reversed (mirror around center)
-                    </label>
-                    <span class="hint">open / deploy drives the {state.draft.reversed ? 'MIN' : 'MAX'} µs end after Save — flip this if the mechanism moves the wrong way</span>
-                </div>
 
                 {#if rangeError}
                     <div class="row-err">⚠ Min must be less than Max (currently {state.draft.minUs} ≥ {state.draft.maxUs}).</div>
@@ -217,7 +208,7 @@
                 <!-- ─── Summary ─────────────────────────────────── -->
                 <div class="summary">
                     <span class="sum-line"><strong>Travel:</strong> {state.draft.maxUs - state.draft.minUs} µs ({travelMs > 0 ? `~${travelMs} ms` : 'instant'} at the chosen speed)</span>
-                    <span class="sum-line"><strong>Origin:</strong> {state.origin.minUs}–{state.origin.maxUs} µs · {state.origin.maxSpeedUsPerSec} µs/s{state.origin.reversed ? ' · rev' : ''}</span>
+                    <span class="sum-line"><strong>Origin:</strong> {state.origin.minUs}–{state.origin.maxUs} µs · {state.origin.maxSpeedUsPerSec} µs/s</span>
                 </div>
             </div>
 
@@ -305,8 +296,6 @@
     .field-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px; color: var(--text-dim); }
     .field-input.narrow { width: 100%; }
 
-    .rev-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text); cursor: pointer; }
-    .rev-toggle input { margin: 0; }
 
     .row-err  { font-size: 11px; color: var(--error);   margin: 4px 0 0; }
     .row-warn { font-size: 11px; color: var(--warning); margin: 4px 0 0; }

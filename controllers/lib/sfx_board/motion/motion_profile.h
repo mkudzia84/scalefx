@@ -24,16 +24,21 @@
  * YAML shape (consumed by the role-attach config in /hubfx.yaml):
  *
  *   profile:
- *     min_us:    1100              # clamp lower bound
- *     max_us:    1900              # clamp upper bound
+ *     min_us:    1100              # clamp lower bound (motion CAP)
+ *     max_us:    1900              # clamp upper bound (motion CAP)
  *     center_us: 1500              # neutral / failsafe
- *     inverted:  false             # invert input → output mapping
  *     max_speed_us_per_sec:  800   # slew limit (0 = unlimited)
  *     max_accel_us_per_sec2: 1600  # 0 = pure speed clamp, no trapezoid
  *     max_jerk_us_per_sec3:  0     # 0 = trapezoidal (no S-curve)
  *
+ * There is NO direction/inversion concept here (removed 2.46.0): the
+ * profile is a pure motion envelope.  Effects that need named positions
+ * store ABSOLUTE µs targets in their own config.  (The old `inverted`
+ * mirror inside clamp() was one of THREE direction layers that stacked
+ * into the 2026-08-08 "double reverse" bench saga.)
+ *
  * Algorithm (MotionProfile1D::tick):
- *   1. Target is clamped to [minUs, maxUs] honouring `inverted`.
+ *   1. Target is clamped to [minUs, maxUs].
  *   2. If `hasSlew()` is false → write through, set current = target.
  *   3. Otherwise: integrate `dt` per tick.
  *      - Accel cap (`maxAccelUsPerSec2`) clamps velocity change.
@@ -63,18 +68,14 @@ struct ServoMotionProfile {
     uint16_t minUs                = 1000;    ///< clamp lower bound, µs
     uint16_t maxUs                = 2000;    ///< clamp upper bound, µs
     uint16_t centerUs             = 1500;    ///< neutral / failsafe, µs
-    bool     inverted             = false;   ///< true: input ↑ → output ↓
     uint16_t maxSpeedUsPerSec     = 800;     ///< slew limit (0 = unlimited)
     uint16_t maxAccelUsPerSec2    = 1600;    ///< 0 = pure speed clamp, no trapezoid
     uint16_t maxJerkUsPerSec3     = 0;       ///< 0 = trapezoidal (no S-curve)
 
-    /// Clamp a target µs into [minUs, maxUs] honouring `inverted`.
-    /// (Inverted maps the input through (min+max - x) so a stick push
-    /// up moves the servo down — useful for opposed mounts.)
+    /// Clamp a target µs into [minUs, maxUs] — a pure cap, no mapping.
     uint16_t clamp(uint16_t target) const {
         if (target < minUs) target = minUs;
         if (target > maxUs) target = maxUs;
-        if (inverted) target = static_cast<uint16_t>(minUs + maxUs - target);
         return target;
     }
 
@@ -103,17 +104,13 @@ public:
         // tick doesn't carry stale momentum out of (or along) the clamp.
         if (_currentF < p.minUs) { _currentF = p.minUs; _velocity = 0.0f; _accelLast = 0.0f; }
         if (_currentF > p.maxUs) { _currentF = p.maxUs; _velocity = 0.0f; _accelLast = 0.0f; }
-        // `_targetUs` is already in SERVO space (setTarget() applied any
-        // `inverted` reflection when it was stored). Re-clamp it to the new
-        // range WITHOUT reflecting — calling clamp() here would reflect a
-        // second time and flip the target to the opposite endpoint on every
-        // live retune (SERVO_SET_PROFILE). Clamp-only is idempotent.
+        // Re-clamp the in-flight target into the new range (idempotent —
+        // clamp() is a pure cap since 2.46.0).
         if (_targetUs < p.minUs) _targetUs = p.minUs;
         if (_targetUs > p.maxUs) _targetUs = p.maxUs;
     }
 
-    /// Set the desired endpoint; clamped + (if `inverted`) reflected.
-    /// Calling with the same value is a no-op.
+    /// Set the desired endpoint (clamped to the profile window).
     void setTarget(uint16_t targetUs) {
         _targetUs = _profile.clamp(targetUs);
     }
