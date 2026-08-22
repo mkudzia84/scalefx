@@ -7,6 +7,37 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.46.2 — 2026-08-12 — radio telemetry blinking fixed (2.46.1 regression)
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.46.2 | ESP32-S3 | `hubfx-v2.46.2` |
+
+PATCH: fixes a regression 2.46.1 itself introduced.
+
+### Bug Fixes
+
+- **Radio telemetry blinked (sensors intermittently flagged lost, ~1/s
+  refresh) once the JIVE PRO decoded — a 2.46.1 regression.**  The ESC
+  monitor published into the TelemetryHub on EVERY live frame (100×/s),
+  putting 100 lock acquisitions/s on the SAME mutex the Jeti EX reply
+  builder takes inside its ~4 ms half-duplex slot; together with the
+  2-second multi-line raw-dump instrumentation burst on the loop task,
+  replies were delayed just enough for the receiver to relay fewer frames.
+  Invisible to `lateSkip` (it only counts fully-skipped replies, not
+  in-slot delays).  Publishes now throttle to 20 Hz (consumers read far
+  slower; values stay fresh within 50 ms) and the instrumentation dump
+  runs every 10 s.  Bench-verified by the operator: no blinking, visibly
+  more responsive radio view.
+
+### Internal
+
+- Jeti EX data frames now pack up to 6 values (was 4), bounded by the EX
+  spec's 29-byte telegram cap (the old guard allowed a spec-illegal 38) —
+  more sensor refreshes per relayed frame at identical reply timing.
+
+---
+
 ## 2.46.1 — 2026-08-12 — Kontronik JIVE PRO telemetry decodes (device frame variants)
 
 | Component | Version | Platform | Tag |

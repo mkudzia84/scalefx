@@ -602,11 +602,12 @@ private:
         if (!d) return 0;
         if (_dataSen >= d->sensorCount) _dataSen = 0;
 
-        // Head, then pack up to kMaxValuesPerFrame active sensors (buffer-guarded
-        // — buf is 40 B; each value ≤5 B + 1 B crc).
+        // Head, then pack up to kMaxValuesPerFrame active sensors.  Guard on
+        // the EX SPEC cap — the whole telegram (head + values + crc8) must
+        // stay <= 29 B: after a worst-case 5 B value, pos <= 28, +1 crc = 29.
         uint8_t pos = exBlockHead(buf, d->usn, d->lsn);
         uint8_t packed = 0;
-        while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 38) {
+        while (packed < kMaxValuesPerFrame && _dataSen < d->sensorCount && pos + 5 <= 28) {
             const uint8_t senIdx = _dataSen;
             const auto& s = d->sensors[_dataSen++];
             if (!s.active) continue;
@@ -708,10 +709,13 @@ private:
     static constexpr uint32_t kMaxReplyIntervalMs = 200; // ≥5 Hz emit (keep the link warm)
     // Values PACKED per EX data frame (same device).  Each answered slot then
     // carries several metrics instead of one, so per-value refresh scales ~Nx
-    // without raising the emit rate (no channel-decode risk).  4 → a ≤28-byte
-    // frame (~2.5–3 ms reply, fits the master's ~4 ms slot); raise only if
-    // `slotOver` stays 0 and `maxUs` has headroom.
-    static constexpr uint8_t  kMaxValuesPerFrame = 4;
+    // without raising the emit rate (no channel-decode risk).  6 packs the EX
+    // telegram to its spec cap (29 B total — the buildData loop guard) for
+    // ~1.5x more values per RF-relayed frame; raised 4 → 6 on 2026-08-12 when
+    // the JIVE PRO device pushed the sensor count to 17 and the radio's
+    // per-sensor refresh dropped to ~1/s (intermittent LOST flags).  Bench
+    // preconditions held: slotOver=0, maxUs=2565 in the ~4 ms slot.
+    static constexpr uint8_t  kMaxValuesPerFrame = 6;
     static constexpr uint32_t kRxResetSecs       = 3;    // brownout log cadence while IN_1 is dead
     static constexpr uint32_t kRxRestartSecs     = 15;   // dead this long → full expander restart (UART re-init), then every 15 s
     // Timeliness-gate slack = master window (~4 ms) − our reply (~2 ms).  If the

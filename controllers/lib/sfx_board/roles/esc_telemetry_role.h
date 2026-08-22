@@ -76,7 +76,7 @@ public:
         const uint32_t now = SFX_MILLIS();
         _mon.update(now);
 #if SFX_INSTRUMENTATION
-        if (now - _lastLogMs >= 2000) {
+        if (now - _lastLogMs >= 10000) {
             _lastLogMs = now;
             uint8_t snap[48];
             const uint8_t n = _mon.takeSnap(snap, sizeof snap);

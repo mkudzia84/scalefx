@@ -118,7 +118,19 @@ public:
                 else return dec.feed((uint8_t)c, _d);
             }, _dec);
             switch (ev) {
-                case EscFeed::Live:  _frames++; publish(nowMs); break;
+                case EscFeed::Live:
+                    _frames++;
+                    // Throttle hub publishes to 20 Hz — the frames arrive at
+                    // 100 Hz but every consumer (Jeti rotation, Studio poll)
+                    // reads far slower, and each publish takes the SAME
+                    // TelemetryHub lock the Jeti reply builder needs inside
+                    // its ~4 ms half-duplex slot.  Publishing per frame put
+                    // 100 lock acquisitions/s on the loop task for nothing.
+                    if (nowMs - _lastPubMs >= 50) {
+                        _lastPubMs = nowMs;
+                        publish(nowMs);
+                    }
+                    break;
                 case EscFeed::Info:  _frames++; break;
                 case EscFeed::Error: _errors++; break;
                 case EscFeed::None:  break;
@@ -234,6 +246,7 @@ private:
     uint32_t     _rxBytes = 0;
     uint8_t      _snap[48];
     uint8_t      _snapLen = 0;
+    uint32_t     _lastPubMs = 0;
     uint32_t     _lastPushMs = 0;
     uint32_t     _lastFaults = 0;
     uint16_t     _rpmDivX100 = 100;
