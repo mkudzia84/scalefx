@@ -48,7 +48,8 @@ $IncludeDirs = @(
     "$repoRoot/controllers/lib/sfx_board/motion",
     "$repoRoot/controllers/lib/sfx_board/element",
     "$repoRoot/controllers/lib/sfx_platform/platform",
-    "$repoRoot/controllers/lib/sfx_config/config"
+    "$repoRoot/controllers/lib/sfx_config/config",
+    "$repoRoot/controllers/lib/sfx_peripherals/telemetry/esc"
 )
 
 # ---- Toolchain --------------------------------------------------------

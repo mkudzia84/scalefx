@@ -78,16 +78,44 @@ public:
 #if SFX_INSTRUMENTATION
         if (now - _lastLogMs >= 2000) {
             _lastLogMs = now;
-            uint8_t snap[16];
+            uint8_t snap[48];
             const uint8_t n = _mon.takeSnap(snap, sizeof snap);
-            char hex[36] = {};
-            for (uint8_t i = 0; i < n; ++i)
+            char hex[33] = {};
+            const uint8_t h1 = (n < 16) ? n : 16;
+            for (uint8_t i = 0; i < h1; ++i)
                 std::snprintf(&hex[i * 2], 3, "%02X", snap[i]);
             SFX_LOG_INFO("[esctelem] in[%u] proto=%u rxB=%lu frames=%lu errs=%lu dev=%s rx[..16]=%s",
                          (unsigned)_portIdx, (unsigned)_protocol,
                          (unsigned long)_mon.rxBytes(), (unsigned long)_mon.frames(),
                          (unsigned long)_mon.errors(), _mon.data().deviceName,
-                         n ? hex : "-");
+                         h1 ? hex : "-");
+            if (n > 16) {
+                // Second line: the rest of the 48-byte raw snapshot — enough
+                // to see the NEXT frame magic and measure the true stride.
+                char hex2[65] = {};
+                for (uint8_t i = 16; i < n; ++i)
+                    std::snprintf(&hex2[(i - 16) * 2], 3, "%02X", snap[i]);
+                SFX_LOG_INFO("[esctelem] in[%u] rx[16..48]=%s", (unsigned)_portIdx, hex2);
+            }
+            uint8_t bad[48];
+            const size_t bn = _mon.takeBadFrame(bad, sizeof bad);
+            if (bn) {
+                // A CRC-rejected info frame — dump it whole (two lines) so an
+                // unknown device variant's length/region can be pinned exactly.
+                char hexb[49] = {};
+                const size_t h = (bn < 24) ? bn : 24;
+                for (size_t i = 0; i < h; ++i)
+                    std::snprintf(&hexb[i * 2], 3, "%02X", bad[i]);
+                SFX_LOG_INFO("[esctelem] in[%u] badframe[0..%u]=%s",
+                             (unsigned)_portIdx, (unsigned)h, hexb);
+                if (bn > 24) {
+                    char hexc[49] = {};
+                    for (size_t i = 24; i < bn; ++i)
+                        std::snprintf(&hexc[(i - 24) * 2], 3, "%02X", bad[i]);
+                    SFX_LOG_INFO("[esctelem] in[%u] badframe[24..%u]=%s",
+                                 (unsigned)_portIdx, (unsigned)bn, hexc);
+                }
+            }
         }
 #endif
     }

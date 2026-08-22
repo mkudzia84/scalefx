@@ -130,6 +130,17 @@ public:
     uint32_t rxBytes() const { return _rxBytes; }
     /// Copy-and-reset the first-bytes snapshot of the current window (bench
     /// diagnostics — lets the instrumentation log show RAW line bytes).
+    /// Forward a decoder's rejected-frame diagnostic when it offers one.
+    size_t takeBadFrame(uint8_t* out, size_t cap) {
+        return std::visit([&](auto& dec) -> size_t {
+            using D = std::decay_t<decltype(dec)>;
+            if constexpr (requires(D& d2) { d2.takeBadFrame(out, cap); })
+                return dec.takeBadFrame(out, cap);
+            else
+                return 0;
+        }, _dec);
+    }
+
     uint8_t takeSnap(uint8_t* out, uint8_t cap) {
         const uint8_t n = (_snapLen < cap) ? _snapLen : cap;
         for (uint8_t i = 0; i < n; ++i) out[i] = _snap[i];
@@ -221,7 +232,7 @@ private:
     std::variant<std::monostate, TDecoders...> _dec;
     uint32_t     _frames = 0, _errors = 0, _sensorPushes = 0;
     uint32_t     _rxBytes = 0;
-    uint8_t      _snap[16];
+    uint8_t      _snap[48];
     uint8_t      _snapLen = 0;
     uint32_t     _lastPushMs = 0;
     uint32_t     _lastFaults = 0;

@@ -7,6 +7,49 @@ firmware binary; ScaleFX Studio's **Firmware** tab can flash a release directly.
 
 ---
 
+## 2.46.1 — 2026-08-12 — Kontronik JIVE PRO telemetry decodes (device frame variants)
+
+| Component | Version | Platform | Tag |
+|-----------|---------|----------|-----|
+| HubFX (master) | 2.46.1 | ESP32-S3 | `hubfx-v2.46.1` |
+
+PATCH: decoder logic only — no wire changes, no config changes.
+
+### Bug Fixes
+
+- **Kontronik JIVE PRO telemetry was 100 % rejected** (`frames=0`, `errs`
+  tracking `rxB` byte-for-byte) while a KOLIBRI on the same port decoded
+  clean.  Root cause, measured from live raw captures: the KODL/KODI frame
+  length AND CRC region are DEVICE-dependent —
+  - KOSMIK/KOLIBRI: KODL 40 B / KODI 44 B, CRC over frame-minus-trailer
+    (the spec's sample code);
+  - JIVE PRO (fw 1.14): KODL **38 B** (Reserved1/2 omitted, field offsets
+    unchanged) with the CRC covering only the **first 32 bytes** (state +
+    timing uncovered); KODI **41 B** (Reserved1/2/3 omitted) with the CRC
+    over the **first 36 bytes**.
+  The decoder now validates (frame length, CRC region) candidate pairs and
+  locks onto whichever matches.  Bench: 100 frames/s, `errs=0`,
+  `dev=JIVE PRO`, full sensor block (RPM/V/I/temps/BEC/faults) live on the
+  TelemetryHub → radio.
+- **Decoder resync could never re-test shorter frame lengths** once its
+  window pinned full (the candidate check only fired when the byte count
+  EQUALLED a candidate).  The parser now re-anchors on the frame magic at
+  the buffer start, tests every candidate ≤ buffered length each byte, and
+  consumes exactly the validated frame (tail preserved).
+
+### Internal
+
+- `[esctelem]` instrumentation: raw RX snapshot widened 16 → 48 bytes
+  (second `rx[16..48]=` line — wide enough to see the next frame magic and
+  measure the true stride) + a `badframe[..]=` dump of the first
+  CRC-rejected KODI since the last tick, so unknown device variants can be
+  pinned from the diag ring without guesswork.
+- New native suite `test_kontronik_decoder.cpp` (7 cases): both real
+  captured JIVE PRO frames decode bit-for-bit; KOLIBRI 40/44 baseline;
+  mid-stream attach (the pinned-window regression); corrupt-CRC re-lock.
+
+---
+
 ## 2.46.0 — 2026-08-08 — explicit servo positions: the direction concept is GONE
 
 | Component | Version | Platform | Tag |
